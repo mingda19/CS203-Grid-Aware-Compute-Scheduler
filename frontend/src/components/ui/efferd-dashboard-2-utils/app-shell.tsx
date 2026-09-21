@@ -36,6 +36,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Separator } from "@/components/ui/separator"
 import { useIsMobile } from "@/components/ui/use-mobile"
+import { authApi, getStoredUser, removeStoredUser, type User } from "@/lib/api"
 
 interface AppShellProps {
   children: React.ReactNode
@@ -46,6 +47,22 @@ export function AppShell({ children }: AppShellProps) {
   const router = useRouter()
   const [theme, setTheme] = React.useState<"light" | "dark">("dark")
   const [mobileOpen, setMobileOpen] = React.useState(false)
+  const [currentUser, setCurrentUser] = React.useState<User | null>(null)
+
+  React.useEffect(() => {
+    setCurrentUser(getStoredUser())
+  }, [])
+
+  const handleLogout = async () => {
+    try {
+      await authApi.logout()
+    } catch {
+      // Ignore network errors on logout
+    } finally {
+      removeStoredUser()
+      router.push("/login")
+    }
+  }
 
   // Apply dark mode class to document element
   React.useEffect(() => {
@@ -148,14 +165,16 @@ export function AppShell({ children }: AppShellProps) {
       {/* User Footer Profile */}
       <div className="p-4 border-t border-border mt-auto bg-muted/20">
         <div className="flex items-center gap-3">
-          <img
-            src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80"
-            alt="Elena Vance"
-            className="h-9 w-9 rounded-full object-cover border border-border"
-          />
+          <div className="h-9 w-9 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-bold text-xs uppercase">
+            {(currentUser?.fullName || currentUser?.email || "U")[0]}
+          </div>
           <div className="flex-1 min-w-0">
-            <p className="text-xs font-semibold text-foreground truncate">Elena Vance</p>
-            <p className="text-[11px] text-muted-foreground truncate">DC Ops Manager</p>
+            <p className="text-xs font-semibold text-foreground truncate">
+              {currentUser?.fullName || currentUser?.email?.split("@")[0] || "Elena Vance"}
+            </p>
+            <p className="text-[11px] text-muted-foreground truncate">
+              {currentUser?.role || "Data Center Operations Manager"}
+            </p>
           </div>
           <TooltipProvider>
             <Tooltip>
@@ -163,8 +182,8 @@ export function AppShell({ children }: AppShellProps) {
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8 text-muted-foreground hover:text-foreground"
-                  onClick={() => router.push("/login")}
+                  className="h-8 w-8 text-muted-foreground hover:text-red-500 cursor-pointer"
+                  onClick={handleLogout}
                 >
                   <LogOut className="h-4 w-4" />
                 </Button>
