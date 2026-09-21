@@ -1,0 +1,4 @@
+pandas
+requests-cache
+requests
+python-dotenv
