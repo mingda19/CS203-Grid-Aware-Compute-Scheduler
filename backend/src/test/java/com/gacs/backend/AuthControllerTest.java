@@ -41,8 +41,7 @@ class AuthControllerTest {
                 {
                     "email": "elena@datacenter.io",
                     "password": "Password123!",
-                    "fullName": "Elena Vance",
-                    "role": "Data Center Operations Manager"
+                    "fullName": "Elena Vance"
                 }
                 """;
 
@@ -61,8 +60,7 @@ class AuthControllerTest {
                 {
                     "email": "not-an-email",
                     "password": "Password123!",
-                    "fullName": "Elena Vance",
-                    "role": "Data Center Operations Manager"
+                    "fullName": "Elena Vance"
                 }
                 """;
 

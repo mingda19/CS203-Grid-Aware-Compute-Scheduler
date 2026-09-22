@@ -34,9 +34,8 @@ export default function LoginPage() {
   // State
   const [mode, setMode] = React.useState<AuthMode>("login")
   const [fullName, setFullName] = React.useState("")
-  const [email, setEmail] = React.useState("elena.vance@datacenter.io")
-  const [password, setPassword] = React.useState("P@ssw0rd2026!")
-  const [role, setRole] = React.useState("Data Center Operations Manager")
+  const [email, setEmail] = React.useState("admin@datacenter.io")
+  const [password, setPassword] = React.useState("Admin@2026!")
   const [otpCode, setOtpCode] = React.useState("")
 
   const [isLoading, setIsLoading] = React.useState(false)
@@ -56,12 +55,11 @@ export default function LoginPage() {
   // Select demo persona
   const selectPersona = (
     personaEmail: string,
-    personaRole: string,
+    personaPassword: string,
     name: string
   ) => {
     setEmail(personaEmail)
-    setPassword("P@ssw0rd2026!")
-    setRole(personaRole)
+    setPassword(personaPassword)
     setFullName(name)
     setErrorMessage(null)
   }
@@ -109,7 +107,6 @@ export default function LoginPage() {
         email,
         password,
         fullName: fullName || email.split("@")[0],
-        role,
       })
 
       setSuccessMessage(response.message || "OTP code sent to your email! Please enter it below.")
@@ -384,22 +381,6 @@ export default function LoginPage() {
                   </div>
                 </div>
 
-                <div className="space-y-1.5">
-                  <Label htmlFor="reg-role" className="text-xs font-semibold">
-                    Organization Role
-                  </Label>
-                  <select
-                    id="reg-role"
-                    value={role}
-                    onChange={(e) => setRole(e.target.value)}
-                    className="w-full h-10 px-3 text-sm rounded-md border border-input bg-background text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-                  >
-                    <option value="Data Center Operations Manager">Data Center Operations Manager</option>
-                    <option value="HPC Platform Administrator">HPC Platform Administrator</option>
-                    <option value="Energy & Finance Analyst">Energy & Finance Analyst</option>
-                  </select>
-                </div>
-
                 <Button
                   type="submit"
                   className="w-full h-10 mt-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
@@ -528,7 +509,35 @@ export default function LoginPage() {
                     <button
                       type="button"
                       onClick={() =>
-                        selectPersona("elena.vance@datacenter.io", "Data Center Operations Manager", "Elena Vance")
+                        selectPersona("admin@datacenter.io", "Admin@2026!", "System Administrator")
+                      }
+                      className={`flex items-center justify-between p-2.5 rounded-lg border text-left text-xs transition-all cursor-pointer ${
+                        email === "admin@datacenter.io"
+                          ? "border-emerald-500 bg-emerald-500/10 text-foreground font-semibold"
+                          : "border-border hover:bg-accent text-muted-foreground"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck className="h-4 w-4 text-emerald-500" />
+                        <div>
+                          <div className="font-semibold text-foreground flex items-center gap-1.5">
+                            System Administrator
+                            <span className="text-[10px] bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 px-1.5 py-0.2 rounded font-mono">
+                              ADMIN
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-muted-foreground">Manage users & role privileges via /admin</div>
+                        </div>
+                      </div>
+                      {email === "admin@datacenter.io" && (
+                        <CheckCircle className="h-4 w-4 text-emerald-500" />
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        selectPersona("elena.vance@datacenter.io", "P@ssw0rd2026!", "Elena Vance")
                       }
                       className={`flex items-center justify-between p-2.5 rounded-lg border text-left text-xs transition-all cursor-pointer ${
                         email === "elena.vance@datacenter.io"
@@ -539,8 +548,13 @@ export default function LoginPage() {
                       <div className="flex items-center gap-2">
                         <Server className="h-4 w-4 text-emerald-500" />
                         <div>
-                          <div className="font-semibold text-foreground">Elena Vance (Operations Manager)</div>
-                          <div className="text-[10px] text-muted-foreground">Approve schedules & power-caps</div>
+                          <div className="font-semibold text-foreground flex items-center gap-1.5">
+                            Elena Vance
+                            <span className="text-[10px] bg-muted text-muted-foreground px-1.5 py-0.2 rounded font-mono">
+                              USER
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-muted-foreground">Standard operator: view & schedule compute</div>
                         </div>
                       </div>
                       {email === "elena.vance@datacenter.io" && (
@@ -551,7 +565,7 @@ export default function LoginPage() {
                     <button
                       type="button"
                       onClick={() =>
-                        selectPersona("marcus.chen@hpc-grid.org", "HPC Platform Administrator", "Marcus Chen")
+                        selectPersona("marcus.chen@hpc-grid.org", "P@ssw0rd2026!", "Marcus Chen")
                       }
                       className={`flex items-center justify-between p-2.5 rounded-lg border text-left text-xs transition-all cursor-pointer ${
                         email === "marcus.chen@hpc-grid.org"
@@ -562,34 +576,16 @@ export default function LoginPage() {
                       <div className="flex items-center gap-2">
                         <Cpu className="h-4 w-4 text-teal-500" />
                         <div>
-                          <div className="font-semibold text-foreground">Marcus Chen (HPC Administrator)</div>
-                          <div className="text-[10px] text-muted-foreground">Manage ML training runs & SLAs</div>
+                          <div className="font-semibold text-foreground flex items-center gap-1.5">
+                            Marcus Chen
+                            <span className="text-[10px] bg-muted text-muted-foreground px-1.5 py-0.2 rounded font-mono">
+                              USER
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-muted-foreground">Standard operator: ML training workloads</div>
                         </div>
                       </div>
                       {email === "marcus.chen@hpc-grid.org" && (
-                        <CheckCircle className="h-4 w-4 text-emerald-500" />
-                      )}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        selectPersona("sarah.jenkins@energyrisk.com", "Energy & Finance Analyst", "Sarah Jenkins")
-                      }
-                      className={`flex items-center justify-between p-2.5 rounded-lg border text-left text-xs transition-all cursor-pointer ${
-                        email === "sarah.jenkins@energyrisk.com"
-                          ? "border-emerald-500 bg-emerald-500/10 text-foreground font-semibold"
-                          : "border-border hover:bg-accent text-muted-foreground"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <BarChart3 className="h-4 w-4 text-blue-500" />
-                        <div>
-                          <div className="font-semibold text-foreground">Sarah Jenkins (Energy Analyst)</div>
-                          <div className="text-[10px] text-muted-foreground">Backtesting & realized savings audit</div>
-                        </div>
-                      </div>
-                      {email === "sarah.jenkins@energyrisk.com" && (
                         <CheckCircle className="h-4 w-4 text-emerald-500" />
                       )}
                     </button>

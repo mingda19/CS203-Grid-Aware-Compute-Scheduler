@@ -21,7 +21,7 @@ public class User {
     private String fullName;
 
     @Column(nullable = false)
-    private String role = "Data Center Operations Manager";
+    private String role = "ROLE_USER";
 
     @Column(name = "is_verified", nullable = false)
     private boolean isVerified = false;
@@ -40,7 +40,9 @@ public class User {
         this.password = password;
         this.fullName = fullName;
         if (role != null && !role.trim().isEmpty()) {
-            this.role = role;
+            this.role = role.trim();
+        } else {
+            this.role = "ROLE_USER";
         }
     }
 

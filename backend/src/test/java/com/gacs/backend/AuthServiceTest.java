@@ -56,8 +56,7 @@ class AuthServiceTest {
         registerRequest = new RegisterRequest(
                 "elena.vance@datacenter.io",
                 "P@ssw0rd2026!",
-                "Elena Vance",
-                "Data Center Operations Manager"
+                "Elena Vance"
         );
     }
 
@@ -79,6 +78,7 @@ class AuthServiceTest {
         assertNotNull(savedUser);
         assertNotEquals("P@ssw0rd2026!", savedUser.getPassword());
         assertTrue(passwordEncoder.matches("P@ssw0rd2026!", savedUser.getPassword()));
+        assertEquals("ROLE_USER", savedUser.getRole());
         assertFalse(savedUser.isVerified());
 
         // Verify OTP was generated and saved

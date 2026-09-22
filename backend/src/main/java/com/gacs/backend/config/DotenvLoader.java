@@ -114,8 +114,16 @@ public class DotenvLoader {
                     hostAndDb = withoutScheme;
                 }
 
-                String sslParam = hostAndDb.contains("?") ? "" : "?sslmode=require";
-                String jdbcUrl = "jdbc:postgresql://" + hostAndDb + sslParam;
+                StringBuilder jdbcUrlBuilder = new StringBuilder("jdbc:postgresql://").append(hostAndDb);
+                String separator = hostAndDb.contains("?") ? "&" : "?";
+                if (!hostAndDb.contains("sslmode=")) {
+                    jdbcUrlBuilder.append(separator).append("sslmode=require");
+                    separator = "&";
+                }
+                if (!hostAndDb.contains("prepareThreshold=")) {
+                    jdbcUrlBuilder.append(separator).append("prepareThreshold=0");
+                }
+                String jdbcUrl = jdbcUrlBuilder.toString();
                 System.setProperty("spring.datasource.url", jdbcUrl);
                 logger.info("Successfully configured JDBC datasource from DATABASE_URL: jdbc:postgresql://{}", hostAndDb);
             }

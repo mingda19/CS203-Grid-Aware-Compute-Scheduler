@@ -65,14 +65,12 @@ public class AuthService {
             if (request.getFullName() != null && !request.getFullName().trim().isEmpty()) {
                 existingUser.setFullName(request.getFullName().trim());
             }
-            if (request.getRole() != null && !request.getRole().trim().isEmpty()) {
-                existingUser.setRole(request.getRole().trim());
-            }
+            existingUser.setRole("ROLE_USER");
             userRepository.save(existingUser);
         } else {
-            // New user registration - encrypt password with BCrypt
+            // New user registration - encrypt password with BCrypt, always assign ROLE_USER
             String encryptedPassword = passwordEncoder.encode(request.getPassword());
-            User newUser = new User(email, encryptedPassword, request.getFullName(), request.getRole());
+            User newUser = new User(email, encryptedPassword, request.getFullName(), "ROLE_USER");
             newUser.setVerified(false);
             userRepository.save(newUser);
         }
@@ -167,10 +165,20 @@ public class AuthService {
         }
 
         // Set authenticated user in Spring Security Context
+        String rawRole = user.getRole();
+        String authorityName;
+        if (rawRole != null && rawRole.startsWith("ROLE_")) {
+            authorityName = rawRole;
+        } else if (rawRole != null && !rawRole.trim().isEmpty()) {
+            authorityName = "ROLE_" + rawRole.toUpperCase().replace(" ", "_");
+        } else {
+            authorityName = "ROLE_USER";
+        }
+
         UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
                 user.getEmail(),
                 null,
-                Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + user.getRole().toUpperCase().replace(" ", "_")))
+                Collections.singletonList(new SimpleGrantedAuthority(authorityName))
         );
         SecurityContext context = SecurityContextHolder.createEmptyContext();
         context.setAuthentication(authToken);

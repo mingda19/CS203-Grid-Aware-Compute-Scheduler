@@ -16,16 +16,23 @@ public class RegisterRequest {
 
     private String fullName;
 
-    private String role = "Data Center Operations Manager";
+    private String role = "ROLE_USER";
 
     public RegisterRequest() {
+    }
+
+    public RegisterRequest(String email, String password, String fullName) {
+        this.email = email;
+        this.password = password;
+        this.fullName = fullName;
+        this.role = "ROLE_USER";
     }
 
     public RegisterRequest(String email, String password, String fullName, String role) {
         this.email = email;
         this.password = password;
         this.fullName = fullName;
-        this.role = role;
+        this.role = "ROLE_USER"; // Always enforce ROLE_USER on public registration
     }
 
     public String getEmail() {

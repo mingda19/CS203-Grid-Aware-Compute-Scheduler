@@ -52,11 +52,18 @@ public class UserDto {
         this.role = role;
     }
 
+    @com.fasterxml.jackson.annotation.JsonProperty("isVerified")
     public boolean isVerified() {
         return isVerified;
     }
 
+    @com.fasterxml.jackson.annotation.JsonProperty("isVerified")
     public void setVerified(boolean verified) {
-        isVerified = verified;
+        this.isVerified = verified;
+    }
+
+    @com.fasterxml.jackson.annotation.JsonProperty("verified")
+    public boolean getVerified() {
+        return isVerified;
     }
 }

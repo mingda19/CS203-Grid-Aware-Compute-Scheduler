@@ -3,7 +3,8 @@ export interface User {
   email: string
   fullName?: string
   role: string
-  isVerified: boolean
+  isVerified?: boolean
+  verified?: boolean
 }
 
 export interface AuthResponse {
@@ -51,7 +52,6 @@ export const authApi = {
     email: string
     password: string
     fullName?: string
-    role?: string
   }): Promise<AuthResponse> {
     return fetchJson<AuthResponse>("/register", {
       method: "POST",
@@ -83,6 +83,24 @@ export const authApi = {
   async logout(): Promise<ApiResponse<void>> {
     return fetchJson<ApiResponse<void>>("/logout", {
       method: "POST",
+    })
+  },
+}
+
+export const adminApi = {
+  async getAllUsers(): Promise<ApiResponse<User[]>> {
+    return fetchJson<ApiResponse<User[]>>("/api/admin/users", {
+      method: "GET",
+    })
+  },
+
+  async updateUserRole(
+    userId: number,
+    role: "ROLE_USER" | "ROLE_ADMIN"
+  ): Promise<ApiResponse<User>> {
+    return fetchJson<ApiResponse<User>>(`/api/admin/users/${userId}/role`, {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
     })
   },
 }
