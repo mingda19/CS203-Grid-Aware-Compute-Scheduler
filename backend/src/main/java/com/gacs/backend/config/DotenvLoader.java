@@ -68,12 +68,8 @@ public class DotenvLoader {
     }
 
     private static File findDotenvFile() {
-        File f1 = new File(".env");
-        if (f1.exists()) return f1;
-        File f2 = new File("backend/.env");
-        if (f2.exists()) return f2;
-        File f3 = new File("../backend/.env");
-        if (f3.exists()) return f3;
+        File f = new File("../.env");
+        if (f.exists()) return f;
         return null;
     }
 
