@@ -9,6 +9,7 @@ public class AuthResponse {
     private String accessToken;
     private String tokenType = "Bearer";
     private Long expiresIn;
+    private Long refreshExpiresIn;
 
     public AuthResponse() {
     }
@@ -23,6 +24,10 @@ public class AuthResponse {
     }
 
     public static AuthResponse successWithToken(String message, UserDto user, String accessToken, Long expiresIn) {
+        return successWithToken(message, user, accessToken, expiresIn, null);
+    }
+
+    public static AuthResponse successWithToken(String message, UserDto user, String accessToken, Long expiresIn, Long refreshExpiresIn) {
         AuthResponse resp = new AuthResponse();
         resp.success = true;
         resp.message = message;
@@ -30,6 +35,7 @@ public class AuthResponse {
         resp.accessToken = accessToken;
         resp.tokenType = "Bearer";
         resp.expiresIn = expiresIn;
+        resp.refreshExpiresIn = refreshExpiresIn;
         resp.requiresOtp = false;
         return resp;
     }
@@ -112,5 +118,13 @@ public class AuthResponse {
 
     public void setExpiresIn(Long expiresIn) {
         this.expiresIn = expiresIn;
+    }
+
+    public Long getRefreshExpiresIn() {
+        return refreshExpiresIn;
+    }
+
+    public void setRefreshExpiresIn(Long refreshExpiresIn) {
+        this.refreshExpiresIn = refreshExpiresIn;
     }
 }

@@ -103,7 +103,7 @@ class AuthControllerTest {
         user.setId(1L);
         user.setVerified(true);
         when(authService.login(any(LoginRequest.class), any(), any()))
-                .thenReturn(AuthResponse.successWithToken("Login successful", new UserDto(user), "mock.jwt.token", 900L));
+                .thenReturn(AuthResponse.successWithToken("Login successful", new UserDto(user), "mock.jwt.token", 900L, 1209600L));
 
         String payload = """
                 {
@@ -121,7 +121,8 @@ class AuthControllerTest {
                 .andExpect(jsonPath("$.user.email").value("elena@datacenter.io"))
                 .andExpect(jsonPath("$.accessToken").value("mock.jwt.token"))
                 .andExpect(jsonPath("$.tokenType").value("Bearer"))
-                .andExpect(jsonPath("$.expiresIn").value(900));
+                .andExpect(jsonPath("$.expiresIn").value(900))
+                .andExpect(jsonPath("$.refreshExpiresIn").value(1209600));
     }
 
     @Test
@@ -130,12 +131,13 @@ class AuthControllerTest {
         user.setId(1L);
         user.setVerified(true);
         when(authService.refreshToken(any(), any()))
-                .thenReturn(AuthResponse.successWithToken("Token refreshed successfully.", new UserDto(user), "new.mock.jwt.token", 900L));
+                .thenReturn(AuthResponse.successWithToken("Token refreshed successfully.", new UserDto(user), "new.mock.jwt.token", 900L, 1209600L));
 
         mockMvc.perform(post("/api/auth/refresh"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.accessToken").value("new.mock.jwt.token"));
+                .andExpect(jsonPath("$.accessToken").value("new.mock.jwt.token"))
+                .andExpect(jsonPath("$.refreshExpiresIn").value(1209600));
     }
 
     @Test

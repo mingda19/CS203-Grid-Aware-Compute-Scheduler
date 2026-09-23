@@ -29,10 +29,11 @@ public class JwtUtils {
     private SecretKey getSigningKey() {
         byte[] keyBytes = jwtSecret.getBytes(StandardCharsets.UTF_8);
         if (keyBytes.length < 32) {
-            // Pad or derive 256-bit key for HMAC-SHA256 compliance
-            byte[] paddedKey = new byte[32];
-            System.arraycopy(keyBytes, 0, paddedKey, 0, Math.min(keyBytes.length, 32));
-            return Keys.hmacShaKeyFor(paddedKey);
+            throw new IllegalStateException(
+                "JWT secret key is too short (" + keyBytes.length + " bytes). " +
+                "The 'security.jwt.secret-key' property must be at least 32 characters long " +
+                "to satisfy HMAC-SHA256 requirements."
+            );
         }
         return Keys.hmacShaKeyFor(keyBytes);
     }

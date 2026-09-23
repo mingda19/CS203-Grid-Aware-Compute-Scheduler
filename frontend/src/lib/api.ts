@@ -16,6 +16,7 @@ export interface AuthResponse {
   accessToken?: string
   tokenType?: string
   expiresIn?: number
+  refreshExpiresIn?: number
 }
 
 export interface ApiResponse<T = any> {
@@ -45,6 +46,25 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
     ...((options.headers as Record<string, string>) || {}),
   }
 
+  const isPublicAuthEndpoint =
+    endpoint.includes("/login") ||
+    endpoint.includes("/refresh") ||
+    endpoint.includes("/register") ||
+    endpoint.includes("/verify-otp") ||
+    endpoint.includes("/resend-otp")
+
+  // If in-memory access token is missing on a protected route, attempt restoring it from the HttpOnly cookie
+  if (!inMemoryAccessToken && !isPublicAuthEndpoint && typeof window !== "undefined") {
+    try {
+      const refreshed = await authApi.refreshToken()
+      if (refreshed.accessToken) {
+        setAccessToken(refreshed.accessToken)
+      }
+    } catch {
+      // Cookie might be expired or not present
+    }
+  }
+
   // Attach JWT Bearer token if available
   if (inMemoryAccessToken && !headers["Authorization"]) {
     headers["Authorization"] = `Bearer ${inMemoryAccessToken}`
@@ -55,6 +75,37 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
     headers,
     credentials: "include", // for HttpOnly refresh-token cookies
   })
+
+  // Automatic token refresh on 401 Unauthorized or 403 Forbidden for authenticated endpoints
+  if (
+    (response.status === 401 || response.status === 403) &&
+    !endpoint.includes("/login") &&
+    !endpoint.includes("/refresh") &&
+    !endpoint.includes("/register") &&
+    !endpoint.includes("/verify-otp") &&
+    !endpoint.includes("/resend-otp")
+  ) {
+    try {
+      const refreshed = await authApi.refreshToken()
+      if (refreshed.accessToken) {
+        setAccessToken(refreshed.accessToken)
+        headers["Authorization"] = `Bearer ${refreshed.accessToken}`
+        const retryResponse = await fetch(url, {
+          ...options,
+          headers,
+          credentials: "include",
+        })
+        const retryData = await retryResponse.json().catch(() => ({}))
+        if (!retryResponse.ok) {
+          const err = retryData?.message || `Request failed with status ${retryResponse.status}`
+          throw new Error(err)
+        }
+        return retryData as T
+      }
+    } catch {
+      // Refresh failed, proceed to handle original response error
+    }
+  }
 
   const data = await response.json().catch(() => ({}))
 
@@ -106,6 +157,11 @@ export const authApi = {
       setAccessToken(response.accessToken)
     }
 
+    // allows navigation to protected routes immediately after login
+    if (response.user) {
+      setStoredUser(response.user, response.refreshExpiresIn)
+    }
+
     return response
   },
 
@@ -116,6 +172,10 @@ export const authApi = {
 
     if (response.accessToken) {
       setAccessToken(response.accessToken)
+    }
+
+    if (response.user) {
+      setStoredUser(response.user, response.refreshExpiresIn)
     }
 
     return response
@@ -166,22 +226,26 @@ export function getStoredUser(): User | null {
   try {
     const raw = localStorage.getItem(USER_STORAGE_KEY)
     if (!raw) return null
-    const user = JSON.parse(raw)
+    const data = JSON.parse(raw)
+    const maxAge = data._maxAgeSeconds && data._maxAgeSeconds > 0 ? data._maxAgeSeconds : 86400
     // Synchronize cookie if missing so Next.js middleware knows the user is logged in
-    if (user && !document.cookie.includes(`${COOKIE_NAME}=true`)) {
-      document.cookie = `${COOKIE_NAME}=true; path=/; max-age=604800; SameSite=Lax`
+    if (data && !document.cookie.includes(`${COOKIE_NAME}=true`)) {
+      document.cookie = `${COOKIE_NAME}=true; path=/; max-age=${maxAge}; SameSite=Lax`
     }
-    return user
+    const { _maxAgeSeconds, ...user } = data
+    return user as User
   } catch {
     return null
   }
 }
 
-export function setStoredUser(user: User): void {
+export function setStoredUser(user: User, maxAgeSeconds?: number): void {
   if (typeof window === "undefined") return
   try {
-    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user))
-    document.cookie = `${COOKIE_NAME}=true; path=/; max-age=604800; SameSite=Lax`
+    const payload = { ...user, _maxAgeSeconds: maxAgeSeconds }
+    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(payload))
+    const maxAge = maxAgeSeconds && maxAgeSeconds > 0 ? maxAgeSeconds : 86400
+    document.cookie = `${COOKIE_NAME}=true; path=/; max-age=${maxAge}; SameSite=Lax`
   } catch {
     // Ignore storage quota errors
   }

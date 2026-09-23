@@ -58,6 +58,13 @@ export function AppShell({ children }: AppShellProps) {
     }
     setCurrentUser(user)
     setIsAuthChecking(false)
+
+    // Transparently hydrate / refresh in-memory JWT access token using HttpOnly cookie
+    authApi.refreshToken().catch(() => {
+      // If refresh fails (cookie expired or revoked), clear state and redirect
+      removeStoredUser()
+      router.push("/login")
+    })
   }, [router])
 
   const handleLogout = async () => {

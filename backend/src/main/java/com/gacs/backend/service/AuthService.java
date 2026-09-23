@@ -159,6 +159,10 @@ public class AuthService {
      * Issues a short-lived JWT Access Token (15 min) and a persistent Refresh Token in an HttpOnly cookie
      * (14 days if rememberMe is enabled, 24 hours otherwise).
      */
+    public AuthResponse login(LoginRequest request, HttpServletRequest httpRequest) {
+        return login(request, httpRequest, null);
+    }
+
     public AuthResponse login(LoginRequest request, HttpServletRequest httpRequest, HttpServletResponse httpResponse) {
         String email = request.getEmail().trim().toLowerCase();
 
@@ -213,22 +217,20 @@ public class AuthService {
 
         // Generate and persist Refresh Token (Remember-Me persistence)
         RefreshToken refreshToken = refreshTokenService.createRefreshToken(user, request.isRememberMe());
+        long refreshExpirySeconds = refreshTokenService.getExpirationSeconds(refreshToken.isRememberMe());
 
         // Set HttpOnly, Secure, SameSite=Lax cookie for the Refresh Token
         if (httpResponse != null) {
-            addRefreshTokenCookie(httpResponse, refreshToken.getToken(), refreshTokenService.getExpirationSeconds(refreshToken.isRememberMe()));
+            addRefreshTokenCookie(httpResponse, refreshToken.getToken(), refreshExpirySeconds);
         }
 
         return AuthResponse.successWithToken(
                 "Login successful.",
                 new UserDto(user),
                 accessToken,
-                jwtUtils.getJwtExpirationMs() / 1000
+                jwtUtils.getJwtExpirationMs() / 1000,
+                refreshExpirySeconds
         );
-    }
-
-    public AuthResponse login(LoginRequest request, HttpServletRequest httpRequest) {
-        return login(request, httpRequest, null);
     }
 
     /**
@@ -242,20 +244,22 @@ public class AuthService {
 
         RefreshToken rotatedToken = refreshTokenService.rotateRefreshToken(tokenStr);
         User user = rotatedToken.getUser();
+        long refreshExpirySeconds = refreshTokenService.getExpirationSeconds(rotatedToken.isRememberMe());
 
         // Issue fresh access token
         String newAccessToken = jwtUtils.generateAccessToken(user);
 
         // Update HttpOnly cookie with the new rotated refresh token
         if (httpResponse != null) {
-            addRefreshTokenCookie(httpResponse, rotatedToken.getToken(), refreshTokenService.getExpirationSeconds(rotatedToken.isRememberMe()));
+            addRefreshTokenCookie(httpResponse, rotatedToken.getToken(), refreshExpirySeconds);
         }
 
         return AuthResponse.successWithToken(
                 "Token refreshed successfully.",
                 new UserDto(user),
                 newAccessToken,
-                jwtUtils.getJwtExpirationMs() / 1000
+                jwtUtils.getJwtExpirationMs() / 1000,
+                refreshExpirySeconds
         );
     }
 
@@ -282,9 +286,6 @@ public class AuthService {
         return ApiResponse.ok("Logged out successfully.");
     }
 
-    public ApiResponse<Void> logout(HttpServletRequest httpRequest) {
-        return logout(httpRequest, null);
-    }
 
     /**
      * Retrieves the current user's profile from the authenticated email.
