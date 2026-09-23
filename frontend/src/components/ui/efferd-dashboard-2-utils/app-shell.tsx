@@ -48,10 +48,17 @@ export function AppShell({ children }: AppShellProps) {
   const [theme, setTheme] = React.useState<"light" | "dark">("dark")
   const [mobileOpen, setMobileOpen] = React.useState(false)
   const [currentUser, setCurrentUser] = React.useState<User | null>(null)
+  const [isAuthChecking, setIsAuthChecking] = React.useState(true)
 
   React.useEffect(() => {
-    setCurrentUser(getStoredUser())
-  }, [])
+    const user = getStoredUser()
+    if (!user) {
+      router.push("/login")
+      return
+    }
+    setCurrentUser(user)
+    setIsAuthChecking(false)
+  }, [router])
 
   const handleLogout = async () => {
     try {
@@ -218,6 +225,19 @@ export function AppShell({ children }: AppShellProps) {
       </div>
     </div>
   )
+
+  if (isAuthChecking) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-background text-foreground">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground animate-pulse">
+            Verifying Authentication...
+          </p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex min-h-screen bg-background">

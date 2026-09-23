@@ -5,11 +5,18 @@ import com.gacs.backend.model.OtpVerification;
 import com.gacs.backend.model.User;
 import com.gacs.backend.repository.OtpVerificationRepository;
 import com.gacs.backend.repository.UserRepository;
+import com.gacs.backend.model.RefreshToken;
+import com.gacs.backend.security.JwtUtils;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseCookie;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -44,6 +51,15 @@ public class AuthService {
 
     @Autowired
     private EmailService emailService;
+
+    @Autowired
+    private JwtUtils jwtUtils;
+
+    @Autowired
+    private RefreshTokenService refreshTokenService;
+
+    @Value("${security.jwt.cookie-secure:false}")
+    private boolean cookieSecure;
 
     /**
      * Registers a new user or refreshes registration for an unverified account.
@@ -140,8 +156,10 @@ public class AuthService {
 
     /**
      * Authenticates the user with BCrypt password verification and checks OTP status.
+     * Issues a short-lived JWT Access Token (15 min) and a persistent Refresh Token in an HttpOnly cookie
+     * (14 days if rememberMe is enabled, 24 hours otherwise).
      */
-    public AuthResponse login(LoginRequest request, HttpServletRequest httpRequest) {
+    public AuthResponse login(LoginRequest request, HttpServletRequest httpRequest, HttpServletResponse httpResponse) {
         String email = request.getEmail().trim().toLowerCase();
 
         User user = userRepository.findByEmail(email)
@@ -154,7 +172,6 @@ public class AuthService {
 
         // Check if account has completed OTP verification
         if (!user.isVerified()) {
-            // Generate and send a fresh OTP to help them verify
             String otpCode = generateAndSaveOtp(email);
             try {
                 emailService.sendOtpEmail(email, otpCode);
@@ -185,25 +202,131 @@ public class AuthService {
         SecurityContextHolder.setContext(context);
 
         if (httpRequest != null) {
-            HttpSession session = httpRequest.getSession(true);
-            session.setAttribute(HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY, context);
+            HttpSession session = httpRequest.getSession(false);
+            if (session != null) {
+                session.setAttribute(HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY, context);
+            }
         }
 
-        return AuthResponse.success("Login successful.", new UserDto(user));
+        // Generate JWT Access Token (15 min)
+        String accessToken = jwtUtils.generateAccessToken(user);
+
+        // Generate and persist Refresh Token (Remember-Me persistence)
+        RefreshToken refreshToken = refreshTokenService.createRefreshToken(user, request.isRememberMe());
+
+        // Set HttpOnly, Secure, SameSite=Lax cookie for the Refresh Token
+        if (httpResponse != null) {
+            addRefreshTokenCookie(httpResponse, refreshToken.getToken(), refreshTokenService.getExpirationSeconds(refreshToken.isRememberMe()));
+        }
+
+        return AuthResponse.successWithToken(
+                "Login successful.",
+                new UserDto(user),
+                accessToken,
+                jwtUtils.getJwtExpirationMs() / 1000
+        );
+    }
+
+    public AuthResponse login(LoginRequest request, HttpServletRequest httpRequest) {
+        return login(request, httpRequest, null);
     }
 
     /**
-     * Logs out the user by clearing SecurityContext and invalidating HTTP session.
+     * Rotates the refresh token and returns a fresh JWT access token.
      */
-    public ApiResponse<Void> logout(HttpServletRequest httpRequest) {
-        SecurityContextHolder.clearContext();
+    public AuthResponse refreshToken(HttpServletRequest httpRequest, HttpServletResponse httpResponse) {
+        String tokenStr = extractRefreshTokenFromCookie(httpRequest);
+        if (tokenStr == null || tokenStr.trim().isEmpty()) {
+            throw new BadCredentialsException("Refresh token cookie is missing.");
+        }
+
+        RefreshToken rotatedToken = refreshTokenService.rotateRefreshToken(tokenStr);
+        User user = rotatedToken.getUser();
+
+        // Issue fresh access token
+        String newAccessToken = jwtUtils.generateAccessToken(user);
+
+        // Update HttpOnly cookie with the new rotated refresh token
+        if (httpResponse != null) {
+            addRefreshTokenCookie(httpResponse, rotatedToken.getToken(), refreshTokenService.getExpirationSeconds(rotatedToken.isRememberMe()));
+        }
+
+        return AuthResponse.successWithToken(
+                "Token refreshed successfully.",
+                new UserDto(user),
+                newAccessToken,
+                jwtUtils.getJwtExpirationMs() / 1000
+        );
+    }
+
+    /**
+     * Logs out the user by revoking the refresh token, clearing cookie, and clearing SecurityContext.
+     */
+    public ApiResponse<Void> logout(HttpServletRequest httpRequest, HttpServletResponse httpResponse) {
         if (httpRequest != null) {
+            String tokenStr = extractRefreshTokenFromCookie(httpRequest);
+            if (tokenStr != null) {
+                refreshTokenService.revokeRefreshToken(tokenStr);
+            }
             HttpSession session = httpRequest.getSession(false);
             if (session != null) {
                 session.invalidate();
             }
         }
+
+        if (httpResponse != null) {
+            clearRefreshTokenCookie(httpResponse);
+        }
+
+        SecurityContextHolder.clearContext();
         return ApiResponse.ok("Logged out successfully.");
+    }
+
+    public ApiResponse<Void> logout(HttpServletRequest httpRequest) {
+        return logout(httpRequest, null);
+    }
+
+    /**
+     * Retrieves the current user's profile from the authenticated email.
+     */
+    public UserDto getCurrentUser(String email) {
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new IllegalArgumentException("User account not found."));
+        return new UserDto(user);
+    }
+
+    private void addRefreshTokenCookie(HttpServletResponse response, String refreshToken, long maxAgeSeconds) {
+        ResponseCookie cookie = ResponseCookie.from("refreshToken", refreshToken)
+                .httpOnly(true)
+                .secure(cookieSecure)
+                .path("/")
+                .maxAge(maxAgeSeconds)
+                .sameSite("Lax")
+                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+    }
+
+    private void clearRefreshTokenCookie(HttpServletResponse response) {
+        ResponseCookie cookie = ResponseCookie.from("refreshToken", "")
+                .httpOnly(true)
+                .secure(cookieSecure)
+                .path("/")
+                .maxAge(0)
+                .sameSite("Lax")
+                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+    }
+
+    private String extractRefreshTokenFromCookie(HttpServletRequest request) {
+        if (request == null || request.getCookies() == null) {
+            return null;
+        }
+        for (Cookie cookie : request.getCookies()) {
+            if ("refreshToken".equals(cookie.getName())) {
+                return cookie.getValue();
+            }
+        }
+        return null;
     }
 
     /**

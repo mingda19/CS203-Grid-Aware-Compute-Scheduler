@@ -24,7 +24,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { authApi, setStoredUser } from "@/lib/api"
+import { authApi, getStoredUser, setStoredUser } from "@/lib/api"
 
 type AuthMode = "login" | "register" | "verify-otp"
 
@@ -42,6 +42,14 @@ export default function LoginPage() {
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null)
   const [successMessage, setSuccessMessage] = React.useState<string | null>(null)
   const [resendCooldown, setResendCooldown] = React.useState(0)
+
+  // If already authenticated, redirect to dashboard
+  React.useEffect(() => {
+    const user = getStoredUser()
+    if (user) {
+      router.push("/")
+    }
+  }, [router])
 
   // Resend countdown timer
   React.useEffect(() => {

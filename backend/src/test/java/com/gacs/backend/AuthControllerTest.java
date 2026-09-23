@@ -8,17 +8,21 @@ import com.gacs.backend.dto.RegisterRequest;
 import com.gacs.backend.dto.UserDto;
 import com.gacs.backend.dto.VerifyOtpRequest;
 import com.gacs.backend.model.User;
+import com.gacs.backend.security.JwtAuthenticationFilter;
+import com.gacs.backend.security.JwtUtils;
 import com.gacs.backend.service.AuthService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -94,17 +98,18 @@ class AuthControllerTest {
     }
 
     @Test
-    void login_ShouldReturn200_WhenValid() throws Exception {
-        User user = new User("elena@datacenter.io", "encoded", "Elena Vance", "Operations Manager");
+    void login_ShouldReturn200AndJwtToken_WhenValid() throws Exception {
+        User user = new User("elena@datacenter.io", "encoded", "Elena Vance", "ROLE_USER");
         user.setId(1L);
         user.setVerified(true);
-        when(authService.login(any(LoginRequest.class), any()))
-                .thenReturn(AuthResponse.success("Login successful", new UserDto(user)));
+        when(authService.login(any(LoginRequest.class), any(), any()))
+                .thenReturn(AuthResponse.successWithToken("Login successful", new UserDto(user), "mock.jwt.token", 900L));
 
         String payload = """
                 {
                     "email": "elena@datacenter.io",
-                    "password": "Password123!"
+                    "password": "Password123!",
+                    "rememberMe": true
                 }
                 """;
 
@@ -113,12 +118,42 @@ class AuthControllerTest {
                         .content(payload))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.user.email").value("elena@datacenter.io"));
+                .andExpect(jsonPath("$.user.email").value("elena@datacenter.io"))
+                .andExpect(jsonPath("$.accessToken").value("mock.jwt.token"))
+                .andExpect(jsonPath("$.tokenType").value("Bearer"))
+                .andExpect(jsonPath("$.expiresIn").value(900));
+    }
+
+    @Test
+    void refreshToken_ShouldReturn200AndNewAccessToken() throws Exception {
+        User user = new User("elena@datacenter.io", "encoded", "Elena Vance", "ROLE_USER");
+        user.setId(1L);
+        user.setVerified(true);
+        when(authService.refreshToken(any(), any()))
+                .thenReturn(AuthResponse.successWithToken("Token refreshed successfully.", new UserDto(user), "new.mock.jwt.token", 900L));
+
+        mockMvc.perform(post("/api/auth/refresh"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.accessToken").value("new.mock.jwt.token"));
+    }
+
+    @Test
+    @WithMockUser(username = "elena@datacenter.io", roles = {"USER"})
+    void getCurrentUser_ShouldReturn200_WhenAuthenticated() throws Exception {
+        User user = new User("elena@datacenter.io", "encoded", "Elena Vance", "ROLE_USER");
+        user.setId(1L);
+        when(authService.getCurrentUser("elena@datacenter.io")).thenReturn(new UserDto(user));
+
+        mockMvc.perform(get("/api/auth/me"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.email").value("elena@datacenter.io"));
     }
 
     @Test
     void logout_ShouldReturn200() throws Exception {
-        when(authService.logout(any())).thenReturn(ApiResponse.ok("Logged out successfully."));
+        when(authService.logout(any(), any())).thenReturn(ApiResponse.ok("Logged out successfully."));
 
         mockMvc.perform(post("/logout"))
                 .andExpect(status().isOk())
