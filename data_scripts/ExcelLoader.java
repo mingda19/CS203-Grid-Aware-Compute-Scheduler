@@ -54,7 +54,7 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 public class ExcelLoader {
 
     // --- Fill these in once Postgres is actually provisioned. ---
-    private static final String DB_URL = "postgresql://postgres.uohlmgqkfxulvamevpoi:rt3i%3HqLK#G@3/@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres"; // e.g. "jdbc:postgresql://localhost:5432/gacs"
+    private static final String DB_URL = "";
     private static final String DB_USER = "";
     private static final String DB_PASSWORD = "";
 
