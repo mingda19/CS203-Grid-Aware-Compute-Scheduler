@@ -80,9 +80,7 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "EIA"
 # sub-components (RFO, DFO, WWW, WAS, SPV...). Summing everything double-counts.
 PRIMARY_FUELS = ["COL", "NG", "NUC", "SUN", "WND", "HYC", "GEO", "PET", "BIO", "OTH"]
 
-# --------------------------------------------------------------------------- #
 # HTTP
-# --------------------------------------------------------------------------- #
 
 def make_session() -> requests_cache.CachedSession:
     session = requests_cache.CachedSession(
@@ -125,9 +123,7 @@ def fetch_all(session, route: str, params: dict) -> list[dict]:
         offset += PAGE_SIZE
 
 
-# --------------------------------------------------------------------------- #
 # Fetchers: each returns a DataFrame with a `period` column plus values
-# --------------------------------------------------------------------------- #
 
 def fetch_gas_price(session, start: date, end: date) -> pd.DataFrame:
     rows = fetch_all(session, "natural-gas/pri/fut", {
@@ -193,9 +189,7 @@ def fetch_ercot_fuel_mix(session, start: date, end: date) -> pd.DataFrame:
     return mwh.add_suffix("_mwh").join(pct.add_suffix("_pct")).reset_index()
 
 
-# --------------------------------------------------------------------------- #
 # Dataset registry
-# --------------------------------------------------------------------------- #
 
 @dataclass
 class Dataset:
@@ -210,11 +204,6 @@ DATASETS = [
     Dataset("generation_mix", "electricity_generation.csv", fetch_generation_mix, 183),
     Dataset("ercot_fuel_mix", "ercot_fuel_mix_hourly.csv", fetch_ercot_fuel_mix, 3),
 ]
-
-
-# --------------------------------------------------------------------------- #
-# Merge + write
-# --------------------------------------------------------------------------- #
 
 def merge_into_csv(path: Path, new: pd.DataFrame) -> tuple[int, int]:
     """Merge `new` into the CSV at `path`. Returns (rows_added, total_rows)."""
