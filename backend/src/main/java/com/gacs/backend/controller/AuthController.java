@@ -3,9 +3,12 @@ package com.gacs.backend.controller;
 import com.gacs.backend.dto.*;
 import com.gacs.backend.service.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -47,20 +50,52 @@ public class AuthController {
     /**
      * User login endpoint.
      * Verifies credentials against BCrypt encrypted password and ensures account is verified.
+     * Returns a 15-minute JWT Access Token and sets a persistent Refresh Token in an HttpOnly cookie.
      */
     @PostMapping({"/login", "/api/auth/login"})
-    public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest) {
-        AuthResponse response = authService.login(request, httpRequest);
+    public ResponseEntity<AuthResponse> login(
+            @Valid @RequestBody LoginRequest request,
+            HttpServletRequest httpRequest,
+            HttpServletResponse httpResponse) {
+        AuthResponse response = authService.login(request, httpRequest, httpResponse);
         return ResponseEntity.ok(response);
     }
 
     /**
+     * Refresh token endpoint.
+     * Rotates the refresh token (remember-me session) and issues a fresh JWT access token.
+     */
+    @PostMapping({"/refresh", "/api/auth/refresh"})
+    public ResponseEntity<AuthResponse> refreshToken(
+            HttpServletRequest httpRequest,
+            HttpServletResponse httpResponse) {
+        AuthResponse response = authService.refreshToken(httpRequest, httpResponse);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Current authenticated user endpoint.
+     * Returns the user profile for the validated JWT access token.
+     */
+    @GetMapping({"/me", "/api/auth/me"})
+    public ResponseEntity<ApiResponse<UserDto>> getCurrentUser(Authentication authentication) {
+        if (authentication == null || !authentication.isAuthenticated() || "anonymousUser".equals(authentication.getPrincipal())) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(ApiResponse.error("Unauthorized: No active session."));
+        }
+        UserDto userDto = authService.getCurrentUser(authentication.getName());
+        return ResponseEntity.ok(ApiResponse.ok("User session is active.", userDto));
+    }
+
+    /**
      * User logout endpoint.
-     * Invalidates the active session and clears security context.
+     * Revokes the persistent refresh token, clears HttpOnly cookie, and clears security context.
      */
     @PostMapping({"/logout", "/api/auth/logout"})
-    public ResponseEntity<ApiResponse<Void>> logout(HttpServletRequest httpRequest) {
-        ApiResponse<Void> response = authService.logout(httpRequest);
+    public ResponseEntity<ApiResponse<Void>> logout(
+            HttpServletRequest httpRequest,
+            HttpServletResponse httpResponse) {
+        ApiResponse<Void> response = authService.logout(httpRequest, httpResponse);
         return ResponseEntity.ok(response);
     }
 }

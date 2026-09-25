@@ -5,5 +5,6 @@ data/
 data_scripts/.venv/
 data_scripts/__pycache__/
 data_scripts/.cache.sqlite
+data_scripts/lib/
 .DS_Store
 *.cache.sqlite
