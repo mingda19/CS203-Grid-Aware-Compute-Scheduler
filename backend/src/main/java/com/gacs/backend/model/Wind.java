@@ -11,7 +11,6 @@ import java.time.LocalDateTime;
 })
 @IdClass(WeatherKey.class)
 @Getter
-@Setter
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
