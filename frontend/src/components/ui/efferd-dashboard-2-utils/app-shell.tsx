@@ -20,6 +20,7 @@ import {
   Sparkles,
   LogOut,
   SlidersHorizontal,
+  HelpCircle,
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
@@ -49,6 +50,36 @@ export function AppShell({ children }: AppShellProps) {
   const [mobileOpen, setMobileOpen] = React.useState(false)
   const [currentUser, setCurrentUser] = React.useState<User | null>(null)
   const [isAuthChecking, setIsAuthChecking] = React.useState(true)
+  const [tourOpen, setTourOpen] = React.useState(false)
+  const [tourStep, setTourStep] = React.useState(0)
+
+  const tourSteps = [
+    {
+      title: "Your operations overview",
+      description: "This page brings together your energy conditions, compute activity, and estimated savings. Start here to see what is happening today.",
+      target: "overview",
+    },
+    {
+      title: "Review suggested changes",
+      description: "Pending approvals show schedule recommendations that need your review. Read the expected impact before approving or rejecting a change.",
+      target: "approvals",
+    },
+    {
+      title: "See your scheduled work",
+      description: "The workload scheduler lists compute jobs, their current status, and when they are planned to run. A schedule can move flexible work to a lower-cost time.",
+      target: "workloads",
+    },
+    {
+      title: "Understand the forecast",
+      description: "Price & Wind Forecast compares expected electricity prices with planned compute use. Higher bars or peaks indicate times when energy may cost more.",
+      target: "forecasts",
+    },
+    {
+      title: "You’re ready to explore",
+      description: "Use the menu on the left to move between areas. You can reopen this guide anytime with the help button at the top of the page.",
+      target: null,
+    },
+  ]
 
   React.useEffect(() => {
     const user = getStoredUser()
@@ -58,6 +89,12 @@ export function AppShell({ children }: AppShellProps) {
     }
     setCurrentUser(user)
     setIsAuthChecking(false)
+
+    const onboardingKey = `gacs-onboarding-complete:${user.email.toLowerCase()}`
+    if (window.localStorage.getItem(onboardingKey) !== "true") {
+      setTourStep(-1)
+      setTourOpen(true)
+    }
 
     // Transparently hydrate / refresh in-memory JWT access token using HttpOnly cookie
     authApi.refreshToken().catch(() => {
@@ -90,6 +127,21 @@ export function AppShell({ children }: AppShellProps) {
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"))
+  }
+
+  const closeTour = (completed: boolean) => {
+    setTourOpen(false)
+    if (completed && currentUser?.email) {
+      window.localStorage.setItem(`gacs-onboarding-complete:${currentUser.email.toLowerCase()}`, "true")
+    }
+  }
+
+  const goToTourStep = (nextStep: number) => {
+    setTourStep(nextStep)
+    const target = tourSteps[nextStep]?.target
+    if (target) {
+      window.setTimeout(() => document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50)
+    }
   }
 
   const navItems = [
@@ -306,6 +358,22 @@ export function AppShell({ children }: AppShellProps) {
             </Button>
 
             {/* Notifications */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9 text-muted-foreground hover:text-foreground"
+                    aria-label="Show dashboard guide"
+                    onClick={() => { setTourStep(-1); setTourOpen(true) }}
+                  >
+                    <HelpCircle className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Show dashboard guide</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
             <Button
               variant="ghost"
               size="icon"
@@ -333,6 +401,55 @@ export function AppShell({ children }: AppShellProps) {
             </Button>
           </div>
         </header>
+
+        {tourOpen && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" role="presentation">
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="onboarding-title"
+              aria-describedby="onboarding-description"
+              className="w-full max-w-lg rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl sm:p-8"
+            >
+              <div className="mb-5 flex items-center gap-2 text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                <Sparkles className="h-4 w-4" />
+                {tourStep < 0 ? "A quick tour" : `Step ${tourStep + 1} of ${tourSteps.length}`}
+              </div>
+              <h2 id="onboarding-title" className="text-xl font-bold tracking-tight">
+                {tourStep < 0 ? `Welcome${currentUser?.fullName ? `, ${currentUser.fullName.split(" ")[0]}` : ""}!` : tourSteps[tourStep].title}
+              </h2>
+              <p id="onboarding-description" className="mt-3 text-sm leading-6 text-muted-foreground">
+                {tourStep < 0
+                  ? "GACS helps you understand energy conditions and plan compute schedules. This short guide shows you where to find the key information."
+                  : tourSteps[tourStep].description}
+              </p>
+              <div className="mt-7 flex items-center justify-between gap-3">
+                <Button variant="ghost" onClick={() => closeTour(true)}>
+                  {tourStep < 0 ? "Explore on my own" : "Skip tour"}
+                </Button>
+                <div className="flex items-center gap-2">
+                  {tourStep >= 0 && tourStep > 0 && (
+                    <Button variant="outline" onClick={() => goToTourStep(tourStep - 1)}>Back</Button>
+                  )}
+                  <Button
+                    className="bg-emerald-600 text-white hover:bg-emerald-700"
+                    onClick={() => tourStep < 0 ? goToTourStep(0) : tourStep < tourSteps.length - 1 ? goToTourStep(tourStep + 1) : closeTour(true)}
+                  >
+                    {tourStep < 0 ? "Take the tour" : tourStep === tourSteps.length - 1 ? "Finish" : "Next"}
+                    <ChevronRight className="ml-1 h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+              {tourStep >= 0 && (
+                <div className="mt-5 flex justify-center gap-1.5" aria-label={`Step ${tourStep + 1} of ${tourSteps.length}`}>
+                  {tourSteps.map((step, index) => (
+                    <span key={step.title} className={`h-1.5 w-6 rounded-full ${index === tourStep ? "bg-emerald-500" : "bg-muted"}`} />
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        )}
 
         {/* Page Body */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-6">

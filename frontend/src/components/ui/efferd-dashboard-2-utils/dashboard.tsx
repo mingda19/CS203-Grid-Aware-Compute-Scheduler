@@ -272,7 +272,7 @@ export function Dashboard() {
   }
 
   return (
-    <div className="space-y-6">
+    <div id="overview" className="space-y-6 scroll-mt-20">
       <EndpointPipelineStatus />
       {/* Top Banner & Quick Status */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-gradient-to-r from-card to-card/60 p-6 rounded-2xl border border-border shadow-xs">

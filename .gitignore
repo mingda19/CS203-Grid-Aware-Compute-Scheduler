@@ -2,3 +2,6 @@ data/
 .env
 .agent
 .claude
+
+# Next.js build output in any app directory
+**/.next/
