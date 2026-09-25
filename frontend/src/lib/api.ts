@@ -25,6 +25,18 @@ export interface ApiResponse<T = any> {
   data?: T
 }
 
+export interface PricePoint {
+  intervalStartUtc: string
+  sppUsdMwh: number | null
+}
+
+export interface PriceHistory {
+  points: PricePoint[]
+  totalRecords: number
+  limit: number
+  offset: number
+}
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080"
 
 // In-memory access token storage (secure against XSS exfiltration from localStorage)
@@ -115,6 +127,19 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
   }
 
   return data as T
+}
+
+export const priceApi = {
+  getHistory(params: { location: string; startDate: string; endDate: string; limit?: number; offset?: number }): Promise<ApiResponse<PriceHistory>> {
+    const query = new URLSearchParams({
+      location: params.location,
+      startDate: params.startDate,
+      endDate: params.endDate,
+      limit: String(params.limit ?? 5000),
+      offset: String(params.offset ?? 0),
+    })
+    return fetchJson<ApiResponse<PriceHistory>>(`/api/prices/history?${query.toString()}`, { cache: "no-store" })
+  },
 }
 
 export const authApi = {
@@ -260,4 +285,3 @@ export function removeStoredUser(): void {
     // Ignore
   }
 }
-

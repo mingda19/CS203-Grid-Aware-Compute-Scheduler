@@ -24,16 +24,12 @@ import {
   ChevronRight,
 } from "lucide-react"
 import {
-  AreaChart,
-  Area,
   Line,
-  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
   ResponsiveContainer,
-  ComposedChart,
-  Tooltip as RechartsTooltip,
+  LineChart,
 } from "recharts"
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
@@ -55,39 +51,13 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
-
-// 24-hour ERCOT wholesale price and compute schedule dataset
-const forecastData = [
-  { time: "00:00", forecastPrice: 22.4, actualPrice: 21.8, scheduledMW: 4.8, baselineMW: 3.2, windGen: 72 },
-  { time: "02:00", forecastPrice: 16.5, actualPrice: 15.9, scheduledMW: 5.0, baselineMW: 3.2, windGen: 84 },
-  { time: "04:00", forecastPrice: 14.8, actualPrice: 14.2, scheduledMW: 5.0, baselineMW: 3.2, windGen: 89 },
-  { time: "06:00", forecastPrice: 24.1, actualPrice: 25.0, scheduledMW: 3.8, baselineMW: 3.5, windGen: 65 },
-  { time: "08:00", forecastPrice: 38.5, actualPrice: 37.1, scheduledMW: 2.1, baselineMW: 3.6, windGen: 45 },
-  { time: "10:00", forecastPrice: 29.2, actualPrice: 28.0, scheduledMW: 3.5, baselineMW: 3.4, windGen: 38 },
-  { time: "12:00", forecastPrice: 22.0, actualPrice: 23.4, scheduledMW: 4.2, baselineMW: 3.3, windGen: 30 },
-  { time: "14:00", forecastPrice: 26.7, actualPrice: 27.5, scheduledMW: 3.9, baselineMW: 3.2, windGen: 32 },
-  { time: "16:00", forecastPrice: 54.0, actualPrice: 58.2, scheduledMW: 2.2, baselineMW: 3.5, windGen: 28 },
-  { time: "18:00", forecastPrice: 142.5, actualPrice: null, scheduledMW: 0.8, baselineMW: 3.6, windGen: 22 }, // Extreme Peak avoided!
-  { time: "20:00", forecastPrice: 88.0, actualPrice: null, scheduledMW: 1.2, baselineMW: 3.5, windGen: 34 },
-  { time: "22:00", forecastPrice: 32.5, actualPrice: null, scheduledMW: 4.5, baselineMW: 3.2, windGen: 68 },
-]
+import { Input } from "@/components/ui/input"
+import { priceApi, type PricePoint } from "@/lib/api"
 
 const chartConfig = {
-  forecastPrice: {
-    label: "Forecast Price ($/MWh)",
-    color: "#f59e0b", // Amber
-  },
-  actualPrice: {
-    label: "Actual RT Price ($/MWh)",
+  price: {
+    label: "Actual Price ($/MWh)",
     color: "#10b981", // Emerald
-  },
-  scheduledMW: {
-    label: "Optimized Load (MW)",
-    color: "#3b82f6", // Blue
-  },
-  baselineMW: {
-    label: "Fixed Baseline (MW)",
-    color: "#94a3b8", // Slate
   },
 } satisfies ChartConfig
 
@@ -154,7 +124,51 @@ export function Dashboard() {
   const [workloads, setWorkloads] = React.useState<Workload[]>(initialWorkloads)
   const [planApproved, setPlanApproved] = React.useState(false)
   const [isRejecting, setIsRejecting] = React.useState(false)
-  const [activeMetricView, setActiveMetricView] = React.useState<"price" | "power" | "wind">("price")
+  const [dateRange, setDateRange] = React.useState(() => {
+    const end = new Date()
+    const start = new Date(end)
+    start.setUTCDate(start.getUTCDate() - 6)
+    return { startDate: start.toISOString().slice(0, 10), endDate: end.toISOString().slice(0, 10) }
+  })
+  const [pricePoints, setPricePoints] = React.useState<PricePoint[]>([])
+  const [pricesLoading, setPricesLoading] = React.useState(true)
+  const [pricesError, setPricesError] = React.useState<string | null>(null)
+  const [totalPriceRecords, setTotalPriceRecords] = React.useState(0)
+
+  React.useEffect(() => {
+    if (dateRange.startDate > dateRange.endDate) {
+      setPricePoints([])
+      setTotalPriceRecords(0)
+      setPricesError(null)
+      setPricesLoading(false)
+      return
+    }
+    let cancelled = false
+    setPricesLoading(true)
+    setPricesError(null)
+    priceApi.getHistory({ location: "LZ_NORTH", ...dateRange }).then((response) => {
+      if (cancelled) return
+      if (!response.success || !response.data) throw new Error(response.message || "Unable to load price history")
+      setPricePoints(response.data.points.filter((point) => point.sppUsdMwh != null))
+      setTotalPriceRecords(response.data.totalRecords)
+    }).catch((error: unknown) => {
+      if (!cancelled) setPricesError(error instanceof Error ? error.message : "Unable to load price history")
+    }).finally(() => {
+      if (!cancelled) setPricesLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [dateRange])
+
+  const chartPricePoints = React.useMemo(() => pricePoints.map((point) => {
+    const utcDate = new Date(`${point.intervalStartUtc}Z`)
+    return {
+      ...point,
+      price: point.sppUsdMwh,
+      time: utcDate.toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" }),
+    }
+  }), [pricePoints])
+
+  const dateRangeInvalid = dateRange.startDate > dateRange.endDate
 
   const handleApprovePlan = () => {
     setPlanApproved(true)
@@ -400,136 +414,55 @@ export function Dashboard() {
         </Card>
       </div>
 
-      {/* Main Chart Section: Price Forecast vs Workload Scheduling */}
+      {/* Historical LZ_NORTH price chart */}
       <Card id="forecasts" className="scroll-mt-20">
         <CardHeader>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
               <CardTitle className="text-lg font-bold flex items-center gap-2">
-                24-Hour ERCOT Electricity Price Curve & Compute Dispatch Plan
+                LZ_NORTH Historical Real-Time Price
               </CardTitle>
               <CardDescription className="text-xs mt-1">
-                Comparing forecasted wholesale LMP ($/MWh) against optimized flexible compute power (MW).
+                ERCOT settlement point prices in USD/MWh. Timestamps are shown in UTC.
               </CardDescription>
             </div>
-            <div className="flex items-center gap-2 text-xs">
-              <Button
-                variant={activeMetricView === "price" ? "default" : "outline"}
-                size="sm"
-                className="h-8 text-xs"
-                onClick={() => setActiveMetricView("price")}
-              >
-                Price vs Load
-              </Button>
-              <Button
-                variant={activeMetricView === "wind" ? "default" : "outline"}
-                size="sm"
-                className="h-8 text-xs"
-                onClick={() => setActiveMetricView("wind")}
-              >
-                Wind Generation %
-              </Button>
+            <div className="grid grid-cols-2 gap-3 sm:w-auto">
+              <label className="space-y-1 text-xs text-muted-foreground">
+                <span>Start date (UTC)</span>
+                <Input type="date" value={dateRange.startDate} max={dateRange.endDate} onChange={(event) => setDateRange((range) => ({ ...range, startDate: event.target.value }))} className="h-9" />
+              </label>
+              <label className="space-y-1 text-xs text-muted-foreground">
+                <span>End date (UTC)</span>
+                <Input type="date" value={dateRange.endDate} min={dateRange.startDate} max={new Date().toISOString().slice(0, 10)} onChange={(event) => setDateRange((range) => ({ ...range, endDate: event.target.value }))} className="h-9" />
+              </label>
             </div>
           </div>
         </CardHeader>
         <CardContent>
-          <ChartContainer config={chartConfig} className="h-72 sm:h-96 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={forecastData} margin={{ top: 20, right: 20, left: -10, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" opacity={0.2} vertical={false} />
-                <XAxis
-                  dataKey="time"
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={8}
-                  style={{ fontSize: "11px" }}
-                />
-                <YAxis
-                  yAxisId="left"
-                  orientation="left"
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={8}
-                  tickFormatter={(val) => `$${val}`}
-                  style={{ fontSize: "11px" }}
-                />
-                <YAxis
-                  yAxisId="right"
-                  orientation="right"
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={8}
-                  tickFormatter={(val) => `${val} MW`}
-                  style={{ fontSize: "11px" }}
-                />
-                <ChartTooltip content={<ChartTooltipContent indicator="dot" />} />
-                
-                {/* Visual Area for Cheap Nighttime Energy Valley */}
-                <Area
-                  yAxisId="left"
-                  type="monotone"
-                  dataKey="forecastPrice"
-                  fill="#f59e0b"
-                  fillOpacity={0.15}
-                  stroke="#f59e0b"
-                  strokeWidth={2}
-                  name="Forecast Price ($/MWh)"
-                />
-
-                {/* Actual Real-Time price points recorded so far */}
-                <Line
-                  yAxisId="left"
-                  type="monotone"
-                  dataKey="actualPrice"
-                  stroke="#10b981"
-                  strokeWidth={3}
-                  dot={{ r: 4, fill: "#10b981" }}
-                  name="Actual RT Price ($/MWh)"
-                />
-
-                {/* Optimized Scheduled Load in MW */}
-                <Bar
-                  yAxisId="right"
-                  dataKey="scheduledMW"
-                  fill="#3b82f6"
-                  radius={[4, 4, 0, 0]}
-                  fillOpacity={0.7}
-                  name="Optimized Load (MW)"
-                />
-
-                {/* Fixed Baseline Comparison */}
-                <Line
-                  yAxisId="right"
-                  type="stepAfter"
-                  dataKey="baselineMW"
-                  stroke="#94a3b8"
-                  strokeWidth={1.5}
-                  strokeDasharray="4 4"
-                  dot={false}
-                  name="Fixed Baseline (MW)"
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </ChartContainer>
-
-          <div className="flex flex-wrap items-center justify-center gap-6 mt-4 pt-4 border-t border-border text-xs text-muted-foreground">
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 rounded-full bg-amber-500" />
-              <span>Forecasted Price ($/MWh)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 rounded-full bg-emerald-500" />
-              <span>Recorded Actual Price ($/MWh)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 rounded-md bg-blue-500" />
-              <span>Optimized Workload Power (MW)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="h-1 w-4 bg-slate-400 border-dashed" />
-              <span>Unresponsive Baseline (MW)</span>
-            </div>
-          </div>
+          {dateRangeInvalid ? (
+            <p role="alert" className="py-12 text-center text-sm text-destructive">Start date must be on or before end date.</p>
+          ) : pricesLoading ? (
+            <p role="status" className="py-12 text-center text-sm text-muted-foreground">Loading LZ_NORTH price history…</p>
+          ) : pricesError ? (
+            <p role="alert" className="py-12 text-center text-sm text-destructive">Could not load price history: {pricesError}</p>
+          ) : chartPricePoints.length === 0 ? (
+            <p className="py-12 text-center text-sm text-muted-foreground">No LZ_NORTH price records found for the selected dates.</p>
+          ) : (
+            <ChartContainer config={chartConfig} className="h-72 sm:h-96 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartPricePoints} margin={{ top: 16, right: 18, left: 0, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.2} vertical={false} />
+                  <XAxis dataKey="time" tickLine={false} axisLine={false} tickMargin={8} minTickGap={36} style={{ fontSize: "11px" }} />
+                  <YAxis tickLine={false} axisLine={false} tickMargin={8} tickFormatter={(value) => `$${value}`} style={{ fontSize: "11px" }} />
+                  <ChartTooltip content={<ChartTooltipContent indicator="dot" />} />
+                  <Line type="monotone" dataKey="price" stroke="#10b981" strokeWidth={2} dot={false} activeDot={{ r: 4 }} name="Actual Price ($/MWh)" connectNulls={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartContainer>
+          )}
+          {!dateRangeInvalid && !pricesLoading && !pricesError && totalPriceRecords > pricePoints.length && (
+            <p className="mt-3 text-center text-xs text-muted-foreground">Showing {pricePoints.length.toLocaleString()} of {totalPriceRecords.toLocaleString()} records. Narrow the date range to view all intervals.</p>
+          )}
         </CardContent>
       </Card>
 
