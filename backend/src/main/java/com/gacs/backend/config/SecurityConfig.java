@@ -51,6 +51,8 @@ public class SecurityConfig {
                                 "/logout",
                                 "/api/auth/**",
                                 "/error",
+                                "/health",
+                                "/api/health",
                                 "/actuator/**"
                         ).permitAll()
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")

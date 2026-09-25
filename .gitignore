@@ -2,9 +2,11 @@ data/
 .env
 .agent
 .claude
-data_scripts/.venv/
-data_scripts/__pycache__/
-data_scripts/.cache.sqlite
 
 __pycache__/
 .pytest_cache/
+.DS_Store
+*.cache.sqlite
+
+data_scripts/.venv/
+data_scripts/.cache.sqlite
