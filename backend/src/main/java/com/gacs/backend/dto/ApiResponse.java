@@ -31,6 +31,10 @@ public class ApiResponse<T> {
         return new ApiResponse<>(false, message);
     }
 
+    public static <T> ApiResponse<T> error(String message) {
+        return new ApiResponse<>(false, message);
+    }
+
     public boolean isSuccess() {
         return success;
     }

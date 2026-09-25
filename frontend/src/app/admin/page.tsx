@@ -160,6 +160,20 @@ export default function AdminPage() {
   const totalOperators = users.filter((u) => u.role !== "ROLE_ADMIN").length
   const totalVerified = users.filter((u) => Boolean(u.isVerified ?? u.verified)).length
 
+  // Loading / Auth Verification screen
+  if (isAuthorized === null) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground animate-pulse">
+            Verifying Admin Authorization...
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   // Unauthorized screen
   if (isAuthorized === false) {
     return (

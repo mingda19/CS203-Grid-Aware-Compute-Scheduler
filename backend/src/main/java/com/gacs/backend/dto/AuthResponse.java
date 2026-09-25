@@ -6,6 +6,10 @@ public class AuthResponse {
     private UserDto user;
     private boolean requiresOtp;
     private String email;
+    private String accessToken;
+    private String tokenType = "Bearer";
+    private Long expiresIn;
+    private Long refreshExpiresIn;
 
     public AuthResponse() {
     }
@@ -15,6 +19,23 @@ public class AuthResponse {
         resp.success = true;
         resp.message = message;
         resp.user = user;
+        resp.requiresOtp = false;
+        return resp;
+    }
+
+    public static AuthResponse successWithToken(String message, UserDto user, String accessToken, Long expiresIn) {
+        return successWithToken(message, user, accessToken, expiresIn, null);
+    }
+
+    public static AuthResponse successWithToken(String message, UserDto user, String accessToken, Long expiresIn, Long refreshExpiresIn) {
+        AuthResponse resp = new AuthResponse();
+        resp.success = true;
+        resp.message = message;
+        resp.user = user;
+        resp.accessToken = accessToken;
+        resp.tokenType = "Bearer";
+        resp.expiresIn = expiresIn;
+        resp.refreshExpiresIn = refreshExpiresIn;
         resp.requiresOtp = false;
         return resp;
     }
@@ -73,5 +94,37 @@ public class AuthResponse {
 
     public void setEmail(String email) {
         this.email = email;
+    }
+
+    public String getAccessToken() {
+        return accessToken;
+    }
+
+    public void setAccessToken(String accessToken) {
+        this.accessToken = accessToken;
+    }
+
+    public String getTokenType() {
+        return tokenType;
+    }
+
+    public void setTokenType(String tokenType) {
+        this.tokenType = tokenType;
+    }
+
+    public Long getExpiresIn() {
+        return expiresIn;
+    }
+
+    public void setExpiresIn(Long expiresIn) {
+        this.expiresIn = expiresIn;
+    }
+
+    public Long getRefreshExpiresIn() {
+        return refreshExpiresIn;
+    }
+
+    public void setRefreshExpiresIn(Long refreshExpiresIn) {
+        this.refreshExpiresIn = refreshExpiresIn;
     }
 }
