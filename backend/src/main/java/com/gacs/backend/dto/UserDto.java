@@ -1,12 +1,24 @@
 package com.gacs.backend.dto;
 
 import com.gacs.backend.model.User;
+import io.swagger.v3.oas.annotations.media.Schema;
 
+@Schema(description = "User account profile representation")
 public class UserDto {
+
+    @Schema(description = "Unique numeric identifier of the user", example = "1")
     private Long id;
+
+    @Schema(description = "User's registered email address", example = "operator@datacenter.io")
     private String email;
+
+    @Schema(description = "User's full display name", example = "Alex Morgan")
     private String fullName;
+
+    @Schema(description = "Assigned security role authority", example = "ROLE_USER", allowableValues = {"ROLE_USER", "ROLE_ADMIN"})
     private String role;
+
+    @Schema(description = "Indicates whether the account has verified email ownership via OTP", example = "true")
     private boolean isVerified;
 
     public UserDto() {

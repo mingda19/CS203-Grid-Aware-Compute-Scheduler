@@ -1,8 +1,17 @@
 package com.gacs.backend.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
+@Schema(description = "Standard generic API response envelope wrapper")
 public class ApiResponse<T> {
+
+    @Schema(description = "Indicates whether the requested operation succeeded", example = "true")
     private boolean success;
+
+    @Schema(description = "Human-readable status or informational message", example = "Operation completed successfully")
     private String message;
+
+    @Schema(description = "Payload data returned by the operation")
     private T data;
 
     public ApiResponse() {

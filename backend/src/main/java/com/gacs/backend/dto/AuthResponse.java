@@ -1,14 +1,35 @@
 package com.gacs.backend.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
+@Schema(description = "Authentication response payload containing JWT access tokens, expiry information, and profile")
 public class AuthResponse {
+
+    @Schema(description = "Whether the authentication request was successful", example = "true")
     private boolean success;
+
+    @Schema(description = "Descriptive outcome message", example = "Login successful.")
     private String message;
+
+    @Schema(description = "User profile object (returned on successful authentication)")
     private UserDto user;
+
+    @Schema(description = "Set to true if account registration/login requires email OTP verification before granting session tokens", example = "false")
     private boolean requiresOtp;
+
+    @Schema(description = "Email address associated with the authentication or pending OTP verification", example = "operator@datacenter.io")
     private String email;
+
+    @Schema(description = "Stateless signed JWT Bearer access token valid for 15 minutes", example = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvckBkYXRhY2VudGVyLmlvIiwidXNlcklkIjoxLCJyb2xlIjoiUk9MRV9VU0VSIiwiZXhwIjoxNzg5MDAwMDAwfQ...")
     private String accessToken;
+
+    @Schema(description = "Token type prefix for HTTP Authorization header", example = "Bearer")
     private String tokenType = "Bearer";
+
+    @Schema(description = "Access token time-to-live in seconds (900s = 15 minutes)", example = "900")
     private Long expiresIn;
+
+    @Schema(description = "Refresh token cookie time-to-live in seconds (86400s standard, 1209600s remember-me)", example = "86400")
     private Long refreshExpiresIn;
 
     public AuthResponse() {
