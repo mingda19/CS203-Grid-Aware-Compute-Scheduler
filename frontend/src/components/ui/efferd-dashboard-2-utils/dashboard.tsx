@@ -2,6 +2,8 @@
 
 import * as React from "react"
 import {
+  Activity,
+  AlertCircle,
   Zap,
   TrendingDown,
   TrendingUp,
@@ -22,18 +24,17 @@ import {
   Sparkles,
   Layers,
   ChevronRight,
+  CircleDashed,
+  RefreshCw,
+  XCircle,
 } from "lucide-react"
 import {
-  AreaChart,
-  Area,
   Line,
-  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
   ResponsiveContainer,
-  ComposedChart,
-  Tooltip as RechartsTooltip,
+  LineChart,
 } from "recharts"
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
@@ -55,39 +56,13 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
-
-// 24-hour ERCOT wholesale price and compute schedule dataset
-const forecastData = [
-  { time: "00:00", forecastPrice: 22.4, actualPrice: 21.8, scheduledMW: 4.8, baselineMW: 3.2, windGen: 72 },
-  { time: "02:00", forecastPrice: 16.5, actualPrice: 15.9, scheduledMW: 5.0, baselineMW: 3.2, windGen: 84 },
-  { time: "04:00", forecastPrice: 14.8, actualPrice: 14.2, scheduledMW: 5.0, baselineMW: 3.2, windGen: 89 },
-  { time: "06:00", forecastPrice: 24.1, actualPrice: 25.0, scheduledMW: 3.8, baselineMW: 3.5, windGen: 65 },
-  { time: "08:00", forecastPrice: 38.5, actualPrice: 37.1, scheduledMW: 2.1, baselineMW: 3.6, windGen: 45 },
-  { time: "10:00", forecastPrice: 29.2, actualPrice: 28.0, scheduledMW: 3.5, baselineMW: 3.4, windGen: 38 },
-  { time: "12:00", forecastPrice: 22.0, actualPrice: 23.4, scheduledMW: 4.2, baselineMW: 3.3, windGen: 30 },
-  { time: "14:00", forecastPrice: 26.7, actualPrice: 27.5, scheduledMW: 3.9, baselineMW: 3.2, windGen: 32 },
-  { time: "16:00", forecastPrice: 54.0, actualPrice: 58.2, scheduledMW: 2.2, baselineMW: 3.5, windGen: 28 },
-  { time: "18:00", forecastPrice: 142.5, actualPrice: null, scheduledMW: 0.8, baselineMW: 3.6, windGen: 22 }, // Extreme Peak avoided!
-  { time: "20:00", forecastPrice: 88.0, actualPrice: null, scheduledMW: 1.2, baselineMW: 3.5, windGen: 34 },
-  { time: "22:00", forecastPrice: 32.5, actualPrice: null, scheduledMW: 4.5, baselineMW: 3.2, windGen: 68 },
-]
+import { Input } from "@/components/ui/input"
+import { priceApi, type PricePoint } from "@/lib/api"
 
 const chartConfig = {
-  forecastPrice: {
-    label: "Forecast Price ($/MWh)",
-    color: "#f59e0b", // Amber
-  },
-  actualPrice: {
-    label: "Actual RT Price ($/MWh)",
+  price: {
+    label: "Actual Price ($/MWh)",
     color: "#10b981", // Emerald
-  },
-  scheduledMW: {
-    label: "Optimized Load (MW)",
-    color: "#3b82f6", // Blue
-  },
-  baselineMW: {
-    label: "Fixed Baseline (MW)",
-    color: "#94a3b8", // Slate
   },
 } satisfies ChartConfig
 
@@ -101,6 +76,98 @@ interface Workload {
   savings: string
   status: "Scheduled" | "Running" | "Throttled" | "Completed"
   machineCluster: string
+}
+
+type EndpointState = "checking" | "online" | "offline"
+type EndpointCheck = { name: string; path: string; state: EndpointState; latency?: number }
+
+const monitoredEndpoints = [
+  { name: "Authentication API", path: "/api/auth/me" },
+  { name: "Admin API", path: "/api/admin/users" },
+]
+const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080"
+
+function EndpointPipelineStatus() {
+  const [checks, setChecks] = React.useState<EndpointCheck[]>(monitoredEndpoints.map((item) => ({ ...item, state: "checking" as const })))
+  const [lastChecked, setLastChecked] = React.useState<Date | null>(null)
+  const [refreshing, setRefreshing] = React.useState(false)
+
+  const refresh = React.useCallback(async () => {
+    setRefreshing(true)
+    setChecks(monitoredEndpoints.map((item) => ({ ...item, state: "checking" as const })))
+    const next = await Promise.all(monitoredEndpoints.map(async (item): Promise<EndpointCheck> => {
+      const started = performance.now()
+      try {
+        const response = await fetch(`${apiBase}${item.path}`, { credentials: "include", cache: "no-store" })
+        return {
+          ...item,
+          // These endpoints require authentication; 401/403 still confirms the API is reachable.
+          state: response.ok || response.status === 401 || response.status === 403 ? "online" : "offline",
+          latency: Math.round(performance.now() - started),
+        }
+      } catch {
+        return { ...item, state: "offline", latency: Math.round(performance.now() - started) }
+      }
+    }))
+    setChecks(next)
+    setLastChecked(new Date())
+    setRefreshing(false)
+  }, [])
+
+  React.useEffect(() => {
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 30_000)
+    return () => window.clearInterval(timer)
+  }, [refresh])
+
+  const onlineCount = checks.filter((check) => check.state === "online").length
+  const pipelineStages = ["Grid data ingestion", "Forecast generation", "Workload optimization", "Schedule dispatch"]
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <CardTitle className="flex items-center gap-2"><Activity className="h-4 w-4 text-emerald-500" />Pipeline & endpoint status</CardTitle>
+          <CardDescription className="mt-1">Backend connectivity checks and pipeline telemetry availability.</CardDescription>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={refreshing} className="gap-2">
+          <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh
+        </Button>
+      </CardHeader>
+      <CardContent className="grid gap-5 lg:grid-cols-2">
+        <div className="space-y-3">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-semibold uppercase tracking-wider text-muted-foreground">API endpoints</span>
+            <span className="text-muted-foreground">{onlineCount}/{checks.length} reachable</span>
+          </div>
+          {checks.map((check) => (
+            <div key={check.path} className="flex items-center justify-between rounded-lg border border-border/70 px-3 py-2.5">
+              <div className="flex items-center gap-2.5">
+                {check.state === "checking" ? <CircleDashed className="h-4 w-4 animate-spin text-muted-foreground" /> : check.state === "online" ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> : <XCircle className="h-4 w-4 text-red-500" />}
+                <div><p className="text-sm font-medium">{check.name}</p><code className="text-[11px] text-muted-foreground">{check.path}</code></div>
+              </div>
+              <span className="text-xs text-muted-foreground">{check.state === "checking" ? "Checking" : check.state === "online" ? `${check.latency} ms` : "Offline"}</span>
+            </div>
+          ))}
+          <p className="text-[11px] text-muted-foreground">Last checked {lastChecked?.toLocaleTimeString() ?? "—"} · auto refresh 30 sec</p>
+        </div>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-semibold uppercase tracking-wider text-muted-foreground">Pipeline stages</span>
+            <span className="inline-flex items-center gap-1 text-amber-500"><AlertCircle className="h-3.5 w-3.5" />No telemetry API</span>
+          </div>
+          {pipelineStages.map((stage, index) => (
+            <div key={stage} className="flex items-center gap-2.5 rounded-lg border border-border/70 px-3 py-2.5">
+              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[10px] text-muted-foreground">{index + 1}</span>
+              <span className="text-sm">{stage}</span>
+              <span className="ml-auto text-[11px] text-muted-foreground">No status data</span>
+            </div>
+          ))}
+          <p className="text-[11px] text-muted-foreground">Pipeline status will appear when execution health endpoints are available.</p>
+        </div>
+      </CardContent>
+    </Card>
+  )
 }
 
 const initialWorkloads: Workload[] = [
@@ -154,7 +221,51 @@ export function Dashboard() {
   const [workloads, setWorkloads] = React.useState<Workload[]>(initialWorkloads)
   const [planApproved, setPlanApproved] = React.useState(false)
   const [isRejecting, setIsRejecting] = React.useState(false)
-  const [activeMetricView, setActiveMetricView] = React.useState<"price" | "power" | "wind">("price")
+  const [dateRange, setDateRange] = React.useState(() => {
+    const end = new Date()
+    const start = new Date(end)
+    start.setUTCDate(start.getUTCDate() - 6)
+    return { startDate: start.toISOString().slice(0, 10), endDate: end.toISOString().slice(0, 10) }
+  })
+  const [pricePoints, setPricePoints] = React.useState<PricePoint[]>([])
+  const [pricesLoading, setPricesLoading] = React.useState(true)
+  const [pricesError, setPricesError] = React.useState<string | null>(null)
+  const [totalPriceRecords, setTotalPriceRecords] = React.useState(0)
+
+  React.useEffect(() => {
+    if (dateRange.startDate > dateRange.endDate) {
+      setPricePoints([])
+      setTotalPriceRecords(0)
+      setPricesError(null)
+      setPricesLoading(false)
+      return
+    }
+    let cancelled = false
+    setPricesLoading(true)
+    setPricesError(null)
+    priceApi.getHistory({ location: "LZ_NORTH", ...dateRange }).then((response) => {
+      if (cancelled) return
+      if (!response.success || !response.data) throw new Error(response.message || "Unable to load price history")
+      setPricePoints(response.data.points.filter((point) => point.sppUsdMwh != null))
+      setTotalPriceRecords(response.data.totalRecords)
+    }).catch((error: unknown) => {
+      if (!cancelled) setPricesError(error instanceof Error ? error.message : "Unable to load price history")
+    }).finally(() => {
+      if (!cancelled) setPricesLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [dateRange])
+
+  const chartPricePoints = React.useMemo(() => pricePoints.map((point) => {
+    const utcDate = new Date(`${point.intervalStartUtc}Z`)
+    return {
+      ...point,
+      price: point.sppUsdMwh,
+      time: utcDate.toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" }),
+    }
+  }), [pricePoints])
+
+  const dateRangeInvalid = dateRange.startDate > dateRange.endDate
 
   const handleApprovePlan = () => {
     setPlanApproved(true)
@@ -176,6 +287,7 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
+      <EndpointPipelineStatus />
       {/* Top Banner & Quick Status */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-gradient-to-r from-card to-card/60 p-6 rounded-2xl border border-border shadow-xs">
         <div className="space-y-1">
@@ -400,136 +512,55 @@ export function Dashboard() {
         </Card>
       </div>
 
-      {/* Main Chart Section: Price Forecast vs Workload Scheduling */}
+      {/* Historical LZ_NORTH price chart */}
       <Card id="forecasts" className="scroll-mt-20">
         <CardHeader>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
               <CardTitle className="text-lg font-bold flex items-center gap-2">
-                24-Hour ERCOT Electricity Price Curve & Compute Dispatch Plan
+                LZ_NORTH Historical Real-Time Price
               </CardTitle>
               <CardDescription className="text-xs mt-1">
-                Comparing forecasted wholesale LMP ($/MWh) against optimized flexible compute power (MW).
+                ERCOT settlement point prices in USD/MWh. Timestamps are shown in UTC.
               </CardDescription>
             </div>
-            <div className="flex items-center gap-2 text-xs">
-              <Button
-                variant={activeMetricView === "price" ? "default" : "outline"}
-                size="sm"
-                className="h-8 text-xs"
-                onClick={() => setActiveMetricView("price")}
-              >
-                Price vs Load
-              </Button>
-              <Button
-                variant={activeMetricView === "wind" ? "default" : "outline"}
-                size="sm"
-                className="h-8 text-xs"
-                onClick={() => setActiveMetricView("wind")}
-              >
-                Wind Generation %
-              </Button>
+            <div className="grid grid-cols-2 gap-3 sm:w-auto">
+              <label className="space-y-1 text-xs text-muted-foreground">
+                <span>Start date (UTC)</span>
+                <Input type="date" value={dateRange.startDate} max={dateRange.endDate} onChange={(event) => setDateRange((range) => ({ ...range, startDate: event.target.value }))} className="h-9" />
+              </label>
+              <label className="space-y-1 text-xs text-muted-foreground">
+                <span>End date (UTC)</span>
+                <Input type="date" value={dateRange.endDate} min={dateRange.startDate} max={new Date().toISOString().slice(0, 10)} onChange={(event) => setDateRange((range) => ({ ...range, endDate: event.target.value }))} className="h-9" />
+              </label>
             </div>
           </div>
         </CardHeader>
         <CardContent>
-          <ChartContainer config={chartConfig} className="h-72 sm:h-96 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={forecastData} margin={{ top: 20, right: 20, left: -10, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" opacity={0.2} vertical={false} />
-                <XAxis
-                  dataKey="time"
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={8}
-                  style={{ fontSize: "11px" }}
-                />
-                <YAxis
-                  yAxisId="left"
-                  orientation="left"
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={8}
-                  tickFormatter={(val) => `$${val}`}
-                  style={{ fontSize: "11px" }}
-                />
-                <YAxis
-                  yAxisId="right"
-                  orientation="right"
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={8}
-                  tickFormatter={(val) => `${val} MW`}
-                  style={{ fontSize: "11px" }}
-                />
-                <ChartTooltip content={<ChartTooltipContent indicator="dot" />} />
-                
-                {/* Visual Area for Cheap Nighttime Energy Valley */}
-                <Area
-                  yAxisId="left"
-                  type="monotone"
-                  dataKey="forecastPrice"
-                  fill="#f59e0b"
-                  fillOpacity={0.15}
-                  stroke="#f59e0b"
-                  strokeWidth={2}
-                  name="Forecast Price ($/MWh)"
-                />
-
-                {/* Actual Real-Time price points recorded so far */}
-                <Line
-                  yAxisId="left"
-                  type="monotone"
-                  dataKey="actualPrice"
-                  stroke="#10b981"
-                  strokeWidth={3}
-                  dot={{ r: 4, fill: "#10b981" }}
-                  name="Actual RT Price ($/MWh)"
-                />
-
-                {/* Optimized Scheduled Load in MW */}
-                <Bar
-                  yAxisId="right"
-                  dataKey="scheduledMW"
-                  fill="#3b82f6"
-                  radius={[4, 4, 0, 0]}
-                  fillOpacity={0.7}
-                  name="Optimized Load (MW)"
-                />
-
-                {/* Fixed Baseline Comparison */}
-                <Line
-                  yAxisId="right"
-                  type="stepAfter"
-                  dataKey="baselineMW"
-                  stroke="#94a3b8"
-                  strokeWidth={1.5}
-                  strokeDasharray="4 4"
-                  dot={false}
-                  name="Fixed Baseline (MW)"
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </ChartContainer>
-
-          <div className="flex flex-wrap items-center justify-center gap-6 mt-4 pt-4 border-t border-border text-xs text-muted-foreground">
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 rounded-full bg-amber-500" />
-              <span>Forecasted Price ($/MWh)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 rounded-full bg-emerald-500" />
-              <span>Recorded Actual Price ($/MWh)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 rounded-md bg-blue-500" />
-              <span>Optimized Workload Power (MW)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="h-1 w-4 bg-slate-400 border-dashed" />
-              <span>Unresponsive Baseline (MW)</span>
-            </div>
-          </div>
+          {dateRangeInvalid ? (
+            <p role="alert" className="py-12 text-center text-sm text-destructive">Start date must be on or before end date.</p>
+          ) : pricesLoading ? (
+            <p role="status" className="py-12 text-center text-sm text-muted-foreground">Loading LZ_NORTH price history…</p>
+          ) : pricesError ? (
+            <p role="alert" className="py-12 text-center text-sm text-destructive">Could not load price history: {pricesError}</p>
+          ) : chartPricePoints.length === 0 ? (
+            <p className="py-12 text-center text-sm text-muted-foreground">No LZ_NORTH price records found for the selected dates.</p>
+          ) : (
+            <ChartContainer config={chartConfig} className="h-72 sm:h-96 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartPricePoints} margin={{ top: 16, right: 18, left: 0, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.2} vertical={false} />
+                  <XAxis dataKey="time" tickLine={false} axisLine={false} tickMargin={8} minTickGap={36} style={{ fontSize: "11px" }} />
+                  <YAxis tickLine={false} axisLine={false} tickMargin={8} tickFormatter={(value) => `$${value}`} style={{ fontSize: "11px" }} />
+                  <ChartTooltip content={<ChartTooltipContent indicator="dot" />} />
+                  <Line type="monotone" dataKey="price" stroke="#10b981" strokeWidth={2} dot={false} activeDot={{ r: 4 }} name="Actual Price ($/MWh)" connectNulls={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartContainer>
+          )}
+          {!dateRangeInvalid && !pricesLoading && !pricesError && totalPriceRecords > pricePoints.length && (
+            <p className="mt-3 text-center text-xs text-muted-foreground">Showing {pricePoints.length.toLocaleString()} of {totalPriceRecords.toLocaleString()} records. Narrow the date range to view all intervals.</p>
+          )}
         </CardContent>
       </Card>
 
