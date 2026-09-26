@@ -7,3 +7,5 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 *.cache.sqlite
+# Next.js build output in any app directory
+**/.next/
