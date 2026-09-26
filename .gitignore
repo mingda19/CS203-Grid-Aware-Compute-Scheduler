@@ -7,6 +7,3 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 *.cache.sqlite
-
-data_scripts/.venv/
-data_scripts/.cache.sqlite

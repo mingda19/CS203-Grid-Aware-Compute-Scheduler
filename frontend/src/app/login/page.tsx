@@ -23,8 +23,9 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { authApi, setStoredUser } from "@/lib/api"
+import { authApi, getStoredUser, setStoredUser } from "@/lib/api"
 
 type AuthMode = "login" | "register" | "verify-otp"
 
@@ -37,11 +38,20 @@ export default function LoginPage() {
   const [email, setEmail] = React.useState("admin@datacenter.io")
   const [password, setPassword] = React.useState("Admin@2026!")
   const [otpCode, setOtpCode] = React.useState("")
+  const [rememberMe, setRememberMe] = React.useState(true)
 
   const [isLoading, setIsLoading] = React.useState(false)
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null)
   const [successMessage, setSuccessMessage] = React.useState<string | null>(null)
   const [resendCooldown, setResendCooldown] = React.useState(0)
+
+  // If already authenticated, redirect to dashboard
+  React.useEffect(() => {
+    const user = getStoredUser()
+    if (user) {
+      router.push("/")
+    }
+  }, [router])
 
   // Resend countdown timer
   React.useEffect(() => {
@@ -72,7 +82,7 @@ export default function LoginPage() {
     setSuccessMessage(null)
 
     try {
-      const response = await authApi.login({ email, password })
+      const response = await authApi.login({ email, password, rememberMe })
 
       if (response.requiresOtp) {
         setSuccessMessage("Account verification required. A new OTP has been sent to your email.")
@@ -82,7 +92,7 @@ export default function LoginPage() {
       }
 
       if (response.user) {
-        setStoredUser(response.user)
+        setStoredUser(response.user, response.refreshExpiresIn)
       }
       setSuccessMessage("Login successful! Redirecting to dashboard...")
       setTimeout(() => {
@@ -282,6 +292,23 @@ export default function LoginPage() {
                       required
                       className="pl-9 h-10 text-sm"
                     />
+                  </div>
+                </div>
+
+                {/* Remember Me & Session Duration Indicator */}
+                <div className="flex items-center justify-between py-1">
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="remember-me"
+                      checked={rememberMe}
+                      onCheckedChange={(checked) => setRememberMe(Boolean(checked))}
+                    />
+                    <Label
+                      htmlFor="remember-me"
+                      className="text-xs font-medium cursor-pointer text-muted-foreground hover:text-foreground select-none"
+                    >
+                      Remember me
+                    </Label>
                   </div>
                 </div>
 

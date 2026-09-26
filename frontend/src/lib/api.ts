@@ -13,6 +13,10 @@ export interface AuthResponse {
   user?: User
   requiresOtp?: boolean
   email?: string
+  accessToken?: string
+  tokenType?: string
+  expiresIn?: number
+  refreshExpiresIn?: number
 }
 
 export interface ApiResponse<T = any> {
@@ -23,19 +27,85 @@ export interface ApiResponse<T = any> {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080"
 
+// In-memory access token storage (secure against XSS exfiltration from localStorage)
+let inMemoryAccessToken: string | null = null
+
+export function setAccessToken(token: string | null): void {
+  inMemoryAccessToken = token
+}
+
+export function getAccessToken(): string | null {
+  return inMemoryAccessToken
+}
+
 async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`
-  const headers = {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
-    ...(options.headers || {}),
+    ...((options.headers as Record<string, string>) || {}),
+  }
+
+  const isPublicAuthEndpoint =
+    endpoint.includes("/login") ||
+    endpoint.includes("/refresh") ||
+    endpoint.includes("/register") ||
+    endpoint.includes("/verify-otp") ||
+    endpoint.includes("/resend-otp")
+
+  // If in-memory access token is missing on a protected route, attempt restoring it from the HttpOnly cookie
+  if (!inMemoryAccessToken && !isPublicAuthEndpoint && typeof window !== "undefined") {
+    try {
+      const refreshed = await authApi.refreshToken()
+      if (refreshed.accessToken) {
+        setAccessToken(refreshed.accessToken)
+      }
+    } catch {
+      // Cookie might be expired or not present
+    }
+  }
+
+  // Attach JWT Bearer token if available
+  if (inMemoryAccessToken && !headers["Authorization"]) {
+    headers["Authorization"] = `Bearer ${inMemoryAccessToken}`
   }
 
   const response = await fetch(url, {
     ...options,
     headers,
-    credentials: "include", // for session cookies
+    credentials: "include", // for HttpOnly refresh-token cookies
   })
+
+  // Automatic token refresh on 401 Unauthorized or 403 Forbidden for authenticated endpoints
+  if (
+    (response.status === 401 || response.status === 403) &&
+    !endpoint.includes("/login") &&
+    !endpoint.includes("/refresh") &&
+    !endpoint.includes("/register") &&
+    !endpoint.includes("/verify-otp") &&
+    !endpoint.includes("/resend-otp")
+  ) {
+    try {
+      const refreshed = await authApi.refreshToken()
+      if (refreshed.accessToken) {
+        setAccessToken(refreshed.accessToken)
+        headers["Authorization"] = `Bearer ${refreshed.accessToken}`
+        const retryResponse = await fetch(url, {
+          ...options,
+          headers,
+          credentials: "include",
+        })
+        const retryData = await retryResponse.json().catch(() => ({}))
+        if (!retryResponse.ok) {
+          const err = retryData?.message || `Request failed with status ${retryResponse.status}`
+          throw new Error(err)
+        }
+        return retryData as T
+      }
+    } catch {
+      // Refresh failed, proceed to handle original response error
+    }
+  }
 
   const data = await response.json().catch(() => ({}))
 
@@ -73,17 +143,59 @@ export const authApi = {
     })
   },
 
-  async login(payload: { email: string; password: string }): Promise<AuthResponse> {
-    return fetchJson<AuthResponse>("/login", {
+  async login(payload: {
+    email: string
+    password: string
+    rememberMe?: boolean
+  }): Promise<AuthResponse> {
+    const response = await fetchJson<AuthResponse>("/login", {
       method: "POST",
       body: JSON.stringify(payload),
+    })
+
+    if (response.accessToken) {
+      setAccessToken(response.accessToken)
+    }
+
+    // allows navigation to protected routes immediately after login
+    if (response.user) {
+      setStoredUser(response.user, response.refreshExpiresIn)
+    }
+
+    return response
+  },
+
+  async refreshToken(): Promise<AuthResponse> {
+    const response = await fetchJson<AuthResponse>("/api/auth/refresh", {
+      method: "POST",
+    })
+
+    if (response.accessToken) {
+      setAccessToken(response.accessToken)
+    }
+
+    if (response.user) {
+      setStoredUser(response.user, response.refreshExpiresIn)
+    }
+
+    return response
+  },
+
+  async getMe(): Promise<ApiResponse<User>> {
+    return fetchJson<ApiResponse<User>>("/api/auth/me", {
+      method: "GET",
     })
   },
 
   async logout(): Promise<ApiResponse<void>> {
-    return fetchJson<ApiResponse<void>>("/logout", {
-      method: "POST",
-    })
+    try {
+      return await fetchJson<ApiResponse<void>>("/logout", {
+        method: "POST",
+      })
+    } finally {
+      setAccessToken(null)
+      removeStoredUser()
+    }
   },
 }
 
@@ -105,23 +217,35 @@ export const adminApi = {
   },
 }
 
-// Client-side session helpers
+// Client-side UI cache helpers (non-sensitive profile metadata only)
 const USER_STORAGE_KEY = "gacs_user"
+const COOKIE_NAME = "gacs_logged_in"
 
 export function getStoredUser(): User | null {
   if (typeof window === "undefined") return null
   try {
     const raw = localStorage.getItem(USER_STORAGE_KEY)
-    return raw ? JSON.parse(raw) : null
+    if (!raw) return null
+    const data = JSON.parse(raw)
+    const maxAge = data._maxAgeSeconds && data._maxAgeSeconds > 0 ? data._maxAgeSeconds : 86400
+    // Synchronize cookie if missing so Next.js middleware knows the user is logged in
+    if (data && !document.cookie.includes(`${COOKIE_NAME}=true`)) {
+      document.cookie = `${COOKIE_NAME}=true; path=/; max-age=${maxAge}; SameSite=Lax`
+    }
+    const { _maxAgeSeconds, ...user } = data
+    return user as User
   } catch {
     return null
   }
 }
 
-export function setStoredUser(user: User): void {
+export function setStoredUser(user: User, maxAgeSeconds?: number): void {
   if (typeof window === "undefined") return
   try {
-    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user))
+    const payload = { ...user, _maxAgeSeconds: maxAgeSeconds }
+    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(payload))
+    const maxAge = maxAgeSeconds && maxAgeSeconds > 0 ? maxAgeSeconds : 86400
+    document.cookie = `${COOKIE_NAME}=true; path=/; max-age=${maxAge}; SameSite=Lax`
   } catch {
     // Ignore storage quota errors
   }
@@ -131,7 +255,9 @@ export function removeStoredUser(): void {
   if (typeof window === "undefined") return
   try {
     localStorage.removeItem(USER_STORAGE_KEY)
+    document.cookie = `${COOKIE_NAME}=; path=/; max-age=0; SameSite=Lax`
   } catch {
     // Ignore
   }
 }
+
