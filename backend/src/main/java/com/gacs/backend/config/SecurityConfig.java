@@ -62,6 +62,7 @@ public class SecurityConfig {
                                 "/error",
                                 "/health",
                                 "/api/health",
+                                "/api/health/data-freshness",
                                 "/actuator/**"
                         ).permitAll()
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
