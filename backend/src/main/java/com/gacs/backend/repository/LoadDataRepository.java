@@ -3,6 +3,7 @@ package com.gacs.backend.repository;
 import com.gacs.backend.model.LoadData;
 import com.gacs.backend.model.WeatherKey;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
@@ -11,6 +12,9 @@ import java.util.Optional;
 
 @Repository
 public interface LoadDataRepository extends JpaRepository<LoadData, WeatherKey> {
+    @Query("select max(d.time) from LoadData d")
+    LocalDateTime findLatestTime();
+
     List<LoadData> findByLocation_LocationIdOrderByTimeAsc(Long locationId);
 
     List<LoadData> findByLocation_LocationIdAndTimeBetweenOrderByTimeAsc(

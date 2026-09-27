@@ -5,6 +5,7 @@ import java.util.List;
 
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import com.gacs.backend.model.ElectricalPrice;
@@ -12,6 +13,9 @@ import com.gacs.backend.model.SppKey;
 
 @Repository
 public interface ElectricalPriceRepository extends JpaRepository<ElectricalPrice, SppKey> {
+    @Query("select max(p.intervalStartUtc) from ElectricalPrice p")
+    LocalDateTime findLatestIntervalStartUtc();
+
     List<ElectricalPrice> findByLocationOrderByIntervalStartUtcAsc(String location);
 
     List<ElectricalPrice> findByLocationAndIntervalStartUtcBetweenOrderByIntervalStartUtcAsc(

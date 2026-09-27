@@ -37,6 +37,28 @@ export interface PriceHistory {
   offset: number
 }
 
+export interface DatasetFreshness {
+  dataset: string
+  latestRecordTimestamp: string | null
+  status: "HEALTHY" | "STALE" | "MISSING" | "DATABASE_UNAVAILABLE"
+  ageMinutes: number | null
+  message: string
+}
+
+export interface FreshnessNotification {
+  id: number
+  dataset: string
+  message: string
+  createdAt: string
+  read: boolean
+}
+
+export interface DataFreshnessResponse {
+  datasets: DatasetFreshness[]
+  notifications: FreshnessNotification[]
+  checkedAt: string
+}
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080"
 
 // In-memory access token storage (secure against XSS exfiltration from localStorage)
@@ -139,6 +161,21 @@ export const priceApi = {
       offset: String(params.offset ?? 0),
     })
     return fetchJson<ApiResponse<PriceHistory>>(`/api/prices/history?${query.toString()}`, { cache: "no-store" })
+  },
+}
+
+export const freshnessApi = {
+  getStatus(): Promise<ApiResponse<DataFreshnessResponse>> {
+    return fetchJson<ApiResponse<DataFreshnessResponse>>("/api/health/data-freshness", {
+      method: "GET",
+      cache: "no-store",
+    })
+  },
+
+  markNotificationRead(notificationId: number): Promise<ApiResponse<void>> {
+    return fetchJson<ApiResponse<void>>(`/api/health/data-freshness/notifications/${notificationId}/read`, {
+      method: "POST",
+    })
   },
 }
 

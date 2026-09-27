@@ -37,7 +37,15 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Separator } from "@/components/ui/separator"
 import { useIsMobile } from "@/components/ui/use-mobile"
-import { authApi, getStoredUser, removeStoredUser, type User } from "@/lib/api"
+import {
+  authApi,
+  freshnessApi,
+  getStoredUser,
+  removeStoredUser,
+  type FreshnessNotification,
+  type User,
+} from "@/lib/api"
+import { mergeFreshnessNotifications } from "@/lib/notification-utils"
 
 interface AppShellProps {
   children: React.ReactNode
@@ -52,6 +60,8 @@ export function AppShell({ children }: AppShellProps) {
   const [isAuthChecking, setIsAuthChecking] = React.useState(true)
   const [tourOpen, setTourOpen] = React.useState(false)
   const [tourStep, setTourStep] = React.useState(0)
+  const [notifications, setNotifications] = React.useState<FreshnessNotification[]>([])
+  const [notificationsOpen, setNotificationsOpen] = React.useState(false)
 
   const tourSteps = [
     {
@@ -103,6 +113,39 @@ export function AppShell({ children }: AppShellProps) {
       router.push("/login")
     })
   }, [router])
+
+  React.useEffect(() => {
+    if (!currentUser) return
+
+    let cancelled = false
+    const pollFreshness = async () => {
+      try {
+        const response = await freshnessApi.getStatus()
+        if (cancelled || !response.data) return
+        setNotifications((previous) => mergeFreshnessNotifications(previous, response.data?.notifications ?? []))
+      } catch {
+        // The regular database health endpoint remains responsible for connectivity failures.
+      }
+    }
+
+    void pollFreshness()
+    const interval = window.setInterval(pollFreshness, 5 * 60 * 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [currentUser])
+
+  const unreadNotifications = notifications.filter((notification) => !notification.read)
+
+  const markNotificationRead = async (notification: FreshnessNotification) => {
+    setNotifications((previous) => previous.map((item) => item.id === notification.id ? { ...item, read: true } : item))
+    try {
+      await freshnessApi.markNotificationRead(notification.id)
+    } catch {
+      // Keep the local item readable if the server is temporarily unavailable.
+    }
+  }
 
   const handleLogout = async () => {
     try {
@@ -374,15 +417,48 @@ export function AppShell({ children }: AppShellProps) {
                 <TooltipContent>Show dashboard guide</TooltipContent>
               </Tooltip>
             </TooltipProvider>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-9 w-9 relative text-muted-foreground hover:text-foreground"
-            >
-              <Bell className="h-4 w-4" />
-              <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-amber-500" />
-              <span className="sr-only">Notifications</span>
-            </Button>
+            <div className="relative">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9 relative text-muted-foreground hover:text-foreground"
+                aria-label={`Notifications${unreadNotifications.length ? `, ${unreadNotifications.length} unread` : ""}`}
+                aria-expanded={notificationsOpen}
+                onClick={() => setNotificationsOpen((open) => !open)}
+              >
+                <Bell className="h-4 w-4" />
+                {unreadNotifications.length > 0 && (
+                  <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-amber-500" />
+                )}
+                <span className="sr-only">Notifications</span>
+              </Button>
+              {notificationsOpen && (
+                <div className="absolute right-0 top-11 z-50 w-80 rounded-xl border border-border bg-card p-3 text-card-foreground shadow-xl">
+                  <div className="mb-2 flex items-center justify-between">
+                    <h2 className="text-sm font-semibold">Notifications</h2>
+                    <span className="text-[11px] text-muted-foreground">Data freshness</span>
+                  </div>
+                  {notifications.length === 0 ? (
+                    <p className="py-5 text-center text-xs text-muted-foreground">No data alerts.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {notifications.map((notification) => (
+                        <button
+                          key={notification.id}
+                          type="button"
+                          className={`w-full rounded-lg border p-3 text-left text-xs transition-colors hover:bg-accent ${notification.read ? "border-border" : "border-amber-500/40 bg-amber-500/10"}`}
+                          onClick={() => void markNotificationRead(notification)}
+                        >
+                          <span className="font-semibold">{notification.dataset}</span>
+                          <span className="mt-1 block text-muted-foreground">{notification.message}</span>
+                          <span className="mt-2 block text-[10px] text-muted-foreground">{new Date(notification.createdAt).toLocaleString()}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
             <Separator orientation="vertical" className="h-6 mx-1 hidden sm:block" />
 

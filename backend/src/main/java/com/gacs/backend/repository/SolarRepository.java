@@ -3,6 +3,7 @@ package com.gacs.backend.repository;
 import com.gacs.backend.model.Solar;
 import com.gacs.backend.model.WeatherKey;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
@@ -11,6 +12,9 @@ import java.util.Optional;
 
 @Repository
 public interface SolarRepository extends JpaRepository<Solar, WeatherKey> {
+    @Query("select max(s.time) from Solar s")
+    LocalDateTime findLatestTime();
+
     List<Solar> findByLocation_LocationIdOrderByTimeAsc(Long locationId);
 
     List<Solar> findByLocation_LocationIdAndTimeBetweenOrderByTimeAsc(

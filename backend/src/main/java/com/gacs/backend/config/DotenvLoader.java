@@ -99,12 +99,12 @@ public class DotenvLoader {
 
                     int colon = userInfo.indexOf(':');
                     if (colon != -1) {
-                        String user = userInfo.substring(0, colon);
-                        String pass = userInfo.substring(colon + 1);
+                        String user = decodeUserInfo(userInfo.substring(0, colon));
+                        String pass = decodeUserInfo(userInfo.substring(colon + 1));
                         System.setProperty("spring.datasource.username", user);
                         System.setProperty("spring.datasource.password", pass);
                     } else {
-                        System.setProperty("spring.datasource.username", userInfo);
+                        System.setProperty("spring.datasource.username", decodeUserInfo(userInfo));
                     }
                 } else {
                     hostAndDb = withoutScheme;
@@ -126,5 +126,9 @@ public class DotenvLoader {
         } catch (Exception e) {
             logger.warn("Failed to parse DATABASE_URL into JDBC format: {}", e.getMessage());
         }
+    }
+
+    private static String decodeUserInfo(String value) {
+        return URLDecoder.decode(value, StandardCharsets.UTF_8);
     }
 }
