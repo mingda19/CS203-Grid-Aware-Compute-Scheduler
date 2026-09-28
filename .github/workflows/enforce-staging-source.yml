@@ -1,0 +1,3 @@
+name: Enforce staging-only merges into main
+on: { pull_request: { branches: [main] } }
+jobs: { check-source-branch: { name: Require source branch to be staging, runs-on: ubuntu-latest, steps: [ { name: Verify source branch, run: 'test "$GITHUB_HEAD_REF" = staging || (echo "Blocked: PRs into main must come from staging (got $GITHUB_HEAD_REF)" && exit 1)' } ] } }
