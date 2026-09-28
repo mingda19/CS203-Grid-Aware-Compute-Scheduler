@@ -1,0 +1,3 @@
+gridstatusio
+pandas
+python-dotenv
