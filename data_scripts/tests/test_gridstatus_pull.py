@@ -1,6 +1,6 @@
 """Offline tests for gridstatus_pull (no API key or network needed).
 
-Run from the gridstatus_pull/ folder (pytest.ini lives there):
+Run from the data_scripts/ folder (pytest.ini lives there):
     pip install -r requirements-dev.txt
     pytest -v
 """

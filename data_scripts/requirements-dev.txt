@@ -1,0 +1,4 @@
+# Runtime dependencies plus test tools for all data scripts.
+# Install with: pip install -r data_scripts/requirements-dev.txt
+-r requirements.txt
+pytest
