@@ -3,7 +3,7 @@
 Pulls **ERCOT day-ahead market (DAM) hourly prices** for the **LZ_NORTH** load zone from
 [GridStatus.io](https://www.gridstatus.io) and saves them to a local CSV.
 
-It follows the same conventions as `eia_pull/` (EIA) and `data_scripts/` (Open-Meteo): a
+It follows the same conventions as `eia_pull.py` (EIA) and `update_weather_data.py` (Open-Meteo): a
 Python script that pulls from an API and merges into a CSV under `data/`, which is gitignored.
 Loading data into Postgres is the backend's job; this script only produces the data and the schema.
 
@@ -12,8 +12,8 @@ Loading data into Postgres is the backend's job; this script only produces the d
 Run these from the repo root.
 
 ```bash
-pip install -r gridstatus_pull/requirements.txt
-python gridstatus_pull/gridstatus_pull.py
+pip install -r data_scripts/requirements.txt
+python data_scripts/gridstatus_pull.py
 ```
 
 Before the first run you need a `.env` file at the **repo root** containing your key
@@ -58,10 +58,10 @@ A pull at 3 PM on the 23rd therefore contains the 23rd (published yesterday) and
 ## Options
 
 ```bash
-python gridstatus_pull/gridstatus_pull.py                       # normal daily run
-python gridstatus_pull/gridstatus_pull.py --month               # from the 1st of this month
-python gridstatus_pull/gridstatus_pull.py --since 2020-09-24 --max-rows 60000   # history backfill
-python gridstatus_pull/gridstatus_pull.py --location LZ_HOUSTON # another zone
+python data_scripts/gridstatus_pull.py                       # normal daily run
+python data_scripts/gridstatus_pull.py --month               # from the 1st of this month
+python data_scripts/gridstatus_pull.py --since 2020-09-24 --max-rows 60000   # history backfill
+python data_scripts/gridstatus_pull.py --location LZ_HOUSTON # another zone
 ```
 
 ## Reading the log and exit code
@@ -96,17 +96,17 @@ derived. A primary key of `(location, interval_start_utc)` suits "prices for yea
 The tests run offline with a fake client, so no API key is needed.
 
 ```bash
-cd gridstatus_pull
-pip install -r requirements-dev.txt
+pip install -r data_scripts/requirements-dev.txt
+cd data_scripts
 pytest
 ```
 
 ## Files
 
 ```
-gridstatus_pull/
+data_scripts/
   gridstatus_pull.py      the script (fetch_dam_prices() returns the table; update_dam_prices() runs a full pull)
-  requirements.txt        runtime dependencies
+  requirements.txt        runtime dependencies for all data scripts
   requirements-dev.txt    + pytest
   pytest.ini
   tests/test_gridstatus_pull.py

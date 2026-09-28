@@ -3,3 +3,4 @@ pandas
 requests-cache
 retry-requests
 python-dotenv
+gridstatusio
