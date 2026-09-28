@@ -129,6 +129,13 @@ public class DotenvLoader {
     }
 
     private static String decodeUserInfo(String value) {
-        return URLDecoder.decode(value, StandardCharsets.UTF_8);
+        if (value == null) {
+            return "";
+        }
+        try {
+            return URLDecoder.decode(value, StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            return value;
+        }
     }
 }
