@@ -18,6 +18,7 @@ public class DotenvLoader {
         File envFile = findDotenvFile();
         if (envFile == null || !envFile.exists()) {
             logger.info("No .env file found; using standard environment/property configuration.");
+            configureFromSystemEnv();
             return;
         }
 
@@ -71,6 +72,13 @@ public class DotenvLoader {
         File f = new File("../.env");
         if (f.exists()) return f;
         return null;
+    }
+
+    private static void configureFromSystemEnv() {
+        String dbUrl = System.getenv("DATABASE_URL");
+        if (dbUrl != null && !dbUrl.isBlank() && System.getProperty("spring.datasource.url") == null) {
+            configureJdbcFromDatabaseUrl(dbUrl);
+        }
     }
 
     private static void configureJdbcFromDatabaseUrl(String dbUrl) {
