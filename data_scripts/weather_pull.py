@@ -5,10 +5,10 @@ Replaces load_weather.py, datacenter_weather.py, solar_weather.py and
 wind_weather.py, which only fetched and printed data without saving it.
 
 Usage:
-    python update_weather_data.py
+    python weather_pull.py
 
 Or from another script / notebook:
-    from update_weather_data import update_all_weather_data
+    from weather_pull import update_all_weather_data
     update_all_weather_data()
 
 This is call-triggered only (not scheduled/autonomous). Each call re-fetches
