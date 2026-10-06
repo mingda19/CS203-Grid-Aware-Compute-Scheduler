@@ -6,7 +6,7 @@ import com.gacs.backend.repository.ElectricalPriceRepository;
 import com.gacs.backend.repository.FuelGenerationMonthlyRepository;
 import com.gacs.backend.repository.FuelMixHourlyRepository;
 import com.gacs.backend.repository.FuelPriceRepository;
-import com.gacs.backend.repository.HourlyDemandForecastRepository;
+import com.gacs.backend.repository.LoadForecastDamRepository;
 import com.gacs.backend.repository.LoadDataRepository;
 import com.gacs.backend.repository.SolarRepository;
 import com.gacs.backend.repository.WindRepository;
@@ -37,7 +37,7 @@ public class DataFreshnessService {
             FuelPriceRepository fuelPriceRepository,
             FuelMixHourlyRepository fuelMixHourlyRepository,
             FuelGenerationMonthlyRepository fuelGenerationMonthlyRepository,
-            HourlyDemandForecastRepository hourlyDemandForecastRepository,
+            LoadForecastDamRepository loadForecastDamRepository,
             LoadDataRepository loadDataRepository,
             SolarRepository solarRepository,
             WindRepository windRepository,
@@ -47,7 +47,7 @@ public class DataFreshnessService {
                 new DatasetDefinition("fuel_price", "Daily fuel price", Duration.ofDays(3), fuelPriceRepository::findLatestPeriod),
                 new DatasetDefinition("fuel_mix_hourly", "Hourly fuel mix", Duration.ofHours(3), fuelMixHourlyRepository::findLatestPeriod),
                 new DatasetDefinition("fuel_generation_monthly", "Monthly generation mix", Duration.ofDays(35), fuelGenerationMonthlyRepository::findLatestPeriod),
-                new DatasetDefinition("hourly_demand_forecast", "Hourly demand forecast", Duration.ofHours(3), hourlyDemandForecastRepository::findLatestPeriod),
+                new DatasetDefinition("load_forecast_dam", "ERCOT day-ahead load forecast", Duration.ofHours(26), loadForecastDamRepository::findLatestIntervalStartUtc),
                 new DatasetDefinition("load_data", "Hourly weather load data", Duration.ofHours(3), loadDataRepository::findLatestTime),
                 new DatasetDefinition("solar", "Hourly solar weather data", Duration.ofHours(3), solarRepository::findLatestTime),
                 new DatasetDefinition("wind", "Hourly wind weather data", Duration.ofHours(3), windRepository::findLatestTime),
