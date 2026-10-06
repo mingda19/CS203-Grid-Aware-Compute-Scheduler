@@ -77,8 +77,8 @@ GAMMA_PER_C = 0.004
 FEATURE_COLUMNS = [
     "lag_24h", "lag_48h", "roll_mean_24h", "roll_std_24h", "roll_mean_168h", "roll_std_168h",
     "hour", "day_of_week", "month", "is_us_holiday",
-    "henry_hub_price_usd_mmbtu_lag1d", "demand_forecast_mwh",
-    "wind_power_output_proxy_total", "solar_power_output_proxy_total",
+    "henry_hub_price_usd_mmbtu_lag1d",
+    "wind_power_output_proxy_total", "solar_power_output_proxy_total", "load_forecast_dam_north_mwh"
 ]
 
 
@@ -233,6 +233,17 @@ def load_single_column(engine: sa.Engine, table: str, time_col: str, value_col: 
     df["time"] = pd.to_datetime(df["time"])
     return df
 
+def load_load_forecast(engine: sa.Engine, location: str, start: datetime, end: datetime) -> pd.DataFrame:
+    query = sa.text(
+        "SELECT interval_start_utc AS time, load_forecast_mwh AS load_forecast_dam_north_mwh "
+        "FROM load_forecast_dam "
+        "WHERE zone = :location AND interval_start_utc >= :start AND interval_start_utc < :end"
+    )
+    with engine.begin() as conn:
+        df = pd.read_sql(query, conn, params={"location": location, "start": _iso(start), "end": _iso(end)})
+    df["time"] = pd.to_datetime(df["time"])
+    return df
+
 
 # --------------------------------------------------------------------------- #
 # Feature assembly for the target day(s)
@@ -278,10 +289,6 @@ def build_features(engine: sa.Engine, target_times: pd.DatetimeIndex, location: 
     gas = gas.set_index("time")["henry_hub_price_usd_mmbtu"].asfreq("D").ffill().shift(1)
     features["henry_hub_price_usd_mmbtu_lag1d"] = features["time"].dt.floor("D").map(gas)
 
-    demand = load_single_column(engine, "hourly_demand_forecast", "period", "demand_forecast_mwh",
-                                target_times.min(), target_times.max() + timedelta(hours=1))
-    features = features.merge(demand, on="time", how="left")
-
     wind = load_weather_table(engine, "wind", ["wind_speed_80m", "wind_speed_120m", "temperature_120m"],
                               target_times.min(), target_times.max() + timedelta(hours=1))
     wind["wind_speed_120m"] = impute_speed_loglog(wind, "wind_speed_120m", "wind_speed_80m")
@@ -295,6 +302,9 @@ def build_features(engine: sa.Engine, target_times: pd.DatetimeIndex, location: 
     solar_total = solar.groupby("time")["solar_power_output_proxy"].sum().rename("solar_power_output_proxy_total")
     features = features.merge(solar_total.reset_index(), on="time", how="left")
 
+    demand = load_load_forecast(engine, location, target_times.min(), target_times.max() + timedelta(hours=1))
+    features = features.merge(demand, on="time", how="left")
+    
     features = features.set_index("time").reindex(target_times)[FEATURE_COLUMNS]
     # A left-joined column can come back as dtype "object" instead of float64
     # when the source query returned zero rows for the target window (pandas

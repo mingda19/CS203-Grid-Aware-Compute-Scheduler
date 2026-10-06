@@ -10,13 +10,20 @@ Design decisions (see chat history for the reasoning):
     helper, using "ON CONFLICT DO UPDATE", works against both the real
     Supabase Postgres and the in-memory SQLite used in tests.
   - Weather rows need a real location_id FK, which the old CSV's array-position
-    "location_id" was never reconciled with. resolve_location_ids() looks up
-    the real id by (latitude, longitude) and raises loudly on an unseeded site
-    rather than silently writing a wrong/missing FK.
-  - GridStatus DAM price stays LZ_NORTH-only for continuous ingestion: the
-    account's 1000-row/month quota can't support all 8 zones daily (~100-125
-    rows/zone/day would exhaust a month's quota in about a day). The other 7
-    zones only have the one-time historical xlsx backfill.
+    "location_id" was never reconciled with. fetch_locations_by_description()
+    looks up the real id by description ("wind", "solar", ...) and raises
+    loudly if nothing's seeded for it, rather than silently writing a wrong/
+    missing FK.
+  - GridStatus DAM price stays LZ_NORTH-only for continuous ingestion: checked
+    the account's real GridStatus quota (get_api_usage()) rather than trust
+    the old script's docstring, which claimed 1000 rows/month - the real limit
+    is 500,000 rows/month, comfortable for all 8 zones. The actual binding
+    constraint is **250 API requests/month**: fetch_dam_prices requests one
+    zone per call (filter_value=location), so 8 zones/day would alone be 240
+    requests/month, leaving almost nothing for anything else. Worth revisiting
+    (e.g. a single multi-zone request, if the API supports it) separately -
+    not changed here. The other 7 zones only have the one-time historical
+    xlsx backfill.
   - Each source's failure is isolated (one failing dataset/source must not
     stop the others), matching eia_pull.py's existing per-dataset try/except.
 
@@ -400,6 +407,11 @@ EIA_DATASETS = [
     EiaDataset("gas_price", "fuel_price", fetch_gas_price, 14),
     EiaDataset("generation_mix", "fuel_generation_monthly", fetch_generation_mix, 183),
     EiaDataset("ercot_fuel_mix", "fuel_pct_hourly", fetch_ercot_fuel_mix, 3),
+    # EIA's "demand" (electricity/rto/region-data) dropped (see chat): its "DF"
+    # (day-ahead demand forecast) column is retrospective, not live - confirmed
+    # against the real API it lags about as far behind "now" as the actuals
+    # do. Replaced by GridStatus's ercot_load_forecast_dam below, which is
+    # genuinely forward-looking.
 ]
 
 
@@ -432,7 +444,7 @@ def update_all_eia_data(engine: sa.Engine, since: date | None = None, only: list
 # --------------------------------------------------------------------------- #
 
 DAM_DATASET = "ercot_spp_day_ahead_hourly"
-DEFAULT_DAM_LOCATIONS = ["LZ_NORTH"]  # see module docstring: GridStatus quota can't support all 8 zones daily
+DEFAULT_DAM_LOCATIONS = ["LZ_NORTH"]  # see module docstring: GridStatus's real constraint is requests/month, not rows/month
 LOCAL_TZ = "America/Chicago"
 DEFAULT_LOOKBACK_DAYS = 3
 END_OFFSET_DAYS = 3
@@ -529,6 +541,75 @@ def update_all_dam_prices(engine: sa.Engine, since: date | None = None) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# GridStatus DAM load forecast (ercot_load_forecast_dam) - genuinely forward-
+# looking, unlike EIA's demand_forecast_mwh (the old hourly_demand_forecast
+# table/EIA puller, now removed - see chat): ERCOT publishes this once/day at
+# 14:30 CT, covering the ENTIRE next delivery
+# day, confirmed live against the real API. One request returns all zones as
+# columns already (no per-zone filter needed, so this costs 1 request/day
+# toward the 250/month budget, not 5).
+# --------------------------------------------------------------------------- #
+
+LOAD_FORECAST_DATASET = "ercot_load_forecast_dam"
+LOAD_FORECAST_ZONES = ["north", "south", "west", "houston", "system_total"]
+
+
+def normalize_load_forecast(raw: pd.DataFrame) -> pd.DataFrame:
+    cols = ["interval_start_utc", "zone", "load_forecast_mwh", "publish_time_utc"]
+    if raw.empty:
+        return pd.DataFrame(columns=cols)
+    missing = [c for c in ["interval_start_utc", "publish_time_utc", *LOAD_FORECAST_ZONES] if c not in raw.columns]
+    if missing:
+        raise RuntimeError(f"GridStatus response missing {missing}; got {list(raw.columns)}. Schema changed?")
+
+    interval_start = pd.to_datetime(raw["interval_start_utc"], utc=True).dt.tz_localize(None)
+    publish_time = pd.to_datetime(raw["publish_time_utc"], utc=True).dt.tz_localize(None)
+    long_frames = []
+    for zone in LOAD_FORECAST_ZONES:
+        long_frames.append(pd.DataFrame({
+            "interval_start_utc": interval_start,
+            "zone": zone,
+            "load_forecast_mwh": pd.to_numeric(raw[zone], errors="coerce"),
+            "publish_time_utc": publish_time,
+        }))
+    return pd.concat(long_frames, ignore_index=True)[cols]
+
+
+def fetch_load_forecast_dam(client, start: date, end: date, max_rows: int = DEFAULT_MAX_ROWS) -> pd.DataFrame:
+    raw = client.get_dataset(
+        dataset=LOAD_FORECAST_DATASET, start=start.isoformat(), end=end.isoformat(),
+        columns=["interval_start_utc", "publish_time_utc", *LOAD_FORECAST_ZONES],
+        limit=max_rows, verbose=False,
+    )
+    return normalize_load_forecast(raw)
+
+
+def update_load_forecast_dam(engine: sa.Engine, client, since: date | None = None,
+                             now: datetime | None = None, max_rows: int = DEFAULT_MAX_ROWS) -> tuple[int, int]:
+    """Incoming window only (yesterday through tomorrow), same as weather -
+    Supabase holds live/incoming data for serving, not a historical archive
+    (that's what the local CSVs under model/ are for - see chat). `since` is
+    an explicit escape hatch for a deliberate one-off backfill, not the normal
+    path: passing it widens the start date but the window is still capped at
+    tomorrow, it will NOT pull years of history by default."""
+    now = now or datetime.now(timezone.utc)
+    today = now.astimezone(timezone.utc).date()
+    default_start = today - timedelta(days=1)
+    start = min(since, default_start) if since else default_start
+    end = today + timedelta(days=1)
+
+    new = fetch_load_forecast_dam(client, start, end, max_rows)
+    priced = new.dropna(subset=["load_forecast_mwh"])
+    return upsert_dataframe(engine, "load_forecast_dam", priced, ["interval_start_utc", "zone"])
+
+
+def update_all_load_forecast(engine: sa.Engine, since: date | None = None) -> None:
+    client = make_gridstatus_client()
+    added, total = update_load_forecast_dam(engine, client, since=since)
+    logger.info("[load_forecast] +%d new, %d total in load_forecast_dam", added, total)
+
+
+# --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
 
@@ -537,22 +618,25 @@ class IngestionResult:
     weather_ok: bool = True
     eia_ok: bool = True
     dam_ok: bool = True
+    load_forecast_ok: bool = True
     errors: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
-        return self.weather_ok and self.eia_ok and self.dam_ok
+        return self.weather_ok and self.eia_ok and self.dam_ok and self.load_forecast_ok
 
 
 def run_ingestion(engine: sa.Engine, weather_fn: Callable | None = None, eia_fn: Callable | None = None,
-                  dam_fn: Callable | None = None, now: datetime | None = None) -> IngestionResult:
+                  dam_fn: Callable | None = None, load_forecast_fn: Callable | None = None,
+                  now: datetime | None = None) -> IngestionResult:
     weather_fn = weather_fn or (lambda eng: update_all_weather(eng))
     eia_fn = eia_fn or (lambda eng: update_all_eia_data(eng))
     dam_fn = dam_fn or (lambda eng: update_all_dam_prices(eng))
+    load_forecast_fn = load_forecast_fn or (lambda eng: update_all_load_forecast(eng))
 
     result = IngestionResult()
     for name, fn, attr in [("weather", weather_fn, "weather_ok"), ("eia", eia_fn, "eia_ok"),
-                           ("dam", dam_fn, "dam_ok")]:
+                           ("dam", dam_fn, "dam_ok"), ("load_forecast", load_forecast_fn, "load_forecast_ok")]:
         try:
             fn(engine)
         except Exception as e:  # one source failing must not stop the others
@@ -563,16 +647,16 @@ def run_ingestion(engine: sa.Engine, weather_fn: Callable | None = None, eia_fn:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Daily ingestion: Open-Meteo weather + EIA + GridStatus DAM price.")
+    parser = argparse.ArgumentParser(description="Daily ingestion: Open-Meteo weather + EIA + GridStatus DAM price/load forecast.")
     parser.add_argument("--since", type=date.fromisoformat, help="backfill from YYYY-MM-DD (where supported)")
-    parser.add_argument("--only", help="comma-separated: weather,eia,dam")
+    parser.add_argument("--only", help="comma-separated: weather,eia,dam,load_forecast")
     args = parser.parse_args()
 
     logging.Formatter.converter = time.gmtime
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         datefmt="%Y-%m-%dT%H:%M:%SZ")
 
-    only = set(args.only.split(",")) if args.only else {"weather", "eia", "dam"}
+    only = set(args.only.split(",")) if args.only else {"weather", "eia", "dam", "load_forecast"}
     engine = make_engine()
 
     try:
@@ -581,6 +665,7 @@ def main() -> None:
             weather_fn=(lambda eng: update_all_weather(eng)) if "weather" in only else (lambda eng: None),
             eia_fn=(lambda eng: update_all_eia_data(eng, since=args.since)) if "eia" in only else (lambda eng: None),
             dam_fn=(lambda eng: update_all_dam_prices(eng, since=args.since)) if "dam" in only else (lambda eng: None),
+            load_forecast_fn=(lambda eng: update_all_load_forecast(eng, since=args.since)) if "load_forecast" in only else (lambda eng: None),
         )
     except Exception:
         logger.exception("Ingestion FAILED")

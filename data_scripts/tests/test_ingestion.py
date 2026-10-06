@@ -217,9 +217,49 @@ class DamPriceIngestionTests(unittest.TestCase):
         self.assertEqual(result.added, 1)
 
     def test_only_lz_north_pulled_by_default_due_to_gridstatus_quota(self):
-        # See chat: 8 zones x ~100-125 rows/day would blow the 1000-row/MONTH
-        # quota in under a day. Continuous ingestion stays LZ_NORTH-only.
+        # See chat: the real GridStatus quota is 500k rows/month (checked via
+        # get_api_usage()), not the 1000/month the old script's docstring
+        # claimed - rows aren't the binding constraint. Requests/month (250)
+        # is: fetch_dam_prices requests one zone per call, so 8 zones/day
+        # alone would be 240 requests/month. Continuous ingestion stays
+        # LZ_NORTH-only until that's addressed separately.
         self.assertEqual(ing.DEFAULT_DAM_LOCATIONS, ["LZ_NORTH"])
+
+
+class LoadForecastDamIngestionTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = make_engine()
+        with self.engine.begin() as conn:
+            conn.execute(sa.text(
+                "CREATE TABLE load_forecast_dam (interval_start_utc TEXT, zone TEXT, "
+                "load_forecast_mwh REAL, publish_time_utc TEXT, PRIMARY KEY (interval_start_utc, zone))"
+            ))
+
+    def test_normalize_reshapes_wide_zones_to_long_rows(self):
+        raw = pd.DataFrame([{
+            "interval_start_utc": "2026-10-06T00:00:00+00:00",
+            "publish_time_utc": "2026-10-05T19:30:00+00:00",
+            "north": 20282.2, "south": 100.0, "west": 200.0, "houston": 300.0, "system_total": 20882.2,
+        }])
+        out = ing.normalize_load_forecast(raw)
+        self.assertEqual(len(out), 5)  # one row per zone
+        self.assertEqual(set(out["zone"]), set(ing.LOAD_FORECAST_ZONES))
+        north_row = out[out["zone"] == "north"].iloc[0]
+        self.assertEqual(north_row["load_forecast_mwh"], 20282.2)
+
+    def test_update_load_forecast_dam_upserts_all_zones(self):
+        raw = pd.DataFrame([{
+            "interval_start_utc": "2026-10-06T00:00:00+00:00",
+            "publish_time_utc": "2026-10-05T19:30:00+00:00",
+            "north": 20282.2, "south": 100.0, "west": 200.0, "houston": 300.0, "system_total": 20882.2,
+        }])
+        client = FakeGridStatusClient(raw)
+        added, total = ing.update_load_forecast_dam(self.engine, client, now=datetime(2026, 10, 6, tzinfo=timezone.utc))
+        self.assertEqual((added, total), (5, 5))
+
+        with self.engine.begin() as conn:
+            rows = pd.read_sql("SELECT * FROM load_forecast_dam", conn)
+        self.assertEqual(len(rows), 5)
 
 
 # --------------------------------------------------------------------------- #
@@ -282,15 +322,21 @@ class OrchestrationTests(unittest.TestCase):
             calls.append("dam")
             return 1
 
+        def load_forecast_ok(*a, **k):
+            calls.append("load_forecast")
+            return 1
+
         result = ing.run_ingestion(
             engine,
             weather_fn=boom,
             eia_fn=eia_ok,
             dam_fn=dam_ok,
+            load_forecast_fn=load_forecast_ok,
         )
-        self.assertEqual(sorted(calls), ["dam", "eia", "weather"])
+        self.assertEqual(sorted(calls), ["dam", "eia", "load_forecast", "weather"])
         self.assertFalse(result.weather_ok)
         self.assertTrue(result.eia_ok)
+        self.assertTrue(result.load_forecast_ok)
 
 
 if __name__ == "__main__":

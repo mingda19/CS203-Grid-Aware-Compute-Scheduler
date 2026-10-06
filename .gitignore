@@ -14,4 +14,4 @@ __pycache__/
 # Generated EDA data/model artifacts - reproducible from the scripts, not committed (same
 # convention as data/: nobody commits data files in this repo)
 model/*.csv
-model/models/
+model/models/*.json
