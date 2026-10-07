@@ -103,7 +103,7 @@ jobs:
             echo "::warning::Vercel secrets (VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID) not fully configured. If Vercel Git integration is connected, deployment occurs automatically."
           else
             echo "Deploying frontend to Vercel production..."
-            npx --yes vercel --prod --token="$VERCEL_TOKEN" --cwd=frontend --yes
+            npx --yes vercel --prod --token="$VERCEL_TOKEN" --yes
           fi
 
       - name: Log Deployment Summary
