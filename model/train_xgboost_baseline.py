@@ -1,26 +1,27 @@
 """
-Baseline XGBoost model for LZ_NORTH DAM price, trained on the master table
-built by build_master_table.py (eda/train.csv, eda/val.csv).
+Baseline XGBoost model for LZ_NORTH DAM price, trained on model/train.csv
+and model/val.csv (one row per UTC hour; see model/model.md S4 for how the
+feature columns were built, and S8 for features added/rejected after EDA).
 
 Target: lz_north_price_winsorized (the 4-std-winsorized price, not raw -
 training on raw price lets a handful of Winter-Storm-Uri-scale hours
-dominate the loss; see the EDA chat history for the winsorization decision).
+dominate the loss; see model/model.md S3.7 for the winsorization decision).
 
 Modes (mutually exclusive):
   --train  Fit on train.csv only, report train-set metrics, save the model
-           to eda/models/xgboost_baseline_train.json.
+           to model/models/xgboost_baseline_train.json.
   --val    Load the model saved by --train and evaluate it on val.csv,
            reporting held-out metrics. Does NOT retrain - run --train first.
   --full   Fit on train.csv + val.csv concatenated (no held-out data left),
-           save to eda/models/xgboost_baseline_full.json. This is the "final"
-           model once hyperparameters have been chosen via --train/--val
-           iteration - its reported metrics are in-sample, not a real
-           evaluation.
+           save to model/models/xgboost_baseline_full.json. This is the
+           "final" model once hyperparameters have been chosen via
+           --train/--val iteration - its reported metrics are in-sample, not
+           a real evaluation.
 
-Usage:
-  eda/.venv/bin/python eda/train_xgboost_baseline.py --train
-  eda/.venv/bin/python eda/train_xgboost_baseline.py --val
-  eda/.venv/bin/python eda/train_xgboost_baseline.py --full
+Usage (run from inside model/):
+  python train_xgboost_baseline.py --train
+  python train_xgboost_baseline.py --val
+  python train_xgboost_baseline.py --full
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ XGB_PARAMS = {
 def load_split(name: str) -> pd.DataFrame:
     path = OUT_DIR / f"{name}.csv"
     if not path.exists():
-        raise FileNotFoundError(f"{path} not found - run build_master_table.py first.")
+        raise FileNotFoundError(f"{path} not found - expected a pre-built train.csv/val.csv under model/.")
     df = pd.read_csv(path, parse_dates=["time"])
     return df
 

@@ -111,6 +111,14 @@ log(price - min + ε) transform, winsorizing at a high percentile for training s
 separate binary "price spike" classifier feeding into the regression. Decision deferred to after
 EDA, not assumed now.
 
+**Decided**: winsorizing at a fixed 4-std band, computed once from the full 2020-2026 training
+history (mean=56.35, std=362.55 → band [-1393.85, 1506.55]). `lz_north_price_winsorized` is the
+model's actual training target (`lz_north_price_winsorized` in train.csv/val.csv); raw
+`lz_north_price` is kept alongside it for reference. The same fixed band (not one recomputed from
+a recent window) must be used to clip any live price-lag feature at serving time, or predictions
+would be computed on a different scale than the model was trained on - see
+`predictions.py`'s `WINSORIZE_LOWER`/`WINSORIZE_UPPER`.
+
 ### 3.8 DST and sequence continuity
 Spring-forward (23h) and fall-back (25h) days exist in every year of this data. Any fixed-length
 "24 steps = 1 day" windowing scheme for LSTM/GRU/TCN needs explicit handling — either drop/flag
@@ -127,10 +135,11 @@ Single master table, one row per UTC hour, built as:
    aggregate across sites into a handful of engineered features per hour (§3.5 formulas), not raw
    per-site columns. Datacenter weather excluded (§3.2).
 3. **EIA features, joined "as-of" with real publication lag** — not the same-period value filled
-   backwards. For `fuel_pct_hourly` and `hourly_demand_forecast`: shift so day D's features use the
-   latest data *actually published* by the bid deadline for day D-1 (i.e. roughly D-1's actuals).
-   For `fuel_price` (Henry Hub): most recent trading-day close as of bid time. `fuel_generation_monthly`
-   excluded from features (§3.3), kept only for an exploratory plot.
+   backwards. For `fuel_pct_hourly`: shift so day D's features use the latest data *actually
+   published* by the bid deadline for day D-1 (i.e. roughly D-1's actuals). For `fuel_price`
+   (Henry Hub): most recent trading-day close as of bid time. `fuel_generation_monthly` excluded
+   from features (§3.3), kept only for an exploratory plot. (EIA's demand/`hourly_demand_forecast`
+   was dropped after implementation - see §8.3; GridStatus's `load_forecast_dam` replaced it.)
 4. **Calendar features**: hour-of-day, day-of-week, month, US federal holidays, cyclical encodings
    (sin/cos) for hour and day-of-year.
 5. **Train/val/test split: strictly temporal**, no shuffling. Something like train through 2024,
@@ -159,7 +168,6 @@ Single master table, one row per UTC hour, built as:
 
 **EIA vs. price:**
 - `fuel_pct_hourly` vs. price (as a lagged/explanatory signal, explicitly not same-hour).
-- `hourly_demand_forecast` (both actual and ERCOT's own forecast column) vs. price.
 - Henry Hub price vs. price, at various lags — expect a meaningfully positive relationship given
   gas is frequently the marginal fuel in ERCOT.
 - Sanity-check only: does the US-wide monthly generation mix show any visible relationship at all,
@@ -200,3 +208,84 @@ Single master table, one row per UTC hour, built as:
    real location→zone mapping exists (§3.4)?
 5. Any preference on how to treat Winter Storm Uri specifically — include normally, exclude from
    training, or hold out as a dedicated stress-test case (§3.7, §4.5)?
+
+## 8. Serving-time feature validation (post-EDA)
+
+The EDA above picked candidate features by correlation with price. That is necessary but not
+sufficient: a feature can correlate well in a training table built from history, yet still hurt
+the model once it is actually computed at prediction time from whatever is live in Supabase at
+that moment. Three features were built, measured, and in two of three cases rejected this way
+after implementation was already underway. Recorded here so the reasoning survives independently
+of the chat session that produced it.
+
+### 8.1 Methodology: realistic-serving simulation
+`predictions.py` builds one 24-hour batch per day-ahead run, all at once, before any of those 24
+hours have become "actuals." That constrains what a feature is allowed to depend on:
+- A **lag feature** (t-24h, t-48h, ...) is fine as long as the hour it reaches back to is already
+  in the past relative to the *whole batch's* bid time, not just relative to the specific target
+  hour — true for lag_24h/lag_48h/lag_168h here, since even the batch's last hour reaches back to
+  an already-known day.
+- A **rolling-window feature** (roll_mean_24h, etc.) is different: hour 2 through hour 24 of the
+  batch would each need a window that partly overlaps the *also-being-predicted* hours before
+  them, which don't exist yet. `build_features()` handles this by freezing every rolling stat at
+  the last known-actual hour and broadcasting that one frozen value across all 24 target hours,
+  rather than recomputing it per hour.
+
+To test whether a candidate feature actually survives this constraint, the evaluation harness
+simulates it directly: features are computed the same frozen/broadcast way a live batch would see
+them, not recomputed per-row from the full (freely-available-in-training) history, and the
+resulting RMSE/MAE on `val.csv` is compared against the same model without the feature. This
+caught two features that looked fine in ordinary (non-simulated) backtesting but degraded sharply
+under the real serving constraint.
+
+### 8.2 `lag_1h`: dropped
+Reaches back only 1 hour. For hour 2+ of a day-ahead batch, "1 hour before the target hour" falls
+*inside* the same not-yet-known batch, so it cannot be a real lag at serving time — the realistic
+simulation freezes it at the batch's last known-actual value instead (same treatment as the
+rolling features in §8.1). Measured head-to-head: frozen `lag_1h` gave val RMSE 30.0 vs. 16.6
+without it. Dropped entirely rather than kept frozen, since freezing didn't recover the value a
+true per-hour lag_1h would have had in training — it just added noise.
+
+### 8.3 EIA `demand_forecast_mwh`: dropped, replaced by GridStatus `load_forecast_dam`
+EIA's `electricity/rto/region-data` "DF" (day-ahead demand forecast) field looked usable from its
+name, but a live call to the real EIA API confirmed "DF" publishes on essentially the same delay
+as the actuals ("D") — it is not actually a forecast available ahead of the delivery day, despite
+the name. Val RMSE: naive (same-period value, no lag) 23.2, lagged by 1 day to make it honestly
+pre-bid-time 18.2, dropped entirely 16.9 (best of the three). Dropped, and the
+`hourly_demand_forecast` table + EIA puller for it were removed (§1 pivot point). Replaced by
+GridStatus's `ercot_load_forecast_dam` dataset, which publishes once/day at 14:30 CT covering the
+*entire* next delivery day — genuinely forward-looking, confirmed live against the API, unlike the
+EIA field it replaced.
+
+Naming trap worth flagging explicitly: this dataset's `zone` column uses ERCOT's **weather-zone**
+breakdown (`north`/`south`/`west`/`houston`/`system_total`), a completely different naming scheme
+from the LZ_ **settlement-point** names (`LZ_NORTH`, etc.) used everywhere else in this project for
+`electrical_price`. The two schemes partition the grid differently and are not interchangeable
+strings — querying `load_forecast_dam` with `zone = 'LZ_NORTH'` is not "the wrong case," it matches
+zero rows outright, silently producing an all-NaN feature with no error. `predictions.py` keeps a
+separate `DEFAULT_LOAD_FORECAST_ZONE = "north"` constant specifically so this can't be confused
+with `DEFAULT_LOCATION = "LZ_NORTH"` again.
+
+### 8.4 `load_forecast_dam_north_mwh`: kept raw, as a deliberate baseline weakness
+GridStatus's north-zone load forecast, used raw (not lagged — it is published before the delivery
+day it covers, so no lag is needed). Measured against val.csv:
+
+| Variant | RMSE | MAE |
+|---|---|---|
+| Without this feature (baseline) | 16.894 | 8.561 |
+| With raw `load_forecast_dam_north_mwh` | 32.099 | 13.533 |
+| With detrended (deviation from trailing 90-day mean) | 17.231 | 9.119 |
+
+Root cause: a multi-year secular upward trend in Texas load (train-period mean 16,976 MWh, rising
+from ~15,346 in 2020 to ~18,987 in the 2026 training tail, vs. a 2026 validation-period mean of
+19,777) that a raw-value tree model's splits calibrate against the training range and then
+miscalibrate against val's higher range. The detrended variant removes this and roughly matches
+the baseline.
+
+**Decision: keep the raw (not detrended) version anyway**, as a deliberately-imperfect baseline.
+XGBoost cannot model the trend's shape, but a sequence model (LSTM/GRU, §6) should be able to use
+raw load growth over time much better than a tree model can — keeping it raw here, rather than
+quietly fixing it with detrending, preserves a real, visible gap for later models to close instead
+of papering over a weakness that a better architecture is specifically expected to address. A
+calendar "year" feature was considered as a cheaper partial fix for the same trend but intentionally
+left out for the same reason: it would only narrow the gap the baseline is meant to demonstrate.
