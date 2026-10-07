@@ -5,7 +5,7 @@ Consolidates weather_pull.py (Open-Meteo), eia_pull.py (EIA), and
 gridstatus_pull.py (GridStatus DAM price) into one self-contained module that
 writes to Postgres/Supabase instead of CSV. Replaces all three.
 
-Design decisions (see chat history for the reasoning):
+Design decisions:
   - DB access via SQLAlchemy Core (not ORM): one portable upsert_dataframe()
     helper, using "ON CONFLICT DO UPDATE", works against both the real
     Supabase Postgres and the in-memory SQLite used in tests.
@@ -293,8 +293,10 @@ def update_all_weather(engine: sa.Engine, reference_date: date | None = None) ->
     historical-forecast endpoint does serve forecast data that far out (same
     endpoint blends historical reanalysis and forecast seamlessly) - confirmed
     the gap was real: without this, wind/solar were only ever populated
-    through today, so predicting tomorrow built an empty-dataframe feature
-    that crashed downstream with a dtype error (see chat)."""
+    through today, so predicting tomorrow built an empty-dataframe feature,
+    which pandas gives dtype "object" when it has nothing to infer a numeric
+    dtype from - and XGBoost's predict() rejects object dtype outright, even
+    though every value in it was NaN."""
     client = make_openmeteo_client()
     today = reference_date or datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
@@ -407,11 +409,11 @@ EIA_DATASETS = [
     EiaDataset("gas_price", "fuel_price", fetch_gas_price, 14),
     EiaDataset("generation_mix", "fuel_generation_monthly", fetch_generation_mix, 183),
     EiaDataset("ercot_fuel_mix", "fuel_pct_hourly", fetch_ercot_fuel_mix, 3),
-    # EIA's "demand" (electricity/rto/region-data) dropped (see chat): its "DF"
-    # (day-ahead demand forecast) column is retrospective, not live - confirmed
-    # against the real API it lags about as far behind "now" as the actuals
-    # do. Replaced by GridStatus's ercot_load_forecast_dam below, which is
-    # genuinely forward-looking.
+    # EIA's "demand" (electricity/rto/region-data) dropped: its "DF" (day-ahead
+    # demand forecast) column is retrospective, not live - confirmed against
+    # the real API it lags about as far behind "now" as the actuals ("D") do.
+    # Val RMSE head-to-head: see model/model.md S8.3. Replaced by GridStatus's
+    # ercot_load_forecast_dam below, which is genuinely forward-looking.
 ]
 
 
@@ -543,11 +545,14 @@ def update_all_dam_prices(engine: sa.Engine, since: date | None = None) -> None:
 # --------------------------------------------------------------------------- #
 # GridStatus DAM load forecast (ercot_load_forecast_dam) - genuinely forward-
 # looking, unlike EIA's demand_forecast_mwh (the old hourly_demand_forecast
-# table/EIA puller, now removed - see chat): ERCOT publishes this once/day at
-# 14:30 CT, covering the ENTIRE next delivery
-# day, confirmed live against the real API. One request returns all zones as
-# columns already (no per-zone filter needed, so this costs 1 request/day
-# toward the 250/month budget, not 5).
+# table/EIA puller, now removed - see model/model.md S8.3): ERCOT publishes
+# this once/day at 14:30 CT, covering the ENTIRE next delivery day, confirmed
+# live against the real API. One request returns all zones as columns
+# already (no per-zone filter needed, so this costs 1 request/day toward the
+# 250/month budget, not 5). zone is ERCOT's weather-zone scheme
+# (north/south/west/houston/system_total) - a different naming convention
+# from the LZ_ settlement points used for electrical_price (see
+# normalize_load_forecast below and model/model.md S8.3).
 # --------------------------------------------------------------------------- #
 
 LOAD_FORECAST_DATASET = "ercot_load_forecast_dam"
@@ -587,9 +592,12 @@ def fetch_load_forecast_dam(client, start: date, end: date, max_rows: int = DEFA
 def update_load_forecast_dam(engine: sa.Engine, client, since: date | None = None,
                              now: datetime | None = None, max_rows: int = DEFAULT_MAX_ROWS) -> tuple[int, int]:
     """Incoming window only (yesterday through tomorrow), same as weather -
-    Supabase holds live/incoming data for serving, not a historical archive
-    (that's what the local CSVs under model/ are for - see chat). `since` is
-    an explicit escape hatch for a deliberate one-off backfill, not the normal
+    Supabase holds live/incoming data for serving, not a historical archive.
+    By design: Supabase feeds the backend's live predictions, while model
+    training reads from the CSVs under model/ instead (users plausibly want
+    to see historical price, which is why electrical_price was backfilled in
+    full, but not historical wind/solar/load-forecast). `since` is an
+    explicit escape hatch for a deliberate one-off backfill, not the normal
     path: passing it widens the start date but the window is still capped at
     tomorrow, it will NOT pull years of history by default."""
     now = now or datetime.now(timezone.utc)

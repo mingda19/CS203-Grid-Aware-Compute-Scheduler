@@ -128,7 +128,10 @@ class SolarPowerProxyTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# Calendar features - UTC throughout, by explicit decision (see chat)
+# Calendar features - UTC throughout by explicit decision: join convenience
+# against the other UTC-keyed tables beats the minor accuracy cost of not
+# converting to Central time (which would blur hour/day-of-week around DST
+# transitions anyway). Related DST handling for sequence models: model/model.md S3.8.
 # --------------------------------------------------------------------------- #
 
 class CalendarFeatureTests(unittest.TestCase):
@@ -142,6 +145,41 @@ class CalendarFeatureTests(unittest.TestCase):
         df = pd.DataFrame({"time": [pd.Timestamp("2025-07-04 12:00:00"), pd.Timestamp("2025-07-05 12:00:00")]})
         out = pred.add_calendar_features(df)
         self.assertEqual(out["is_us_holiday"].tolist(), [1, 0])
+
+
+# --------------------------------------------------------------------------- #
+# load_forecast_dam lookup - zone is ERCOT's weather-zone scheme
+# (north/south/west/houston/system_total), NOT the LZ_ settlement-point
+# naming used for electrical_price. Regression test for a real bug: this
+# function was once called with location="LZ_NORTH" (DEFAULT_LOCATION),
+# which matches zero rows against the zone column and silently produced an
+# all-NaN load_forecast_dam_north_mwh feature.
+# --------------------------------------------------------------------------- #
+
+class LoadLoadForecastTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = make_engine()
+        with self.engine.begin() as conn:
+            conn.execute(sa.text(
+                "CREATE TABLE load_forecast_dam (interval_start_utc TEXT, zone TEXT, "
+                "load_forecast_mwh REAL, publish_time_utc TEXT, PRIMARY KEY (interval_start_utc, zone))"
+            ))
+            conn.execute(sa.text(
+                "INSERT INTO load_forecast_dam VALUES "
+                "('2026-03-02T05:00:00', 'north', 45000.0, '2026-03-01T14:30:00'), "
+                "('2026-03-02T05:00:00', 'south', 12000.0, '2026-03-01T14:30:00')"
+            ))
+
+    def test_lowercase_zone_name_matches_rows(self):
+        out = pred.load_load_forecast(self.engine, "north",
+                                      datetime(2026, 3, 2), datetime(2026, 3, 3))
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out["load_forecast_dam_north_mwh"].iloc[0], 45000.0)
+
+    def test_lz_north_settlement_point_name_matches_nothing(self):
+        out = pred.load_load_forecast(self.engine, "LZ_NORTH",
+                                      datetime(2026, 3, 2), datetime(2026, 3, 3))
+        self.assertEqual(len(out), 0)
 
 
 # --------------------------------------------------------------------------- #

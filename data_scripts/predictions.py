@@ -2,25 +2,27 @@
 predictions.py
 
 Feature engineering + model serving for LZ_NORTH DAM price. Ports the
-imputation/power-proxy/calendar logic validated in the EDA phase (see
-model/wind_solar_power_features.py, model/wind_shear_veer_turbulence.py,
-model/build_master_table.py - all being pruned; this is now the only place
-that logic survives) and adds the new prediction-writing layer.
+imputation/power-proxy/calendar logic originally validated in the EDA phase
+(in now-deleted scripts model/wind_solar_power_features.py,
+model/wind_shear_veer_turbulence.py, model/build_master_table.py - see
+model/model.md S3.5 for the formulas' rationale) and adds the new
+prediction-writing layer. This module is now the only place that logic
+survives in runnable form.
 
 Reuses ingestion.upsert_dataframe for the DB write rather than duplicating it
-(the two modules are "self contained" with respect to the pruned EDA scripts,
-not with respect to each other).
+(predictions.py and ingestion.py are "self contained" with respect to the
+pruned EDA scripts, not with respect to each other).
 
 Known gap, not yet solved here (flagging rather than silently glossing over
 it): the model was trained on a price target winsorized at a FIXED 4-std band
 computed once from the full 2020-2026 training history (mean=56.35,
-std=362.55 -> band [-1393.85, 1506.55] - see model/wind_shear_veer_turbulence.py).
-Live price-lag features must be clipped to that SAME fixed band, not a band
-recomputed from a small recent window (which would drift from what the model
-was trained on). WINSORIZE_LOWER/WINSORIZE_UPPER below hardcode that band;
-if the model is ever retrained on a different window, these must be updated
-together with it, or predictions will be computed on a different scale than
-the model expects.
+std=362.55 -> band [-1393.85, 1506.55]). Live price-lag features must be
+clipped to that SAME fixed band, not a band recomputed from a small recent
+window (which would drift from what the model was trained on).
+WINSORIZE_LOWER/WINSORIZE_UPPER below hardcode that band; if the model is
+ever retrained on a different window, these must be updated together with
+it, or predictions will be computed on a different scale than the model
+expects.
 
 Separately: the imputation functions exist to backfill a HISTORICAL gap
 (Open-Meteo didn't serve wind_speed_120m etc. before 2021-03-23) - live
@@ -59,6 +61,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL_PATH = SCRIPT_DIR.parent / "model" / "models" / "xgboost_baseline_full.json"
 DEFAULT_MODEL_VERSION = "xgboost_baseline_full"
 DEFAULT_LOCATION = "LZ_NORTH"
+# load_forecast_dam uses ERCOT's weather-zone scheme (north/south/west/
+# houston/system_total), a different naming convention from the LZ_
+# settlement points above - see model/model.md S8.3. Must not be confused
+# with DEFAULT_LOCATION; passing "LZ_NORTH" here matches zero rows.
+DEFAULT_LOAD_FORECAST_ZONE = "north"
 
 # Fixed winsorization band the model was trained against - see module docstring.
 WINSORIZE_LOWER = -1393.85
@@ -233,14 +240,14 @@ def load_single_column(engine: sa.Engine, table: str, time_col: str, value_col: 
     df["time"] = pd.to_datetime(df["time"])
     return df
 
-def load_load_forecast(engine: sa.Engine, location: str, start: datetime, end: datetime) -> pd.DataFrame:
+def load_load_forecast(engine: sa.Engine, zone: str, start: datetime, end: datetime) -> pd.DataFrame:
     query = sa.text(
         "SELECT interval_start_utc AS time, load_forecast_mwh AS load_forecast_dam_north_mwh "
         "FROM load_forecast_dam "
-        "WHERE zone = :location AND interval_start_utc >= :start AND interval_start_utc < :end"
+        "WHERE zone = :zone AND interval_start_utc >= :start AND interval_start_utc < :end"
     )
     with engine.begin() as conn:
-        df = pd.read_sql(query, conn, params={"location": location, "start": _iso(start), "end": _iso(end)})
+        df = pd.read_sql(query, conn, params={"zone": zone, "start": _iso(start), "end": _iso(end)})
     df["time"] = pd.to_datetime(df["time"])
     return df
 
@@ -260,11 +267,12 @@ def build_features(engine: sa.Engine, target_times: pd.DatetimeIndex, location: 
     window to include not-yet-known (also-being-predicted) hours, so they're
     frozen as of the last known actual hour and broadcast across the whole
     batch instead of varying per target hour. (lag_1h had this same problem far
-    more severely - see chat/model/train_xgboost_baseline.py - and was dropped
-    from the model entirely rather than frozen, since measured head-to-head
-    under realistic serving conditions it made predictions much worse, not
-    better.) Known limitation: the rolling features get slightly "stale" for
-    later hours in the batch - measured as a minor effect, unlike lag_1h's."""
+    more severely - freezing it the same way still made predictions much
+    worse, not better, measured head-to-head under this same realistic
+    serving simulation - so it was dropped from the model entirely rather
+    than frozen. Full numbers: model/model.md S8.2.) Known limitation: the
+    rolling features get slightly "stale" for later hours in the batch -
+    measured as a minor effect, unlike lag_1h's."""
     last_known = target_times.min() - timedelta(hours=1)
     earliest_needed = min(last_known, target_times.min()) - timedelta(hours=168)
 
@@ -302,7 +310,8 @@ def build_features(engine: sa.Engine, target_times: pd.DatetimeIndex, location: 
     solar_total = solar.groupby("time")["solar_power_output_proxy"].sum().rename("solar_power_output_proxy_total")
     features = features.merge(solar_total.reset_index(), on="time", how="left")
 
-    demand = load_load_forecast(engine, location, target_times.min(), target_times.max() + timedelta(hours=1))
+    demand = load_load_forecast(engine, DEFAULT_LOAD_FORECAST_ZONE,
+                                target_times.min(), target_times.max() + timedelta(hours=1))
     features = features.merge(demand, on="time", how="left")
     
     features = features.set_index("time").reindex(target_times)[FEATURE_COLUMNS]
