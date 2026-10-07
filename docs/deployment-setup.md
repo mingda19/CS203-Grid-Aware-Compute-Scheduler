@@ -38,6 +38,7 @@ flowchart TD
    * **Region**: Choose closest (e.g., Oregon or Singapore)
    * **Instance Type**: Free / Starter
 4. **Environment Variables** (Under the *Environment* tab):
+   * `PORT`: `10000` (Render default port for Web Services)
    * `DATABASE_URL`: Your PostgreSQL connection string (e.g. from Render PostgreSQL)
    * `JWT_SECRET_KEY`: Long 256-bit base64 secret string
    * `JWT_ACCESS_EXPIRATION_MS`: `900000`
