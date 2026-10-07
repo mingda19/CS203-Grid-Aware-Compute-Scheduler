@@ -59,7 +59,7 @@ export interface DataFreshnessResponse {
   checkedAt: string
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080"
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080").replace(/\/+$/, "")
 
 // In-memory access token storage (secure against XSS exfiltration from localStorage)
 let inMemoryAccessToken: string | null = null

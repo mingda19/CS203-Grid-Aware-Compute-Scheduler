@@ -85,7 +85,7 @@ const monitoredEndpoints = [
   { name: "Authentication API", path: "/api/auth/me" },
   { name: "Admin API", path: "/api/admin/users" },
 ]
-const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080"
+const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080").replace(/\/+$/, "")
 
 function EndpointPipelineStatus() {
   const [checks, setChecks] = React.useState<EndpointCheck[]>(monitoredEndpoints.map((item) => ({ ...item, state: "checking" as const })))
