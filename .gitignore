@@ -5,7 +5,13 @@ data/
 
 __pycache__/
 .pytest_cache/
+.venv/
 .DS_Store
 *.cache.sqlite
 # Next.js build output in any app directory
 **/.next/
+
+# Generated EDA data/model artifacts - reproducible from the scripts, not committed (same
+# convention as data/: nobody commits data files in this repo)
+model/*.csv
+model/models/*.json

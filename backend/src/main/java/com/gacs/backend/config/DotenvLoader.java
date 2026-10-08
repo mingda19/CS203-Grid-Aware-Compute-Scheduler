@@ -1,14 +1,13 @@
 package com.gacs.backend.config;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
-import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class DotenvLoader {
 
@@ -145,6 +144,9 @@ public class DotenvLoader {
     static String decodeUserInfo(String value) {
         if (value == null) {
             return null;
+    private static String decodeUserInfo(String value) {
+        if (value == null) {
+            return "";
         }
         try {
             return URLDecoder.decode(value, StandardCharsets.UTF_8);
@@ -180,5 +182,7 @@ public class DotenvLoader {
         return (c >= '0' && c <= '9') ||
                (c >= 'a' && c <= 'f') ||
                (c >= 'A' && c <= 'F');
+            return value;
+        }
     }
 }

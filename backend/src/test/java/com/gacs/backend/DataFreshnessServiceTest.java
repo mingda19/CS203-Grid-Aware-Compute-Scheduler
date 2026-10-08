@@ -6,7 +6,7 @@ import com.gacs.backend.repository.ElectricalPriceRepository;
 import com.gacs.backend.repository.FuelGenerationMonthlyRepository;
 import com.gacs.backend.repository.FuelMixHourlyRepository;
 import com.gacs.backend.repository.FuelPriceRepository;
-import com.gacs.backend.repository.HourlyDemandForecastRepository;
+import com.gacs.backend.repository.LoadForecastDamRepository;
 import com.gacs.backend.repository.LoadDataRepository;
 import com.gacs.backend.repository.SolarRepository;
 import com.gacs.backend.repository.WindRepository;
@@ -29,7 +29,7 @@ class DataFreshnessServiceTest {
     private FuelPriceRepository fuelPrice;
     private FuelMixHourlyRepository fuelMix;
     private FuelGenerationMonthlyRepository monthlyGeneration;
-    private HourlyDemandForecastRepository demand;
+    private LoadForecastDamRepository loadForecastDam;
     private LoadDataRepository load;
     private SolarRepository solar;
     private WindRepository wind;
@@ -41,7 +41,7 @@ class DataFreshnessServiceTest {
         fuelPrice = mock(FuelPriceRepository.class);
         fuelMix = mock(FuelMixHourlyRepository.class);
         monthlyGeneration = mock(FuelGenerationMonthlyRepository.class);
-        demand = mock(HourlyDemandForecastRepository.class);
+        loadForecastDam = mock(LoadForecastDamRepository.class);
         load = mock(LoadDataRepository.class);
         solar = mock(SolarRepository.class);
         wind = mock(WindRepository.class);
@@ -86,7 +86,7 @@ class DataFreshnessServiceTest {
 
     private DataFreshnessService service() {
         return new DataFreshnessService(electricalPrice, fuelPrice, fuelMix, monthlyGeneration,
-                demand, load, solar, wind, dataCenters);
+                loadForecastDam, load, solar, wind, dataCenters);
     }
 
     private void whenAllLatest(LocalDateTime timestamp) {
@@ -94,7 +94,7 @@ class DataFreshnessServiceTest {
         when(fuelPrice.findLatestPeriod()).thenReturn(timestamp);
         when(fuelMix.findLatestPeriod()).thenReturn(timestamp);
         when(monthlyGeneration.findLatestPeriod()).thenReturn(timestamp);
-        when(demand.findLatestPeriod()).thenReturn(timestamp);
+        when(loadForecastDam.findLatestIntervalStartUtc()).thenReturn(timestamp);
         when(load.findLatestTime()).thenReturn(timestamp);
         when(solar.findLatestTime()).thenReturn(timestamp);
         when(wind.findLatestTime()).thenReturn(timestamp);
