@@ -186,25 +186,60 @@ class LoadLoadForecastTests(unittest.TestCase):
 # Prediction output + write
 # --------------------------------------------------------------------------- #
 
-class FakeModel:
-    """Stands in for a loaded xgboost model: predicts a fixed value per row."""
-    def predict(self, X):
-        return np.full(len(X), 42.0)
-
-
 class PredictTests(unittest.TestCase):
     def test_predict_prices_output_schema(self):
-        features = pd.DataFrame({"lag_1h": [10.0], "hour": [5]})
         times = pd.to_datetime(["2026-03-02T05:00:00"])
         generated_at = datetime(2026, 3, 1, 21, 0, tzinfo=timezone.utc)
 
-        out = pred.predict_prices(FakeModel(), features, times, location="LZ_NORTH",
+        out = pred.predict_prices(np.array([42.0]), times, location="LZ_NORTH",
                                    model_version="xgboost_baseline_full_2026-03-01", generated_at=generated_at)
 
         self.assertEqual(list(out.columns),
                          ["interval_start_utc", "location", "predicted_price", "model_version", "generated_at"])
         self.assertEqual(out["predicted_price"].iloc[0], 42.0)
         self.assertEqual(out["location"].iloc[0], "LZ_NORTH")
+
+    def test_load_model_rejects_unknown_file_type(self):
+        with self.assertRaises(ValueError):
+            pred.load_model("some_model.pkl")
+
+
+# --------------------------------------------------------------------------- #
+# Exogenous inputs shared by the XGBoost and LSTM feature builders
+# --------------------------------------------------------------------------- #
+
+class LoadExogenousTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = make_engine()
+        with self.engine.begin() as conn:
+            conn.execute(sa.text("CREATE TABLE fuel_price (period TEXT, henry_hub_price_usd_mmbtu REAL)"))
+            conn.execute(sa.text("CREATE TABLE wind (location_id INTEGER, time TEXT, wind_speed_80m REAL, "
+                                 "wind_speed_120m REAL, temperature_120m REAL)"))
+            conn.execute(sa.text("CREATE TABLE solar (location_id INTEGER, time TEXT, "
+                                 "shortwave_radiation REAL, temperature_2m REAL)"))
+            conn.execute(sa.text("CREATE TABLE load_forecast_dam (interval_start_utc TEXT, zone TEXT, "
+                                 "load_forecast_mwh REAL)"))
+            # Thursday + Friday published; nothing over the weekend or after.
+            conn.execute(sa.text("INSERT INTO fuel_price VALUES ('2026-02-26T00:00:00', 3.0), "
+                                 "('2026-02-27T00:00:00', 3.5)"))
+
+    def test_gas_lag_is_carried_past_the_last_published_day(self):
+        # A day-ahead run always targets a day with no gas row yet - it must
+        # get the last published price, not NaN.
+        out = pred.load_exogenous(self.engine, datetime(2026, 2, 27), datetime(2026, 3, 2, 23))
+        by_day = out.groupby(out["time"].dt.date)["henry_hub_price_usd_mmbtu_lag1d"].first()
+        self.assertEqual(by_day.tolist(), [3.0, 3.5, 3.5, 3.5])
+
+    def test_stale_gas_is_not_carried_forever(self):
+        out = pred.load_exogenous(self.engine, datetime(2026, 3, 4), datetime(2026, 3, 8, 23))
+        by_day = out.groupby(out["time"].dt.date)["henry_hub_price_usd_mmbtu_lag1d"].first()
+        self.assertEqual(by_day.iloc[0], 3.5)
+        self.assertTrue(np.isnan(by_day.iloc[-1]))
+
+    def test_one_row_per_hour_even_with_no_source_data(self):
+        out = pred.load_exogenous(self.engine, datetime(2026, 3, 2), datetime(2026, 3, 2, 23))
+        self.assertEqual(len(out), 24)
+        self.assertTrue(out["wind_power_output_proxy_total"].isna().all())
 
 
 class WritePredictionsTests(unittest.TestCase):
