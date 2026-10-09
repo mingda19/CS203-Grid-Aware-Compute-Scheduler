@@ -47,6 +47,8 @@ export interface PriceForecastPoint {
 export interface PriceForecast {
   points: PriceForecastPoint[]
   horizonHours: number
+}
+
 export interface WorkloadSchedule {
   id: number
   title: string
