@@ -66,31 +66,38 @@ export function AppShell({ children }: AppShellProps) {
   const [systemDataStatus, setSystemDataStatus] = React.useState<DataStatusType>("demo")
   const [systemDataTimestamp, setSystemDataTimestamp] = React.useState<string | null>(null)
 
+  const pathname = usePathname()
+
   const tourSteps = [
     {
       title: "Your operations overview",
       description: "This page brings together your energy conditions, compute activity, and estimated savings. Start here to see what is happening today.",
-      target: "overview",
+      target: "overview-root",
+      href: "/overview",
     },
     {
       title: "Review suggested changes",
       description: "Pending approvals show schedule recommendations that need your review. Read the expected impact before approving or rejecting a change.",
-      target: "approvals",
+      target: "approvals-root",
+      href: "/approvals",
     },
     {
       title: "See your scheduled work",
       description: "The workload scheduler lists compute jobs, their current status, and when they are planned to run. A schedule can move flexible work to a lower-cost time.",
-      target: "workloads",
+      target: "workloads-root",
+      href: "/workloads",
     },
     {
       title: "Understand the forecast",
       description: "Price & Wind Forecast compares expected electricity prices with planned compute use. Higher bars or peaks indicate times when energy may cost more.",
-      target: "forecasts",
+      target: "forecasts-root",
+      href: "/forecasts",
     },
     {
       title: "You’re ready to explore",
       description: "Use the menu on the left to move between areas. You can reopen this guide anytime with the help button at the top of the page.",
       target: null,
+      href: null,
     },
   ]
 
@@ -195,21 +202,23 @@ export function AppShell({ children }: AppShellProps) {
 
   const goToTourStep = (nextStep: number) => {
     setTourStep(nextStep)
-    const target = tourSteps[nextStep]?.target
+    const step = tourSteps[nextStep]
+    if (step?.href && pathname !== step.href) {
+      router.push(step.href)
+    }
+    const target = step?.target
     if (target) {
-      window.setTimeout(() => document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50)
+      window.setTimeout(() => document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "center" }), 120)
     }
   }
 
   const navItems = [
-    { label: "Live Grid & Overview", icon: LayoutDashboard, href: "#overview", active: true },
-    { label: "Workload Scheduler", icon: CalendarClock, href: "#workloads", badge: "4 Active" },
-    { label: "Price & Wind Forecast", icon: TrendingDown, href: "#forecasts" },
-    { label: "Battery & Energy Mix", icon: BatteryCharging, href: "#battery" },
-    { label: "Pending Approvals", icon: CheckCircle2, href: "#approvals", badge: "1 New", highlight: true },
-    { label: "Historical Audit Logs", icon: FileText, href: "#audit" },
-    { label: "Facility Constraints", icon: SlidersHorizontal, href: "#constraints" },
-    { label: "System Settings", icon: Settings, href: "#settings" },
+    { label: "Live Grid & Overview", icon: LayoutDashboard, href: "/overview", active: pathname === "/overview" || pathname === "/" },
+    { label: "Workload Scheduler", icon: CalendarClock, href: "/workloads", badge: "4 Active", active: pathname?.startsWith("/workloads") },
+    { label: "Price & Wind Forecast", icon: TrendingDown, href: "/forecasts", active: pathname?.startsWith("/forecasts") },
+    { label: "Battery & Energy Mix", icon: BatteryCharging, href: "/energy", active: pathname?.startsWith("/energy") },
+    { label: "Pending Approvals", icon: CheckCircle2, href: "/approvals", badge: "1 New", highlight: true, active: pathname?.startsWith("/approvals") },
+    { label: "Historical Audit Logs", icon: FileText, href: "/audit", active: pathname?.startsWith("/audit") },
   ]
 
   const sidebarContent = (
@@ -253,7 +262,7 @@ export function AppShell({ children }: AppShellProps) {
         {navItems.map((item) => {
           const Icon = item.icon
           return (
-            <a
+            <Link
               key={item.label}
               href={item.href}
               onClick={() => isMobile && setMobileOpen(false)}
@@ -280,7 +289,7 @@ export function AppShell({ children }: AppShellProps) {
                   {item.badge}
                 </span>
               )}
-            </a>
+            </Link>
           )
         })}
 
