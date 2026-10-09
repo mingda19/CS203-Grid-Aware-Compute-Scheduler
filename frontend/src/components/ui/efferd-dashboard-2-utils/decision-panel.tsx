@@ -51,9 +51,9 @@ const initialOptimizationWorkloads: OptimizationWorkloadItem[] = [
     type: "ML Training",
     cluster: "64x NVIDIA H100 SXM5",
     powerKw: 1200,
-    originalWindow: "17:00 – 21:00 UTC",
-    proposedWindow: "01:30 – 05:30 UTC",
-    deadline: "10:00 AM UTC",
+    originalWindow: "01:00 – 05:00 SGT",
+    proposedWindow: "09:30 – 13:30 SGT",
+    deadline: "18:00 SGT (Today)",
     baselineCostUsd: 5640,
     optimizedCostUsd: 3800,
     savingsUsd: 1840,
@@ -67,8 +67,8 @@ const initialOptimizationWorkloads: OptimizationWorkloadItem[] = [
     type: "Crypto Mining",
     cluster: "Antminer S19 Pro+ Pod 2",
     powerKw: 1800,
-    originalWindow: "17:00 – 20:00 UTC (Full)",
-    proposedWindow: "17:00 – 20:00 UTC (Throttled)",
+    originalWindow: "01:00 – 04:00 SGT (Full)",
+    proposedWindow: "01:00 – 04:00 SGT (Throttled)",
     deadline: "Flexible Throughput",
     baselineCostUsd: 4680,
     optimizedCostUsd: 3230,
@@ -83,14 +83,14 @@ const initialOptimizationWorkloads: OptimizationWorkloadItem[] = [
     type: "HPC Batch",
     cluster: "Slurm HPC Cluster (96 Nodes)",
     powerKw: 450,
-    originalWindow: "06:00 – 08:30 UTC",
-    proposedWindow: "02:00 – 04:30 UTC",
-    deadline: "08:00 AM UTC",
+    originalWindow: "14:00 – 16:30 SGT",
+    proposedWindow: "10:00 – 12:30 SGT",
+    deadline: "16:00 SGT (Today)",
     baselineCostUsd: 1390,
     optimizedCostUsd: 870,
     savingsUsd: 520,
     slackHours: 3.5,
-    rationale: "Moved into overnight low-cost LMP block before morning industrial ramp.",
+    rationale: "Moved into morning low-cost LMP block before peak industrial ramp.",
     included: true,
   },
   {
@@ -99,9 +99,9 @@ const initialOptimizationWorkloads: OptimizationWorkloadItem[] = [
     type: "HVAC Pre-Cool",
     cluster: "Trane Centrifugal Chiller Bank",
     powerKw: 320,
-    originalWindow: "17:00 – 19:30 UTC",
-    proposedWindow: "13:30 – 16:00 UTC",
-    deadline: "Peak Window (17:00)",
+    originalWindow: "01:00 – 03:30 SGT",
+    proposedWindow: "21:30 – 00:00 SGT",
+    deadline: "Peak Window (01:00 SGT)",
     baselineCostUsd: 1280,
     optimizedCostUsd: 970,
     savingsUsd: 310,
@@ -216,7 +216,7 @@ export function DecisionPanel({
                   ) : (
                     <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-semibold">
                       <Clock className="h-3.5 w-3.5" />
-                      Operator action required · Decision needed before 01:15 UTC (in 24 mins) before interval lock
+                      Operator action required · Decision needed before 09:15 SGT (in 24 mins) before interval lock
                     </span>
                   )}
                 </CardDescription>
@@ -265,8 +265,8 @@ export function DecisionPanel({
               </span>
             </div>
             <p className="leading-relaxed text-muted-foreground">
-              By shifting <strong>Llama-3 Fine-Tuning Run #4</strong> and <strong>Monte Carlo Batch #812</strong> forward into the <strong>01:30 – 05:30 UTC</strong> window, this plan captures curtailed West Texas wind power pricing at <strong>$14.80/MWh</strong>.
-              During the impending <strong>17:00 – 20:00 UTC</strong> ERCOT thermal price spike (forecasted at <strong>$142.50/MWh</strong> due to evening solar ramp-down), flexible crypto mining is throttled and cooling switches to pre-chill thermal reserves, shedding <strong>{formatMw(impact.peakReductionMw)}</strong> of peak facility demand.
+              By shifting <strong>Llama-3 Fine-Tuning Run #4</strong> and <strong>Monte Carlo Batch #812</strong> forward into the <strong>09:30 – 13:30 SGT</strong> window, this plan captures curtailed West Texas wind power pricing at <strong>$14.80/MWh</strong>.
+              During the impending <strong>01:00 – 04:00 SGT</strong> ERCOT thermal price spike (forecasted at <strong>$142.50/MWh</strong> due to evening solar ramp-down), flexible crypto mining is throttled and cooling switches to pre-chill thermal reserves, shedding <strong>{formatMw(impact.peakReductionMw)}</strong> of peak facility demand.
             </p>
           </div>
 
@@ -325,7 +325,7 @@ export function DecisionPanel({
                 </div>
                 <div className="text-[11px] text-muted-foreground flex items-center justify-between border-t border-border/50 pt-1.5">
                   <span>Peak Window Shed</span>
-                  <span className="font-mono font-semibold text-foreground">17:00–20:00 UTC</span>
+                  <span className="font-mono font-semibold text-foreground">01:00–04:00 SGT</span>
                 </div>
               </div>
 

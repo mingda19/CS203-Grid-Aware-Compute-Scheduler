@@ -1,238 +1,264 @@
-# GACS Frontend Review
-
-**Reviewed URL:** https://cs-203-grid-aware-compute-scheduler.vercel.app/
-
-**Access:** Yes. The public login page loaded successfully, and the prefilled demo login opened the authenticated System Administrator dashboard.
-
-**Scope:** Visual and interaction review of the login screen and the main operations dashboard. This review focuses on frontend structure, information hierarchy, operator workflow, trust, accessibility, and implementation priorities.
-
-## Overall assessment
-
-The product already communicates a credible control-room concept: ERCOT market context, flexible compute workloads, energy mix, savings, approvals, and auditability are all present. The emerald/teal visual language also fits energy and infrastructure operations.
-
-The main problem is **information architecture rather than styling**. The dashboard currently presents many sections, status cards, operational controls, tables, and system-health messages in one long experience. An operator can see a lot, but it is not immediately obvious what requires attention first, what is live versus mocked or unavailable, or what action is safest to take next.
-
-I would prioritize a workflow-led redesign around three questions:
-
-1. **What is happening right now?**
-2. **What decision needs operator approval?**
-3. **What will happen if I approve, reject, or reschedule it?**
-
-## Priority changes
-
-### P0 — Fix trust and operational clarity first
-
-#### 1. Separate live data, demo data, and unavailable data
-
-The dashboard displays useful operational values such as `$28.40 / MWh`, `58.6% Green`, projected savings, workload schedules, and a human-in-the-loop recommendation. At the same time, the pipeline panel reports `API endpoints 0/2 reachable` and `No telemetry API`.
-
-That combination can make an operator unsure whether the visible numbers are current, simulated, cached, or stale.
-
-**Change:** Add a consistent data-status treatment to every live metric:
-
-- `Live · updated 32 sec ago`
-- `Cached · updated 12 min ago`
-- `Demo data`
-- `Unavailable`
-
-Use the same status component for cards, charts, tables, and recommendations. Add a tooltip or details drawer explaining the source and timestamp. Do not show a “live” green indicator when the underlying endpoint is unavailable.
-
-#### 2. Make the approval workflow the primary dashboard action
-
-The recommendation card is the most consequential part of the page, but it competes with many metrics and navigation items. The primary action should be easier to locate and easier to evaluate.
-
-**Change:** Promote the pending recommendation into a dedicated decision panel near the top of the page:
-
-- A clear `Pending approval` status and approval deadline.
-- A short “Recommended change” summary.
-- Current schedule versus proposed schedule.
-- Expected savings, SLA impact, power impact, and confidence in a compact comparison.
-- Affected workloads listed as removable or expandable rows.
-- `Approve & dispatch` as the primary action.
-- `Reject` and `Request changes` as secondary actions.
-- A required confirmation step that summarizes the exact dispatch effect before execution.
-
-The current `Approve & Dispatch Workloads` label is strong, but it should not be a one-click action without a final impact review.
-
-#### 3. Remove production-looking demo credentials from the login form
-
-The login screen visibly contains prefilled email and password values and offers “Demo Persona” buttons. This is useful for a prototype, but it is risky and confusing for a production-facing interface.
-
-**Change:** Split the experience into two explicit modes:
-
-- **Production sign-in:** empty fields, password manager support, SSO/OTP options, and normal validation.
-- **Demo mode:** a clearly labeled `Launch demo` entry point that selects a persona without exposing a password in the form.
-
-If demo credentials must remain, label the screen `Demo environment` and ensure the credentials cannot be mistaken for real operational access.
-
-### P1 — Improve scanability and navigation
-
-#### 4. Replace the long anchor-based dashboard with task-oriented sections
-
-The left navigation contains many items: Live Grid & Overview, Workload Scheduler, Price & Wind Forecast, Battery & Energy Mix, Pending Approvals, Historical Audit Logs, Facility Constraints, and System Settings. Most appear to point to sections on one long page.
-
-This creates two problems:
-
-- The page becomes difficult to scan and maintain as more modules are added.
-- Operators may lose context when jumping between sections.
-
-**Recommended information architecture:**
-
-- `/overview` — current grid state, alerts, active recommendation, key metrics.
-- `/workloads` — scheduling queue, filters, workload details, schedule changes.
-- `/forecasts` — price, wind, solar, confidence intervals, forecast comparison.
-- `/energy` — battery, facility load, clean-energy mix, constraints.
-- `/approvals` — pending and historical operator decisions.
-- `/audit` — searchable audit trail and export.
-- `/admin` — users, roles, integrations, and system configuration.
-
-Keep a compact overview page, but give dense workflows their own routes and URL state.
-
-#### 5. Create a stronger visual hierarchy for the first viewport
-
-The top of the dashboard should prioritize:
-
-1. System status and data freshness.
-2. Current market conditions.
-3. Pending operator decision.
-4. Immediate operational risk.
-5. Supporting metrics.
-
-The current layout gives similar visual weight to many cards. Use one dominant alert/decision region, a smaller row of key metrics, and a lower-density supporting area.
-
-A useful top-level arrangement would be:
-
-- **Header:** market, facility, last refresh, notifications, profile.
-- **Alert strip:** stale data, endpoint errors, or unresolved approvals.
-- **Decision panel:** pending recommendation.
-- **Metric row:** LMP, compute load, battery state, projected savings.
-- **Main content:** chart and workload schedule.
-
-#### 6. Replace ambiguous labels with action-specific language
-
-A few labels are too vague for an operational product:
-
-- `Toggle` should become `Pause`, `Resume`, `Throttle`, or `View details` depending on the actual action.
-- `Refresh` should show whether it refreshes the page, a data source, or pipeline checks.
-- `Re-run Solver` should specify what is recalculated and whether it can change the current recommendation.
-- `System Administrator` appears both as a persona and a signed-in user. Make the current identity and role visually distinct.
-
-Every destructive, expensive, or dispatch-related action should state its effect before confirmation.
-
-### P2 — Polish usability, accessibility, and visual consistency
-
-#### 7. Improve the login screen’s production readiness
-
-The login page has a good compact structure and clear primary CTA, but it can be refined:
-
-- Use a more explicit page title such as `Sign in to GACS` rather than mixing platform branding with product description.
-- Make the environment visible: `Production`, `Sandbox`, or `Demo`.
-- Add inline validation and a clear error region with `role="alert"`.
-- Add a password visibility control.
-- Make OTP sign-up a secondary flow with its own explanation, rather than a small inline link.
-- Keep the compliance/security message, but link it to an actual security or compliance page. Avoid presenting `NERC-CIP & SOC2 Compliant` as an unsupported badge.
-- Ensure keyboard focus states are clearly visible and that the demo persona buttons are reachable in a sensible tab order.
-
-#### 8. Make dense tables easier to operate
-
-The workload table contains important information, but its rows are visually dense and some values run together. Improve it with:
-
-- More horizontal spacing and consistent column alignment.
-- A responsive card layout on small screens.
-- Sortable columns for power, deadline, savings, and status.
-- Status chips with text and color, not color alone.
-- Row expansion for hardware, precedence rules, SLA, and schedule rationale.
-- A dedicated action menu per row instead of a generic `Toggle`.
-- Sticky table headers for long queues.
-
-#### 9. Treat charts as primary decision tools, not decoration
-
-The current dashboard describes price and forecast information, but the operator needs to compare time windows directly.
-
-Add a combined chart that shows:
-
-- ERCOT price curve.
-- Wind and solar generation or clean-energy availability.
-- Facility load and battery charge/discharge.
-- Current workload schedule.
-- Proposed workload schedule.
-- Peak-price windows and uncertainty bands.
-
-Use a shared UTC/local-time toggle and make the selected timezone persistent. Every chart should have a text alternative or data table for accessibility.
-
-#### 10. Add responsive mobile behavior deliberately
-
-The desktop layout relies on a fixed sidebar and a dense multi-column dashboard. On smaller screens, use:
-
-- A collapsible navigation drawer.
-- A sticky header with market status and notifications.
-- One metric card per row or a horizontal scroll region with clear affordances.
-- Stacked approval comparison cards.
-- Workload rows that open into details instead of forcing a wide table.
-- No hidden actions that are available only on hover.
-
-The most important actions—view recommendation, approve, reject, and inspect data freshness—must remain available without a desktop viewport.
-
-## Suggested revised dashboard flow
-
-### 1. Header
-
-Show the product name, facility/market selector, current environment, last refresh time, notifications, theme control, and user menu. Keep the selected market and facility persistent across routes.
-
-### 2. System status strip
-
-Use a single compact strip for connection status, stale feeds, forecast freshness, and unresolved issues. It should tell the operator whether the dashboard is safe to use for a decision.
-
-### 3. Decision panel
-
-Place the pending recommendation first when one exists. Show current versus proposed schedule, savings, SLA risk, carbon/energy impact, confidence, and affected workloads. Require explicit confirmation before dispatch.
-
-### 4. Current conditions
-
-Use four to six metric cards only. Each card should include value, trend, timestamp, source status, and a link to details.
-
-### 5. Timeline and queue
-
-Put the price/energy/workload timeline beside or above the workload queue. The operator should be able to understand *why* a workload is scheduled at a certain time without navigating to another page.
-
-### 6. History and audit
-
-Keep audit history separate from current operations. It should support filtering by operator, action, workload, time range, recommendation ID, and outcome.
-
-## Visual direction
-
-Keep the existing emerald/teal accent, but reduce the number of competing treatments. Use color primarily for meaning:
-
-- Emerald: healthy, approved, within target.
-- Amber: review required, approaching threshold, stale but usable.
-- Red: blocked, failed, SLA risk, or unsafe to dispatch.
-- Neutral: informational or not yet evaluated.
-
-Avoid making every positive metric green. If all cards are emphasized, none of them becomes the focal point.
-
-Use a slightly lighter content surface and clearer borders for dense operational modules. Preserve the dark control-room theme, but provide a more explicit contrast between background, card, selected navigation, and interactive controls.
-
-## Implementation order
-
-1. **Clarify environment and data freshness.** Add live/demo/unavailable states and remove exposed demo credentials from production mode.
-2. **Rebuild the approval panel.** Make the operator decision and its consequences the dominant workflow.
-3. **Split dense dashboard sections into routes.** Keep the overview concise and move detailed workflows into dedicated pages.
-4. **Improve workload interaction.** Replace generic toggles, add row details, sorting, filters, and responsive behavior.
-5. **Upgrade the timeline visualization.** Align price, energy, battery, and workload schedules in one decision-oriented chart.
-6. **Finish accessibility and responsive QA.** Test keyboard navigation, screen-reader labels, focus states, contrast, mobile layouts, and loading/error states.
-
-## Definition of done
-
-- An operator can identify the current market, data freshness, and system health within five seconds.
-- A pending recommendation is visible without scrolling through unrelated modules.
-- The operator can compare current and proposed schedules before approving dispatch.
-- Every operational value indicates whether it is live, cached, demo, or unavailable.
-- No production login screen exposes a password or ambiguous demo state.
-- Workload actions describe their actual effect and require confirmation when they alter dispatch.
-- The dashboard remains usable at mobile widths without horizontal scrolling for core actions.
-- Loading, empty, stale, error, and permission-denied states are designed rather than left as generic placeholders.
-- Charts provide a text/data-table alternative and use consistent timezone handling.
-
-## References
-
-[1]: https://cs-203-grid-aware-compute-scheduler.vercel.app/ "GACS Platform live frontend reviewed on 2026-10-09"
+# Frontend UI Design PRD (Product Requirements Document)
+**Grid Aware Compute Scheduler (GACS)**  
+**Document Status:** Approved Baseline & Enhancement Roadmap  
+**Document Version:** 2.0.0  
+**Classification:** Product Requirements & Frontend Engineering Standard  
+**Last Updated:** October 2026 (SGT)  
+
+---
+
+## 1. Executive Summary & Product Vision
+
+The **Grid Aware Compute Scheduler (GACS)** is an enterprise operational cockpit for datacenter operators managing flexible, deadline-tolerant workloads (e.g., LLM training batches, crypto mining, Monte Carlo simulations, and datacenter HVAC pre-cooling) in volatile wholesale electricity markets (ERCOT).
+
+GACS solves the fundamental tension between compute performance and electricity cost by answering three mission-critical operator questions:
+1. **What is happening right now across the grid and datacenter?** (Real-time LMP, clean energy mix, battery storage, and active compute load).
+2. **What optimization decision requires human approval?** (Solver-recommended schedule changes to capture negative/cheap renewable pricing while dodging expensive thermal price spikes).
+3. **What is the exact financial, operational, and carbon impact of that decision?** (Schedule diffs, dollar savings, SLA margin, peak megawatts shaved, and carbon avoided).
+
+This document establishes the UI/UX architecture, visual design standards, component specifications, and implementation roadmap for the GACS frontend application.
+
+---
+
+## 2. Key Architecture & Design Upgrades (v2.0)
+
+### 2.1 Unified Continuous Price Timeline (Historical + Forecast)
+- **Problem:** Previously, historical settlement prices and upcoming model forecasts were split across separate cards and charts. Operators had to scroll between two disconnected views, mentally bridging the transition between past actuals and future predictions.
+- **Solution:** A **single, continuous time-series chart** that unifies past actual settlement prices (solid emerald line with subtle area fill) and upcoming ML predictions (dashed violet line with shaded confidence envelope). A vertical **"Current Time / Now (SGT)"** reference divider separates history from forecast, providing a seamless continuum for dispatch decisions.
+
+### 2.2 Singapore Time (SGT / UTC+8) Standardization
+- **Problem:** The interface previously displayed timestamps in raw UTC or US Central time, forcing Singapore-based operators to perform mental timezone math (+8 hours) when reviewing batch schedules, deadlines, peak spikes, and audit logs.
+- **Solution:** Global standardization to **Singapore Time (SGT / UTC+8)** across all UI modules:
+  - Header badge displaying `🕒 SGT (UTC+8) · Singapore Standard Time`.
+  - Chart X-axes formatted cleanly in SGT (e.g., `10 Oct 09:00`, `18:00`, `11 Oct 02:00`).
+  - Workload scheduling windows, deadlines, and countdowns displayed in SGT.
+  - Interactive Google Calendar view aligned strictly to SGT operating cycles.
+  - Audit logs and data-freshness badges stamped in SGT with ISO-8601 UTC provenance in tooltips.
+
+### 2.3 Elevated Control-Room Visual Design Language
+- **Aesthetic:** High-contrast Dark Mode OLED (`#090d16` background) with glassmorphism (`backdrop-blur-xl bg-card/80`), refined emerald/cyan accents, and amber alert signals.
+- **Micro-Sparklines:** Trend preview sparklines embedded in core KPI cards.
+- **Visual Schedule Diff:** Visual before-and-after timeline comparison bars in the Human-in-the-Loop decision panel.
+- **Calendar Tariff Bands:** Shaded tariff bands in the calendar view highlighting peak pricing windows to visually explain solver decisions.
+
+---
+
+## 3. Detailed Feature Specifications
+
+### 3.1 Feature Spec 1: Unified Continuous Price Timeline Graph
+
+#### 3.1.1 Overview & Placement
+The Unified Price Timeline serves as the primary visual decision instrument on both `/overview` (compact preview) and `/forecasts` (full interactive workstation).
+
+#### 3.1.2 Visual Encoding & Layering
+1. **Historical Actual LMP Line:**
+   - **Stroke:** Solid emerald (`#10b981`), `strokeWidth: 2.5`.
+   - **Area Fill:** Gradient emerald-to-transparent (`fill="url(#emeraldGradient)"`, opacity 0.15 → 0.0).
+   - **Data Source:** ERCOT Settlement Point Prices (via Spring Boot `/api/prices/history`).
+2. **Current Time Divider ("Now" Boundary):**
+   - **Line:** Vertical reference line (`ReferenceLine` in Recharts) at the latest historical interval / current timestamp.
+   - **Color:** Bright cyan/white (`#38bdf8`), dotted/dashed (`strokeDasharray="3 3"`).
+   - **Label:** `● Now (SGT)` badge positioned at the top of the reference line.
+3. **Upcoming Forecast LMP Line:**
+   - **Stroke:** Dashed violet/indigo (`#8b5cf6`), `strokeWidth: 2.5`, `strokeDasharray="5 5"`.
+   - **Area Fill / Confidence Band:** Shaded uncertainty corridor (P10–P90 percentile or ±12% forecast spread) using low-opacity violet (`#8b5cf6`, opacity 0.10).
+   - **Data Source:** ML price forecast engine (`/api/prices/forecast`).
+4. **Workload Schedule Overlay Lane (Toggleable):**
+   - Interactive bar or shaded window along the bottom/background of the graph showing scheduled workload execution windows.
+   - Green highlight for active/scheduled runs during price valleys; amber striped highlight during throttled peak spike intervals.
+
+#### 3.1.3 Controls & Horizon Selectors
+- **Horizon Preset Pills:**
+  - `Past 24h + 24h Forecast` (Default operational window).
+  - `Past 48h + 48h Forecast` (Weekend/extended planning).
+  - `Past 7d + 72h Forecast` (Macro trend & model validation).
+- **Location Selector:** Dropdown for ERCOT Hubs (`LZ_NORTH`, `LZ_HOUSTON`, `LZ_SOUTH`, `LZ_WEST`).
+- **Interactive Tooltip:**
+  - Standardized SGT timestamp: `[Date] [HH:mm] SGT`.
+  - Type indicator: `Historical Settlement` or `ML Forecast (Model v2.4)`.
+  - LMP Value: `$XX.XX / MWh`.
+  - Contextual renewable share: `% Clean generation` estimate.
+
+---
+
+### 3.2 Feature Spec 2: Singapore Time (SGT / UTC+8) Standardization
+
+#### 3.2.1 Centralized Timezone Formatting Utility
+All date and time transformations must use a centralized frontend utility (`src/lib/date-utils.ts`):
+```typescript
+export const SGT_TIMEZONE = "Asia/Singapore"
+
+// Format full datetime: "10 Oct 2026, 09:30 SGT"
+export function formatSgtDateTime(date: Date | string | number): string
+
+// Format time only: "09:30 SGT" or "09:30"
+export function formatSgtTime(date: Date | string | number, includeZone = true): string
+
+// Format date only: "10 Oct 2026"
+export function formatSgtDate(date: Date | string | number): string
+
+// Format short chart axis time: "10 Oct 09:00"
+export function formatSgtChartTick(isoUtcString: string): string
+
+// Convert SGT datepicker string (YYYY-MM-DD) to ISO UTC boundary for API querying
+export function sgtDateToUtcIso(sgtDateString: string, isEndOfDay = false): string
+```
+
+#### 3.2.2 UI Modules Requiring SGT Alignment
+| UI Component | Previous State | Target SGT Standard |
+|---|---|---|
+| **App Shell Header** | No timezone indicator | Sticky badge: `🕒 SGT (UTC+8) · Singapore Standard Time` |
+| **Unified Price Chart** | X-axis labeled in UTC | Formatted in `HH:mm SGT` with date rollover headers |
+| **Decision Panel** | `01:30 – 05:30 UTC` | `09:30 – 13:30 SGT (Today)` |
+| **Decision Deadline** | `Decision needed before 01:15 UTC` | `Decision needed before 09:15 SGT (in 24 mins)` |
+| **Workload Queue Table** | Scheduled windows in UTC | SGT windows + relative time indicator (`Starts in 1.5h`) |
+| **Google Calendar View** | UTC slot positioning | Full SGT 24h schedule with primary work hours (08:00–20:00 SGT) highlighted |
+| **Data Status Badges** | `updated 12:44:01 UTC` | `updated 20:44:01 SGT · 32s ago` |
+| **Audit Logs** | UTC timestamps | SGT display with tooltip revealing exact UTC ISO string for regulatory audit |
+
+---
+
+### 3.3 Feature Spec 3: Control-Room Visual Design System (UI-UX Pro Max)
+
+#### 3.3.1 Palette & Surface Tokens
+- **Background Base:** `hsl(222, 47%, 6%)` (`#090d16` deep space dark mode).
+- **Card Surfaces:** `hsl(222, 40%, 10%)` with `backdrop-blur-md` and `bg-card/80`.
+- **Card Borders:** `hsl(217, 33%, 18%)` with subtle hover transitions (`hover:border-emerald-500/40`).
+- **Semantic Accents:**
+  - **Emerald (`#10b981`):** Optimal low-price valley, approved plan, clean energy target met.
+  - **Teal / Cyan (`#06b6d4`):** Wind/solar renewable generation, secondary telemetry.
+  - **Violet (`#8b5cf6`):** Machine learning forecasts, solver optimization recommendations.
+  - **Amber (`#f59e0b`):** Approaching peak tariff spike, throttled batch, review required.
+  - **Rose / Red (`#f43f5e`):** SLA violation risk, endpoint disconnection, rejected plan.
+
+#### 3.3.2 Typography & Numbers
+- **Heading & UI:** `Inter` / System Sans-Serif with clean hierarchy (`text-xl font-bold tracking-tight`).
+- **Data & Metrics:** `font-mono tracking-tight` (`Fira Code` / monospace) for all prices, megawatts, percentages, and timestamps to eliminate layout shifts on live poll refreshes.
+
+#### 3.3.3 Enhanced KPI Cards with Micro-Sparklines
+Each of the 4 primary overview KPI cards is upgraded from static text to interactive data widgets:
+1. **Real-Time LMP Card:**
+   - Big metric: `$28.40 / MWh`.
+   - Mini sparkline: 12-interval rolling price trend.
+   - Peak window alert pill: `Peak spike $142.50 at 01:00 SGT`.
+2. **Clean Energy Mix Card:**
+   - Big metric: `58.6% Green`.
+   - Mini stacked bar: Wind (41.2%) · Solar (17.4%) · Gas/Other (41.4%).
+   - Carbon intensity: `298 gCO2/kWh`.
+3. **Compute Load & BESS Card:**
+   - Big metric: `3.45 MW / 5.0 MW`.
+   - Feeder capacity progress bar with safe headroom marker (`1.55 MW Headroom`).
+   - Battery SoC sub-badge: `78% (Ready to discharge)`.
+4. **Projected Savings Card:**
+   - Big metric: `$4,120 today (+22.4%)`.
+   - Zero-SLA risk validation badge (`100% On-Time SLA Adherence`).
+
+---
+
+### 3.4 Feature Spec 4: Human-in-the-Loop Decision Cockpit
+
+#### 3.4.1 Decision Hierarchy
+The decision panel on `/overview` and `/approvals` is the most consequential interactive surface. It must deliver total clarity within 5 seconds:
+1. **Status Header:** Plan status (`Pending Approval`), solver model version (`XGBoost-LSTM v2.4`), and SGT decision cutoff countdown.
+2. **Visual Timeline Diff (Before vs. After):**
+   - **Baseline Track:** Shows where workloads would run under static scheduling (coinciding with the $142.50/MWh peak spike).
+   - **Optimized Track:** Shows workloads shifted into the low-cost 09:30–13:30 SGT wind corridor, with flexible crypto mining throttled during peak hours.
+3. **Three-Pillar Impact Summary:**
+   - **Financial:** Net savings `$4,120` (+22.4% cost reduction).
+   - **Grid / Peak Shaving:** `-1.85 MW` peak demand shed during grid stress.
+   - **Carbon Abatement:** `1,240 kg CO2` avoided via West Texas wind capture.
+4. **Action Workflow:**
+   - Primary: `Approve & Dispatch Workloads` (triggers confirmation dialog summarizing impacted clusters).
+   - Secondary: `Request Changes` (opens parameter tuning drawer).
+   - Danger/Dismiss: `Reject Plan` (opens structured reason modal for model feedback).
+
+---
+
+### 3.5 Feature Spec 5: Workload Scheduler & Google Calendar Overlay
+
+#### 3.5.1 Dual-View Modality
+- **Queue Table Mode:** Dense, filterable, and sortable table with row expansion for hardware specs, cluster placement, and SLA buffer.
+- **Calendar Mode:** Google Calendar-style visual grid representing scheduled compute batches across time.
+
+#### 3.5.2 Peak Tariff & Clean Energy Shading on Calendar
+- In the calendar grid, background columns/cells during high LMP hours (01:00–04:00 SGT / peak evening ramp) feature subtle amber vertical shading (`bg-amber-500/10` with striped pattern).
+- Green valley hours (curtailed wind / low LMP) feature subtle emerald shading (`bg-emerald-500/10`).
+- This makes the optimization intuition instantly obvious: operator sees batches automatically arranged inside green lanes, avoiding amber lanes.
+
+#### 3.5.3 Quick Workload Actions & Safety
+- Workload status changes (`Pause`, `Resume`, `Throttle`, `Cancel`) trigger explicit action dialogs rather than ambiguous toggles.
+- Actions display expected cost and deadline impact before execution.
+
+---
+
+### 3.6 Feature Spec 6: System Trust, Freshness & Auditability
+
+#### 3.6.1 Data Status Standard
+Every live data card and chart must include the standardized `DataStatusBadge`:
+- `Live · updated [X]s ago` (Green pulse).
+- `Cached · updated [X]m ago` (Amber indicator).
+- `Demo Sandbox` (Neutral blue badge for simulated telemetry).
+- `Unavailable` (Red warning with tooltip explaining endpoint status).
+
+#### 3.6.2 Audit Trail & Governance
+- Every dispatch decision, manual throttle, and status change is logged to `/audit`.
+- Audit logs capture: Operator ID, Role, SGT Timestamp, Action Type, Target Workloads, and Solver Recommendation ID.
+- One-click CSV/JSON export for compliance reporting.
+
+---
+
+## 4. Anti-Patterns to Avoid
+
+| Anti-Pattern | Why It Fails | What GACS Does Instead |
+|---|---|---|
+| **Separated Forecast & History Charts** | Forces mental timeline stitching; operator cannot see forecast continuity. | **Single unified timeline** with solid history, dashed forecast, and "Now" line. |
+| **Raw UTC Times in Singapore Context** | Causes cognitive strain and error-prone manual calculations (+8 hours). | **Standardized SGT (UTC+8)** across all UI views, tooltips, and calendars. |
+| **One-Click Instant Dispatch Without Diff** | High risk of dispatching unintended cluster throttles without impact check. | **Two-step confirmation modal** showing exact affected jobs and cost diff. |
+| **Generic "Toggle" Buttons** | Ambiguous whether action pauses, throttles, or deletes a batch. | **Explicit action labels**: `Throttle to 50%`, `Pause Task`, `Resume Task`. |
+| **All-Green Aesthetic** | When every metric is green, no focal point exists; status alerts lose urgency. | **Strict color semantics**: Emerald for low-cost/success, Violet for ML, Amber for review/spikes. |
+| **Unresponsive Wide Tables on Mobile** | Horizontal overflow breaks scanability during on-call incidents. | **Adaptive card layout** on viewports < 768px with full details drawer. |
+
+---
+
+## 5. Implementation Roadmap & Milestones
+
+### Phase 1: Core Timeline & Timezone Standardization (Sprint 1)
+- [x] Implement `src/lib/date-utils.ts` with comprehensive SGT formatting helpers.
+- [x] Add SGT timezone indicator badge in the App Shell header.
+- [x] Build the `UnifiedPriceTimeline` component combining historical prices and ML forecast into a continuous Recharts chart.
+- [x] Replace separate forecast and history cards on `/forecasts` and `/overview` with the unified timeline.
+- [x] Convert all table timestamps, calendar slots, and decision panel windows to SGT.
+
+### Phase 2: Visual Polish & Decision Cockpit Elevation (Sprint 2)
+- [ ] Embed micro-sparklines into the 4 overview KPI cards.
+- [ ] Implement the visual Before vs. After schedule diff timeline in `DecisionPanel`.
+- [ ] Add the peak tariff amber background shading in `GoogleCalendarView`.
+- [x] Add quick status filter tabs (`All`, `Running`, `Scheduled`, `Throttled`) to `WorkloadQueue`.
+
+### Phase 3: Interactive Polish & Edge Cases (Sprint 3)
+- [ ] Add toggleable "Workload Execution Windows" overlay directly onto the Unified Price Timeline.
+- [ ] Add keyboard shortcut (`⌘K`) command palette for fast search and navigation.
+- [ ] Ensure full WCAG 2.1 AA accessibility and contrast validation for both dark and light modes.
+- [ ] End-to-end testing with Vitest and Playwright.
+
+---
+
+## 6. Definition of Done (DoD)
+
+1. **Continuous Timeline:** The `/forecasts` page and `/overview` page render historical prices and forecast predictions on a single continuous chart with a clear `Now (SGT)` separator.
+2. **SGT Consistency:** 100% of user-facing timestamps, dates, calendar headers, and table rows display in Singapore Time (SGT / UTC+8) with explicit timezone labeling.
+3. **Scanability:** An operator can identify current LMP, peak spike risk, and pending recommendation within 5 seconds of loading the overview page.
+4. **Safe Dispatch:** Dispatches require a confirmation review displaying the financial and workload diff before executing.
+5. **Data Transparency:** Every metric displays its data freshness status (`live`, `cached`, `demo`, `unavailable`) without misleading indicators.
+6. **Responsiveness:** All pages are fully functional at 375px, 768px, 1024px, and 1440px viewports without horizontal table overflow.
+7. **Type Safety & Test Coverage:** TypeScript compiles with zero errors, and date-utility tests verify timezone conversions.
+
+---
+
+## 7. References & Architecture Links
+
+- **API Contract:** [api-contract.md](file:///c:/Users/looil/Desktop/Y2S1/CS203/project/CS203-Grid-Aware-Compute-Scheduler/docs/api-contract.md)
+- **Frontend Source Root:** [frontend/src](file:///c:/Users/looil/Desktop/Y2S1/CS203/project/CS203-Grid-Aware-Compute-Scheduler/frontend/src)
+- **Forecast Page:** [forecasts/page.tsx](file:///c:/Users/looil/Desktop/Y2S1/CS203/project/CS203-Grid-Aware-Compute-Scheduler/frontend/src/app/(dashboard)/forecasts/page.tsx)
+- **Overview Cockpit:** [overview/page.tsx](file:///c:/Users/looil/Desktop/Y2S1/CS203/project/CS203-Grid-Aware-Compute-Scheduler/frontend/src/app/(dashboard)/overview/page.tsx)
+- **Decision Panel:** [decision-panel.tsx](file:///c:/Users/looil/Desktop/Y2S1/CS203/project/CS203-Grid-Aware-Compute-Scheduler/frontend/src/components/ui/efferd-dashboard-2-utils/decision-panel.tsx)

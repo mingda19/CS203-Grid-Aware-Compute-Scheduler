@@ -30,6 +30,7 @@ import {
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { workloadScheduleApi, type WorkloadSchedule } from "@/lib/api"
+import { getSgtHoursMinutes, getSgtDateString } from "@/lib/date-utils"
 
 export type WorkloadType = "ML Training" | "Crypto Mining" | "HPC Batch" | "HVAC Pre-Cool" | "Grid Alert"
 
@@ -114,12 +115,9 @@ const TYPE_CONFIG: Record<
   },
 }
 
-// Format date helper: YYYY-MM-DD
+// Format date helper: YYYY-MM-DD in SGT
 function toDateStr(d: Date): string {
-  const year = d.getFullYear()
-  const month = String(d.getMonth() + 1).padStart(2, "0")
-  const day = String(d.getDate()).padStart(2, "0")
-  return `${year}-${month}-${day}`
+  return getSgtDateString(d)
 }
 
 function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
@@ -128,6 +126,8 @@ function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
   const type = (Object.keys(TYPE_CONFIG) as WorkloadType[]).includes(schedule.type as WorkloadType)
     ? schedule.type as WorkloadType
     : "ML Training"
+  const { hours: startHour, minutes: startMinute } = getSgtHoursMinutes(start)
+  const dateStr = getSgtDateString(start)
   return {
     id: String(schedule.id),
     title: schedule.title,
@@ -136,9 +136,9 @@ function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
     powerKw: schedule.powerKw,
     savings: schedule.savings ?? "—",
     status: schedule.status,
-    dateStr: schedule.startUtc.slice(0, 10),
-    startHour: Number(schedule.startUtc.slice(11, 13)),
-    startMinute: Number(schedule.startUtc.slice(14, 16)),
+    dateStr,
+    startHour,
+    startMinute,
     durationHours: Math.max((end.getTime() - start.getTime()) / 3_600_000, 0),
     colorScheme: TYPE_CONFIG[type],
     notes: schedule.notes ?? undefined,
@@ -147,7 +147,8 @@ function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
 
 function makeUtcTimestamp(dateStr: string, hour: number, minute: number): string {
   const [year, month, day] = dateStr.split("-").map(Number)
-  return new Date(Date.UTC(year, month - 1, day, 0, Math.round(hour * 60) + minute)).toISOString().slice(0, 19)
+  // Input date and hour are in Singapore Time (SGT, UTC+8). Convert to UTC (-8h)
+  return new Date(Date.UTC(year, month - 1, day, hour - 8, minute)).toISOString().slice(0, 19)
 }
 
 type CalendarViewMode = "week" | "month" | "day" | "schedule"

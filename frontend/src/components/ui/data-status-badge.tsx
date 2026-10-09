@@ -56,19 +56,7 @@ const statusConfig: Record<
   },
 }
 
-function formatRelativeTime(dateInput?: string | Date | null): string {
-  if (!dateInput) return ""
-  const date = typeof dateInput === "string" ? new Date(dateInput) : dateInput
-  if (isNaN(date.getTime())) return ""
-
-  const diffSec = Math.floor((Date.now() - date.getTime()) / 1000)
-  if (diffSec < 5) return "just now"
-  if (diffSec < 60) return `${diffSec}s ago`
-  const diffMin = Math.floor(diffSec / 60)
-  if (diffMin < 60) return `${diffMin}m ago`
-  const diffHours = Math.floor(diffMin / 60)
-  return `${diffHours}h ago`
-}
+import { formatSgtDateTime, formatSgtRelativeAgo } from "@/lib/date-utils"
 
 export function DataStatusBadge({
   status,
@@ -79,13 +67,13 @@ export function DataStatusBadge({
   showTooltip = true,
 }: DataStatusBadgeProps) {
   const config = statusConfig[status] || statusConfig.demo
-  const [relativeText, setRelativeText] = React.useState(() => formatRelativeTime(updatedAt))
+  const [relativeText, setRelativeText] = React.useState(() => (updatedAt ? formatSgtRelativeAgo(updatedAt) : ""))
 
   React.useEffect(() => {
     if (!updatedAt) return
-    setRelativeText(formatRelativeTime(updatedAt))
+    setRelativeText(formatSgtRelativeAgo(updatedAt))
     const timer = setInterval(() => {
-      setRelativeText(formatRelativeTime(updatedAt))
+      setRelativeText(formatSgtRelativeAgo(updatedAt))
     }, 15000)
     return () => clearInterval(timer)
   }, [updatedAt])
@@ -117,11 +105,13 @@ export function DataStatusBadge({
     return badgeNode
   }
 
-  const formattedTimestamp = updatedAt
+  const rawUtcIso = updatedAt
     ? typeof updatedAt === "string"
       ? updatedAt
       : updatedAt.toISOString()
     : "Static / Mocked"
+
+  const sgtDisplay = updatedAt ? formatSgtDateTime(updatedAt) : "Static / Mocked"
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -138,8 +128,9 @@ export function DataStatusBadge({
           <p className="text-muted-foreground text-[11px] leading-snug">
             {effectiveSource}
           </p>
-          <div className="text-[10px] text-muted-foreground/80 font-mono pt-0.5 border-t border-border/50">
-            Timestamp: {formattedTimestamp}
+          <div className="text-[10px] text-muted-foreground/90 font-mono pt-1 border-t border-border/50 space-y-0.5">
+            <div>SGT: <span className="text-foreground font-semibold">{sgtDisplay}</span></div>
+            <div className="text-[9px] opacity-70">UTC ISO: {rawUtcIso}</div>
           </div>
         </TooltipContent>
       </Tooltip>

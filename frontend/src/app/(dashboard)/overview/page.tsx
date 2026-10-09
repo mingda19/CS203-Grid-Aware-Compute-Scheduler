@@ -32,6 +32,8 @@ import { EndpointPipelineStatus } from "@/components/ui/efferd-dashboard-2-utils
 import { DecisionPanel } from "@/components/ui/efferd-dashboard-2-utils/decision-panel"
 import { initialWorkloads, type Workload } from "@/lib/workload-data"
 import type { OptimizationWorkloadItem } from "@/lib/decision-utils"
+import { UnifiedPriceTimeline } from "@/components/forecasts/UnifiedPriceTimeline"
+import { formatSgtTime, formatSgtDateTime } from "@/lib/date-utils"
 import {
   ChartContainer,
   ChartTooltip,
@@ -112,7 +114,7 @@ export default function OverviewPage() {
         isDrop: true,
         rollingAvgFormatted: "$34.72",
         peakPriceFormatted: "$142.50",
-        peakWindow: "Peak Window: 17:00-20:00",
+        peakWindow: "Peak Window: 01:00 – 04:00 SGT",
       }
     }
     const latest = pricePoints[pricePoints.length - 1]
@@ -123,12 +125,11 @@ export default function OverviewPage() {
     const diff = avg !== 0 ? ((current - avg) / avg) * 100 : 0
 
     let maxPrice = -Infinity
-    let maxTimeStr = "17:00-20:00"
+    let maxTimeStr = "01:00 – 04:00 SGT"
     for (const p of pricePoints) {
       if (p.sppUsdMwh != null && p.sppUsdMwh > maxPrice) {
         maxPrice = p.sppUsdMwh
-        const d = new Date(`${p.intervalStartUtc}Z`)
-        maxTimeStr = `${d.getUTCHours().toString().padStart(2, "0")}:${d.getUTCMinutes().toString().padStart(2, "0")} UTC`
+        maxTimeStr = formatSgtTime(`${p.intervalStartUtc}Z`, true)
       }
     }
 
@@ -350,44 +351,15 @@ export default function OverviewPage() {
 
       {/* Snapshot Modules: Quick Access into Detailed Workflows */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Forecast Preview */}
-        <Card className="hover:border-border transition-colors">
-          <CardHeader className="flex flex-row items-center justify-between pb-3">
-            <div>
-              <CardTitle className="text-base font-semibold flex items-center gap-2">
-                <LineChartIcon className="h-4 w-4 text-emerald-500" />
-                Price Forecast Curve
-              </CardTitle>
-              <CardDescription className="text-xs mt-0.5">
-                LZ_NORTH settlement price trend for recent intervals.
-              </CardDescription>
-            </div>
-            <Button asChild variant="ghost" size="sm" className="text-xs gap-1.5 text-emerald-600 dark:text-emerald-400">
-              <Link href="/forecasts">
-                Explore Forecasts <ArrowRight className="h-3.5 w-3.5" />
-              </Link>
-            </Button>
-          </CardHeader>
-          <CardContent>
-            {pricesLoading ? (
-              <p className="py-12 text-center text-xs text-muted-foreground">Loading recent price curve…</p>
-            ) : chartPricePoints.length === 0 ? (
-              <p className="py-12 text-center text-xs text-muted-foreground">No recent interval data available.</p>
-            ) : (
-              <ChartContainer config={chartConfig} className="h-48 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartPricePoints} margin={{ top: 10, right: 12, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" opacity={0.15} vertical={false} />
-                    <XAxis dataKey="time" tickLine={false} axisLine={false} tickMargin={6} style={{ fontSize: "10px" }} />
-                    <YAxis tickLine={false} axisLine={false} tickMargin={6} tickFormatter={(v) => `$${v}`} style={{ fontSize: "10px" }} />
-                    <ChartTooltip content={<ChartTooltipContent indicator="dot" />} />
-                    <Line type="monotone" dataKey="price" stroke="#10b981" strokeWidth={2} dot={false} name="Actual Price ($/MWh)" />
-                  </LineChart>
-                </ResponsiveContainer>
-              </ChartContainer>
-            )}
-          </CardContent>
-        </Card>
+        {/* Continuous Price Timeline Preview */}
+        <div className="flex flex-col">
+          <UnifiedPriceTimeline
+            hubLocation="LZ_NORTH"
+            variant="compact"
+            height={220}
+            className="h-full"
+          />
+        </div>
 
         {/* Workload Queue Preview */}
         <Card className="hover:border-border transition-colors">

@@ -21,9 +21,11 @@ import {
   LogOut,
   SlidersHorizontal,
   HelpCircle,
+  Clock,
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
+import { formatSgtTime, formatSgtDateTime } from "@/lib/date-utils"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -406,6 +408,24 @@ export function AppShell({ children }: AppShellProps) {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            {/* Standardized Singapore Timezone Indicator */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-medium bg-muted/60 text-foreground border border-border cursor-help select-none">
+                    <Clock className="h-3 w-3 text-cyan-500" />
+                    <span>SGT (UTC+8)</span>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs max-w-xs">
+                  <p className="font-semibold text-foreground">Singapore Standard Time (SGT)</p>
+                  <p className="text-muted-foreground text-[11px] mt-0.5">
+                    All workload dispatch windows, forecast horizons, and calendar slots are standardized to UTC+8.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
             {/* Environment Badge */}
             <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
