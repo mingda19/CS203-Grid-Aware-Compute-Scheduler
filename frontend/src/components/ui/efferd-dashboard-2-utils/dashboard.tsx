@@ -27,7 +27,11 @@ import {
   CircleDashed,
   RefreshCw,
   XCircle,
+  Calendar,
+  Table,
 } from "lucide-react"
+import { cn } from "@/lib/utils"
+import { GoogleCalendarView } from "@/components/schedule-calendar/GoogleCalendarView"
 import {
   Line,
   XAxis,
@@ -39,6 +43,8 @@ import {
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { DecisionPanel } from "./decision-panel"
+import type { OptimizationWorkloadItem } from "@/lib/decision-utils"
 import { Separator } from "@/components/ui/separator"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import {
@@ -58,6 +64,7 @@ import {
 } from "@/components/ui/chart"
 import { Input } from "@/components/ui/input"
 import { priceApi, type PricePoint } from "@/lib/api"
+import { DataStatusBadge } from "@/components/ui/data-status-badge"
 
 const chartConfig = {
   price: {
@@ -223,6 +230,7 @@ const initialWorkloads: Workload[] = [
 
 export function Dashboard() {
   const [workloads, setWorkloads] = React.useState<Workload[]>(initialWorkloads)
+  const [scheduleDisplayMode, setScheduleDisplayMode] = React.useState<"table" | "calendar">("calendar")
   const [planApproved, setPlanApproved] = React.useState(false)
   const [isRejecting, setIsRejecting] = React.useState(false)
   const [dateRange, setDateRange] = React.useState(() => {
@@ -305,11 +313,76 @@ export function Dashboard() {
     const average = forecastPoints.reduce((sum, point) => sum + (point.predictedPrice ?? 0), 0) / forecastPoints.length
     return { average, low: sorted[0], high: sorted[sorted.length - 1] }
   }, [forecastPoints])
+  const lmpMetrics = React.useMemo(() => {
+    if (pricePoints.length === 0) {
+      return {
+        currentLmp: null,
+        formattedCurrent: "$28.40",
+        diffPercent: 18.2,
+        isDrop: true,
+        rollingAvgFormatted: "$34.72",
+        peakPriceFormatted: "$142.50",
+        peakWindow: "Peak Window: 17:00-20:00",
+      }
+    }
+    const latest = pricePoints[pricePoints.length - 1]
+    const current = latest.sppUsdMwh ?? 0
+
+    // Take recent window (last 288 5-min intervals or all loaded points)
+    const recent = pricePoints.slice(-288)
+    const sum = recent.reduce((acc, p) => acc + (p.sppUsdMwh ?? 0), 0)
+    const avg = recent.length > 0 ? sum / recent.length : current
+    const diff = avg !== 0 ? ((current - avg) / avg) * 100 : 0
+
+    // Find max price in the loaded period
+    let maxPrice = -Infinity
+    let maxTimeStr = "17:00-20:00"
+    for (const p of pricePoints) {
+      if (p.sppUsdMwh != null && p.sppUsdMwh > maxPrice) {
+        maxPrice = p.sppUsdMwh
+        const d = new Date(`${p.intervalStartUtc}Z`)
+        maxTimeStr = `${d.getUTCHours().toString().padStart(2, "0")}:${d.getUTCMinutes().toString().padStart(2, "0")} UTC`
+      }
+    }
+
+    return {
+      currentLmp: current,
+      formattedCurrent: `$${current.toFixed(2)}`,
+      diffPercent: Math.abs(diff),
+      isDrop: diff <= 0,
+      rollingAvgFormatted: `$${avg.toFixed(2)}`,
+      peakPriceFormatted: maxPrice > -Infinity ? `$${maxPrice.toFixed(2)}` : "$142.50",
+      peakWindow: `Peak Window: ${maxTimeStr}`,
+    }
+  }, [pricePoints])
 
   const dateRangeInvalid = dateRange.startDate > dateRange.endDate
 
-  const handleApprovePlan = () => {
+  const handleApprovePlan = (dispatchedItems: OptimizationWorkloadItem[]) => {
     setPlanApproved(true)
+    setWorkloads((prev) =>
+      prev.map((w) => {
+        const item = dispatchedItems.find((d) => d.id === w.id)
+        if (item) {
+          return {
+            ...w,
+            scheduledWindow: item.proposedWindow,
+            status: item.type === "Crypto Mining" ? "Throttled" : "Running",
+          }
+        }
+        return w
+      })
+    )
+  }
+
+  const handleRejectPlan = (_reason: string, _notes: string) => {
+    setPlanApproved(false)
+    setWorkloads(initialWorkloads)
+  }
+
+  const handleResetPlan = () => {
+    setPlanApproved(false)
+    setWorkloads(initialWorkloads)
   }
 
   const handleToggleWorkload = (id: string) => {
@@ -356,7 +429,7 @@ export function Dashboard() {
             variant="outline"
             className="text-xs gap-2"
             onClick={() => {
-              setPlanApproved(false)
+              handleResetPlan()
               alert("Optimization engine re-evaluated models with latest EIA & ERCOT telemetry!")
             }}
           >
@@ -366,6 +439,14 @@ export function Dashboard() {
         </div>
       </div>
 
+      {/* Human-in-the-Loop Primary Decision Panel (P0 Item 2, PRD Section 5) */}
+      <DecisionPanel
+        planApproved={planApproved}
+        onApprove={handleApprovePlan}
+        onReject={handleRejectPlan}
+        onReset={handleResetPlan}
+      />
+
       {/* 4 Core KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Card 1: Real-Time LMP */}
@@ -374,21 +455,45 @@ export function Dashboard() {
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Real-Time LMP
             </CardTitle>
-            <div className="h-8 w-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
-              <Zap className="h-4 w-4" />
-            </div>
+            <DataStatusBadge
+              size="sm"
+              status={pricesLoading ? "cached" : pricesError ? "unavailable" : pricePoints.length > 0 ? "live" : "demo"}
+              source="ERCOT Settlement Point Price (LZ_NORTH via Spring Boot backend)"
+              updatedAt={pricePoints[pricePoints.length - 1]?.intervalStartUtc ? `${pricePoints[pricePoints.length - 1].intervalStartUtc}Z` : null}
+            />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono text-foreground">$28.40 <span className="text-xs font-normal text-muted-foreground">/ MWh</span></div>
-            <div className="flex items-center gap-1.5 mt-2 text-xs text-emerald-600 dark:text-emerald-400">
-              <TrendingDown className="h-3.5 w-3.5" />
-              <span className="font-semibold">-18.2%</span>
-              <span className="text-muted-foreground">vs 24h rolling avg</span>
+            <div className="text-2xl font-bold font-mono text-foreground">
+              {lmpMetrics.formattedCurrent}{" "}
+              <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
+            </div>
+            <div
+              className={cn(
+                "flex items-center gap-1.5 mt-2 text-xs",
+                lmpMetrics.isDrop
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : "text-amber-500"
+              )}
+            >
+              {lmpMetrics.isDrop ? (
+                <TrendingDown className="h-3.5 w-3.5" />
+              ) : (
+                <TrendingUp className="h-3.5 w-3.5" />
+              )}
+              <span className="font-semibold">
+                {lmpMetrics.isDrop ? "-" : "+"}
+                {lmpMetrics.diffPercent.toFixed(1)}%
+              </span>
+              <span className="text-muted-foreground">
+                vs rolling avg ({lmpMetrics.rollingAvgFormatted})
+              </span>
             </div>
           </CardContent>
           <CardFooter className="pt-0 text-[11px] text-muted-foreground border-t border-border/40 mt-3 flex justify-between">
-            <span>Peak Window: 17:00-20:00</span>
-            <span className="text-amber-500 font-semibold">$142.50</span>
+            <span>{lmpMetrics.peakWindow}</span>
+            <span className="text-amber-500 font-semibold">
+              {lmpMetrics.peakPriceFormatted}
+            </span>
           </CardFooter>
         </Card>
 
@@ -398,9 +503,11 @@ export function Dashboard() {
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Clean Energy Mix
             </CardTitle>
-            <div className="h-8 w-8 rounded-lg bg-teal-500/10 flex items-center justify-center text-teal-600 dark:text-teal-400">
-              <Wind className="h-4 w-4" />
-            </div>
+            <DataStatusBadge
+              size="sm"
+              status="demo"
+              source="ERCOT Clean Fuel Mix Telemetry (Simulated Scenario)"
+            />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-foreground">58.6% <span className="text-xs font-normal text-muted-foreground">Green</span></div>
@@ -421,9 +528,11 @@ export function Dashboard() {
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Compute Load & BESS
             </CardTitle>
-            <div className="h-8 w-8 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-600 dark:text-blue-400">
-              <Battery className="h-4 w-4" />
-            </div>
+            <DataStatusBadge
+              size="sm"
+              status="demo"
+              source="Facility Adapter (BESS & Slurm/K8s Compute Telemetry)"
+            />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-foreground">3.45 MW <span className="text-xs font-normal text-muted-foreground">/ 5.0 MW</span></div>
@@ -445,9 +554,11 @@ export function Dashboard() {
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Projected Savings
             </CardTitle>
-            <div className="h-8 w-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
-              <Sparkles className="h-4 w-4" />
-            </div>
+            <DataStatusBadge
+              size="sm"
+              status="demo"
+              source="Cost Optimization Solver (XGBoost-LSTM v2.4)"
+            />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
@@ -613,9 +724,17 @@ export function Dashboard() {
         <CardHeader>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
-              <CardTitle className="text-lg font-bold flex items-center gap-2">
-                LZ_NORTH Historical Real-Time Price
-              </CardTitle>
+              <div className="flex items-center gap-2 flex-wrap">
+                <CardTitle className="text-lg font-bold flex items-center gap-2">
+                  LZ_NORTH Historical Real-Time Price
+                </CardTitle>
+                <DataStatusBadge
+                  size="sm"
+                  status={pricesLoading ? "cached" : pricesError ? "unavailable" : chartPricePoints.length > 0 ? "live" : "demo"}
+                  source="ERCOT Settlement Point Price (LZ_NORTH via Spring Boot backend)"
+                  updatedAt={chartPricePoints[chartPricePoints.length - 1]?.intervalStartUtc ? `${chartPricePoints[chartPricePoints.length - 1].intervalStartUtc}Z` : null}
+                />
+              </div>
               <CardDescription className="text-xs mt-1">
                 ERCOT settlement point prices in USD/MWh. Timestamps are shown in UTC.
               </CardDescription>
@@ -664,15 +783,50 @@ export function Dashboard() {
       <Card id="workloads" className="scroll-mt-20">
         <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <CardTitle className="text-base font-bold flex items-center gap-2">
-              <Server className="h-4 w-4 text-emerald-500" />
-              Flexible Workload Queue & Execution Schedule
-            </CardTitle>
+            <div className="flex items-center gap-2 flex-wrap">
+              <CardTitle className="text-base font-bold flex items-center gap-2">
+                <Server className="h-4 w-4 text-emerald-500" />
+                Flexible Workload Queue & Execution Schedule
+              </CardTitle>
+              <DataStatusBadge
+                size="sm"
+                status="demo"
+                source="Simulated Workload Adapter (Slurm/Kubernetes)"
+              />
+            </div>
             <CardDescription className="text-xs mt-0.5">
               Active workloads registered with hardware capacity limits, precedence rules, and deadlines.
             </CardDescription>
           </div>
           <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setScheduleDisplayMode("table")}
+                className={cn(
+                  "px-2.5 py-1 rounded-md font-medium transition-all flex items-center gap-1.5",
+                  scheduleDisplayMode === "table"
+                    ? "bg-background text-foreground shadow-xs font-semibold"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Table className="h-3.5 w-3.5" />
+                Table
+              </button>
+              <button
+                type="button"
+                onClick={() => setScheduleDisplayMode("calendar")}
+                className={cn(
+                  "px-2.5 py-1 rounded-md font-medium transition-all flex items-center gap-1.5",
+                  scheduleDisplayMode === "calendar"
+                    ? "bg-background text-foreground shadow-xs font-semibold"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Calendar className="h-3.5 w-3.5 text-blue-500" />
+                Google Calendar
+              </button>
+            </div>
             <Button variant="outline" size="sm" className="text-xs">
               Filter by Cluster
             </Button>
@@ -682,78 +836,82 @@ export function Dashboard() {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-border text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                  <th className="pb-3 pl-2">Job Name & Cluster</th>
-                  <th className="pb-3">Type</th>
-                  <th className="pb-3">Power</th>
-                  <th className="pb-3">Scheduled Window</th>
-                  <th className="pb-3">Hard Deadline</th>
-                  <th className="pb-3">Est. Savings</th>
-                  <th className="pb-3">Status</th>
-                  <th className="pb-3 pr-2 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/60">
-                {workloads.map((item) => (
-                  <tr key={item.id} className="hover:bg-muted/40 transition-colors">
-                    <td className="py-3 pl-2">
-                      <div className="font-semibold text-foreground">{item.name}</div>
-                      <div className="text-[11px] text-muted-foreground font-mono">{item.machineCluster}</div>
-                    </td>
-                    <td className="py-3">
-                      <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
-                        {item.type}
-                      </span>
-                    </td>
-                    <td className="py-3 font-mono font-medium">
-                      {item.powerKw} kW
-                    </td>
-                    <td className="py-3 font-mono text-xs">
-                      {item.scheduledWindow}
-                    </td>
-                    <td className="py-3 text-xs text-muted-foreground">
-                      {item.deadline}
-                    </td>
-                    <td className="py-3 font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">
-                      {item.savings}
-                    </td>
-                    <td className="py-3">
-                      <span
-                        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
-                          item.status === "Running"
-                            ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30"
-                            : item.status === "Throttled"
-                            ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
-                            : "bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30"
-                        }`}
-                      >
-                        <span className={`h-1.5 w-1.5 rounded-full ${item.status === "Running" ? "bg-emerald-500 animate-pulse" : item.status === "Throttled" ? "bg-amber-500" : "bg-blue-500"}`} />
-                        {item.status}
-                      </span>
-                    </td>
-                    <td className="py-3 pr-2 text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 text-xs text-muted-foreground hover:text-foreground"
-                        onClick={() => handleToggleWorkload(item.id)}
-                      >
-                        {item.status === "Running" ? (
-                          <Pause className="h-3.5 w-3.5 text-amber-500" />
-                        ) : (
-                          <Play className="h-3.5 w-3.5 text-emerald-500" />
-                        )}
-                        <span className="sr-only">Toggle</span>
-                      </Button>
-                    </td>
+          {scheduleDisplayMode === "calendar" ? (
+            <GoogleCalendarView />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-border text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    <th className="pb-3 pl-2">Job Name & Cluster</th>
+                    <th className="pb-3">Type</th>
+                    <th className="pb-3">Power</th>
+                    <th className="pb-3">Scheduled Window</th>
+                    <th className="pb-3">Hard Deadline</th>
+                    <th className="pb-3">Est. Savings</th>
+                    <th className="pb-3">Status</th>
+                    <th className="pb-3 pr-2 text-right">Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {workloads.map((item) => (
+                    <tr key={item.id} className="hover:bg-muted/40 transition-colors">
+                      <td className="py-3 pl-2">
+                        <div className="font-semibold text-foreground">{item.name}</div>
+                        <div className="text-[11px] text-muted-foreground font-mono">{item.machineCluster}</div>
+                      </td>
+                      <td className="py-3">
+                        <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
+                          {item.type}
+                        </span>
+                      </td>
+                      <td className="py-3 font-mono font-medium">
+                        {item.powerKw} kW
+                      </td>
+                      <td className="py-3 font-mono text-xs">
+                        {item.scheduledWindow}
+                      </td>
+                      <td className="py-3 text-xs text-muted-foreground">
+                        {item.deadline}
+                      </td>
+                      <td className="py-3 font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">
+                        {item.savings}
+                      </td>
+                      <td className="py-3">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
+                            item.status === "Running"
+                              ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30"
+                              : item.status === "Throttled"
+                              ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
+                              : "bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30"
+                          }`}
+                        >
+                          <span className={`h-1.5 w-1.5 rounded-full ${item.status === "Running" ? "bg-emerald-500 animate-pulse" : item.status === "Throttled" ? "bg-amber-500" : "bg-blue-500"}`} />
+                          {item.status}
+                        </span>
+                      </td>
+                      <td className="py-3 pr-2 text-right">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 text-xs text-muted-foreground hover:text-foreground"
+                          onClick={() => handleToggleWorkload(item.id)}
+                        >
+                          {item.status === "Running" ? (
+                            <Pause className="h-3.5 w-3.5 text-amber-500" />
+                          ) : (
+                            <Play className="h-3.5 w-3.5 text-emerald-500" />
+                          )}
+                          <span className="sr-only">Toggle</span>
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
