@@ -26,6 +26,23 @@ def make_engine() -> sa.Engine:
 
 
 # --------------------------------------------------------------------------- #
+# DATABASE_URL parsing
+# --------------------------------------------------------------------------- #
+
+class ParseDatabaseUrlTests(unittest.TestCase):
+    def test_percent_encoded_password_is_decoded(self):
+        url = ing._parse_database_url("postgresql://postgres.ref:p%40ss%23w%25rd%2A@db.example.com:6543/postgres")
+        self.assertEqual(url.password, "p@ss#w%rd*")
+        self.assertEqual(url.username, "postgres.ref")
+        self.assertEqual((url.host, url.port, url.database), ("db.example.com", 6543, "postgres"))
+
+    def test_plain_password_is_left_alone(self):
+        url = ing._parse_database_url("postgres://postgres:plainPass123@db.example.com/postgres")
+        self.assertEqual(url.password, "plainPass123")
+        self.assertEqual(url.drivername, "postgresql+psycopg2")
+
+
+# --------------------------------------------------------------------------- #
 # Generic upsert helper - the one piece of new infrastructure every source uses
 # --------------------------------------------------------------------------- #
 
