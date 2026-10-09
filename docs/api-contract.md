@@ -669,6 +669,18 @@ Retrieves forecasted electricity prices and uncertainty intervals for the select
 
 ### 6.2 Workload Management
 
+#### `GET /api/workload-schedules`
+Returns the authenticated operator's saved workload schedules ordered by UTC start time.
+
+#### `POST /api/workload-schedules`
+Creates a workload schedule for the authenticated operator. Request fields: `title`, `type`, `cluster`, `powerKw`, `savings`, `startUtc`, `endUtc`, and optional `notes`. Timestamps are UTC ISO local date-times, and `endUtc` must be after `startUtc`.
+
+#### `PATCH /api/workload-schedules/{id}/status`
+Updates a saved schedule status. Supported statuses: `Scheduled`, `Running`, `Throttled`, and `Completed`.
+
+#### `DELETE /api/workload-schedules/{id}`
+Deletes a saved schedule owned by the authenticated operator.
+
 #### `POST /api/workloads`
 Registers a flexible, deadline-tolerant compute job.
 * **Request Body**:

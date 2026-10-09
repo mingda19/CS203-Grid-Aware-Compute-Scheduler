@@ -29,6 +29,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { workloadScheduleApi, type WorkloadSchedule } from "@/lib/api"
 
 export type WorkloadType = "ML Training" | "Crypto Mining" | "HPC Batch" | "HVAC Pre-Cool" | "Grid Alert"
 
@@ -121,180 +122,33 @@ function toDateStr(d: Date): string {
   return `${year}-${month}-${day}`
 }
 
-function getRelativeDate(offsetDays: number): string {
-  const d = new Date()
-  d.setDate(d.getDate() + offsetDays)
-  return toDateStr(d)
+function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
+  const start = new Date(schedule.startUtc.endsWith("Z") ? schedule.startUtc : `${schedule.startUtc}Z`)
+  const end = new Date(schedule.endUtc.endsWith("Z") ? schedule.endUtc : `${schedule.endUtc}Z`)
+  const type = (Object.keys(TYPE_CONFIG) as WorkloadType[]).includes(schedule.type as WorkloadType)
+    ? schedule.type as WorkloadType
+    : "ML Training"
+  return {
+    id: String(schedule.id),
+    title: schedule.title,
+    type,
+    cluster: schedule.cluster,
+    powerKw: schedule.powerKw,
+    savings: schedule.savings ?? "—",
+    status: schedule.status,
+    dateStr: schedule.startUtc.slice(0, 10),
+    startHour: Number(schedule.startUtc.slice(11, 13)),
+    startMinute: Number(schedule.startUtc.slice(14, 16)),
+    durationHours: Math.max((end.getTime() - start.getTime()) / 3_600_000, 0),
+    colorScheme: TYPE_CONFIG[type],
+    notes: schedule.notes ?? undefined,
+  }
 }
 
-// Generate realistic mock events relative to today so calendar is always populated
-const getMockEvents = (): CalendarEvent[] => [
-  {
-    id: "WL-409",
-    title: "Llama-3-70B Fine-Tuning Run #4",
-    type: "ML Training",
-    cluster: "64x NVIDIA H100 SXM5",
-    powerKw: 1200,
-    savings: "$1,840 (27%)",
-    status: "Running",
-    dateStr: getRelativeDate(0), // Today
-    startHour: 1,
-    startMinute: 30,
-    durationHours: 4,
-    colorScheme: TYPE_CONFIG["ML Training"],
-    notes: "High priority LLM workload shifted to off-peak wind hours.",
-  },
-  {
-    id: "WL-108",
-    title: "ASIC Pod Alpha - Dynamic Mining",
-    type: "Crypto Mining",
-    cluster: "Antminer S19 Pro+ Pod 2",
-    powerKw: 1800,
-    savings: "$1,450 (31%)",
-    status: "Running",
-    dateStr: getRelativeDate(0), // Today
-    startHour: 8,
-    startMinute: 0,
-    durationHours: 6.5,
-    colorScheme: TYPE_CONFIG["Crypto Mining"],
-    notes: "Dynamic curtailment enabled. Throttles during ERCOT $100+/MWh spikes.",
-  },
-  {
-    id: "WL-812",
-    title: "Monte Carlo Risk Analysis Batch",
-    type: "HPC Batch",
-    cluster: "Slurm HPC Cluster (96 Nodes)",
-    powerKw: 450,
-    savings: "$520 (19%)",
-    status: "Scheduled",
-    dateStr: getRelativeDate(0), // Today
-    startHour: 15,
-    startMinute: 0,
-    durationHours: 3.5,
-    colorScheme: TYPE_CONFIG["HPC Batch"],
-    notes: "Financial modeling batch with hard deadline at 21:00 UTC.",
-  },
-  {
-    id: "WL-022",
-    title: "Facility Thermal Chiller Pre-Cool",
-    type: "HVAC Pre-Cool",
-    cluster: "Trane Centrifugal Chiller Bank",
-    powerKw: 320,
-    savings: "$310 (16%)",
-    status: "Scheduled",
-    dateStr: getRelativeDate(0), // Today
-    startHour: 19,
-    startMinute: 0,
-    durationHours: 2.5,
-    colorScheme: TYPE_CONFIG["HVAC Pre-Cool"],
-    notes: "Pre-cool water loop to 42°F before expected evening tariff increase.",
-  },
-  {
-    id: "WL-301",
-    title: "DeepSeek-R1 Distillation Epoch 12",
-    type: "ML Training",
-    cluster: "128x NVIDIA H100 SXM5",
-    powerKw: 2400,
-    savings: "$3,120 (34%)",
-    status: "Scheduled",
-    dateStr: getRelativeDate(1), // Tomorrow
-    startHour: 2,
-    startMinute: 0,
-    durationHours: 5,
-    colorScheme: TYPE_CONFIG["ML Training"],
-    notes: "Distributed multi-node checkpointing enabled across Pods A & B.",
-  },
-  {
-    id: "WL-604",
-    title: "Weather WRF Simulation 1km Grid",
-    type: "HPC Batch",
-    cluster: "Slurm HPC Cluster (96 Nodes)",
-    powerKw: 680,
-    savings: "$780 (22%)",
-    status: "Scheduled",
-    dateStr: getRelativeDate(1), // Tomorrow
-    startHour: 10,
-    startMinute: 30,
-    durationHours: 4,
-    colorScheme: TYPE_CONFIG["HPC Batch"],
-    notes: "NOAA regional weather modeling run. Low interruption tolerance.",
-  },
-  {
-    id: "WL-550",
-    title: "ERCOT Peak Price Curtailment Alert",
-    type: "Grid Alert",
-    cluster: "All High-Density Racks",
-    powerKw: 0,
-    savings: "Avoided $5,400",
-    status: "Scheduled",
-    dateStr: getRelativeDate(1), // Tomorrow
-    startHour: 16,
-    startMinute: 0,
-    durationHours: 3,
-    colorScheme: TYPE_CONFIG["Grid Alert"],
-    notes: "Forecasted wholesale electricity spike above $250/MWh. Non-critical jobs paused.",
-  },
-  {
-    id: "WL-772",
-    title: "ASIC Pod Beta - Night Low-Tariff Ramp",
-    type: "Crypto Mining",
-    cluster: "Antminer S19 XP Pod 1",
-    powerKw: 1600,
-    savings: "$1,620 (38%)",
-    status: "Scheduled",
-    dateStr: getRelativeDate(2),
-    startHour: 0,
-    startMinute: 30,
-    durationHours: 6,
-    colorScheme: TYPE_CONFIG["Crypto Mining"],
-    notes: "Overnight West Texas surplus wind capture window.",
-  },
-  {
-    id: "WL-921",
-    title: "AlphaFold-3 Protein Structure Batch",
-    type: "HPC Batch",
-    cluster: "Slurm HPC Cluster (96 Nodes)",
-    powerKw: 550,
-    savings: "$610 (21%)",
-    status: "Scheduled",
-    dateStr: getRelativeDate(-1), // Yesterday
-    startHour: 6,
-    startMinute: 0,
-    durationHours: 4,
-    colorScheme: TYPE_CONFIG["HPC Batch"],
-    notes: "Biotech screening dataset processing completed smoothly.",
-  },
-  {
-    id: "WL-119",
-    title: "Liquid Cooling Loop Purge & Flush",
-    type: "HVAC Pre-Cool",
-    cluster: "Facility Operations",
-    powerKw: 150,
-    savings: "$140 (12%)",
-    status: "Completed",
-    dateStr: getRelativeDate(-1), // Yesterday
-    startHour: 13,
-    startMinute: 0,
-    durationHours: 2,
-    colorScheme: TYPE_CONFIG["HVAC Pre-Cool"],
-    notes: "Scheduled maintenance during solar production peak.",
-  },
-  {
-    id: "WL-883",
-    title: "Mistral Large Instruct Fine-Tuning",
-    type: "ML Training",
-    cluster: "64x NVIDIA H100 SXM5",
-    powerKw: 1200,
-    savings: "$1,910 (29%)",
-    status: "Scheduled",
-    dateStr: getRelativeDate(3),
-    startHour: 3,
-    startMinute: 0,
-    durationHours: 5,
-    colorScheme: TYPE_CONFIG["ML Training"],
-    notes: "Dispatched under ERCOT dynamic flexible load tariff.",
-  },
-]
+function makeUtcTimestamp(dateStr: string, hour: number, minute: number): string {
+  const [year, month, day] = dateStr.split("-").map(Number)
+  return new Date(Date.UTC(year, month - 1, day, 0, Math.round(hour * 60) + minute)).toISOString().slice(0, 19)
+}
 
 type CalendarViewMode = "week" | "month" | "day" | "schedule"
 
@@ -303,7 +157,10 @@ const HOURS_OF_DAY = Array.from({ length: 24 }, (_, i) => i)
 export function GoogleCalendarView() {
   const [currentDate, setCurrentDate] = React.useState<Date>(new Date())
   const [viewMode, setViewMode] = React.useState<CalendarViewMode>("week")
-  const [events, setEvents] = React.useState<CalendarEvent[]>(getMockEvents)
+  const [events, setEvents] = React.useState<CalendarEvent[]>([])
+  const [loading, setLoading] = React.useState(true)
+  const [saving, setSaving] = React.useState(false)
+  const [loadError, setLoadError] = React.useState<string | null>(null)
   const [selectedEvent, setSelectedEvent] = React.useState<CalendarEvent | null>(null)
   const [isSidebarOpen, setIsSidebarOpen] = React.useState<boolean>(true)
   const [searchQuery, setSearchQuery] = React.useState<string>("")
@@ -323,6 +180,22 @@ export function GoogleCalendarView() {
   const [newEventDuration, setNewEventDuration] = React.useState(3)
   const [newEventCluster, setNewEventCluster] = React.useState("64x NVIDIA H100 SXM5")
   const [newEventPowerKw, setNewEventPowerKw] = React.useState(1200)
+
+  const loadSchedules = React.useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const response = await workloadScheduleApi.list()
+      if (!response.success || !response.data) throw new Error(response.message || "Unable to load schedules")
+      setEvents(response.data.map(scheduleToEvent))
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Unable to load schedules")
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  React.useEffect(() => { void loadSchedules() }, [loadSchedules])
 
   // Current time representation for live red line
   const now = new Date()
@@ -543,30 +416,71 @@ export function GoogleCalendarView() {
   }
 
   // Handle adding new workload
-  const handleCreateEvent = (e: React.FormEvent) => {
+  const handleCreateEvent = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newEventTitle.trim()) return
-
-    const newEv: CalendarEvent = {
-      id: `WL-${Math.floor(100 + Math.random() * 900)}`,
-      title: newEventTitle.trim(),
-      type: newEventType,
-      cluster: newEventCluster,
-      powerKw: newEventPowerKw,
-      savings: "$890 (24%)",
-      status: "Scheduled",
-      dateStr: toDateStr(currentDate),
-      startHour: newEventStartHour,
-      startMinute: 0,
-      durationHours: newEventDuration,
-      colorScheme: TYPE_CONFIG[newEventType],
-      notes: "Manually scheduled workload via Calendar overview.",
+    if (!newEventTitle.trim() || saving) return
+    setSaving(true)
+    setLoadError(null)
+    try {
+      const dateStr = toDateStr(currentDate)
+      const response = await workloadScheduleApi.create({
+        title: newEventTitle.trim(),
+        type: newEventType,
+        cluster: newEventCluster,
+        powerKw: newEventPowerKw,
+        savings: null,
+        startUtc: makeUtcTimestamp(dateStr, newEventStartHour, 0),
+        endUtc: makeUtcTimestamp(dateStr, newEventStartHour + newEventDuration, 0),
+        notes: "Manually scheduled workload via Calendar overview.",
+      })
+      if (!response.success || !response.data) throw new Error(response.message || "Unable to create schedule")
+      const newEvent = scheduleToEvent(response.data)
+      setEvents((prev) => [...prev, newEvent].sort((a, b) =>
+        a.dateStr.localeCompare(b.dateStr) || a.startHour - b.startHour || a.startMinute - b.startMinute
+      ))
+      setIsCreateModalOpen(false)
+      setNewEventTitle("")
+      setSelectedEvent(newEvent)
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Unable to create schedule")
+    } finally {
+      setSaving(false)
     }
+  }
 
-    setEvents((prev) => [newEv, ...prev])
-    setIsCreateModalOpen(false)
-    setNewEventTitle("")
-    setSelectedEvent(newEv)
+  const handleUpdateStatus = async (event: CalendarEvent, status: CalendarEvent["status"]) => {
+    const id = Number(event.id)
+    if (!Number.isInteger(id)) return
+    setSaving(true)
+    setLoadError(null)
+    try {
+      const response = await workloadScheduleApi.updateStatus(id, status)
+      if (!response.success || !response.data) throw new Error(response.message || "Unable to update schedule")
+      const updated = scheduleToEvent(response.data)
+      setEvents((prev) => prev.map((item) => item.id === event.id ? updated : item))
+      setSelectedEvent(updated)
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Unable to update schedule")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDeleteEvent = async (event: CalendarEvent) => {
+    const id = Number(event.id)
+    if (!Number.isInteger(id) || saving) return
+    setSaving(true)
+    setLoadError(null)
+    try {
+      const response = await workloadScheduleApi.remove(id)
+      if (!response.success) throw new Error(response.message || "Unable to delete schedule")
+      setEvents((prev) => prev.filter((item) => item.id !== event.id))
+      setSelectedEvent(null)
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Unable to delete schedule")
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -604,6 +518,10 @@ export function GoogleCalendarView() {
             className="h-8 px-3 text-xs font-medium rounded-md hover:bg-muted"
           >
             Today
+          </Button>
+
+          <Button variant="ghost" size="sm" onClick={() => void loadSchedules()} disabled={loading} title="Refresh schedules" className="h-8 w-8 p-0">
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
           </Button>
 
           <div className="flex items-center gap-0.5">
@@ -713,6 +631,10 @@ export function GoogleCalendarView() {
           </Button>
         </div>
       </header>
+
+      {(loading || loadError) && <div className={cn("px-4 py-2 text-xs", loadError ? "bg-destructive/10 text-destructive" : "bg-muted/40 text-muted-foreground")} role={loadError ? "alert" : "status"}>
+        {loadError ? `Could not load or update schedules: ${loadError}` : "Loading schedules…"}
+      </div>}
 
       {/* 2. BODY CONTENT: SIDEBAR + MAIN CALENDAR */}
       <div className="flex flex-1 overflow-hidden relative">
@@ -1366,10 +1288,8 @@ export function GoogleCalendarView() {
               <Button
                 variant="destructive"
                 size="sm"
-                onClick={() => {
-                  setEvents((prev) => prev.filter((e) => e.id !== selectedEvent.id))
-                  setSelectedEvent(null)
-                }}
+                onClick={() => void handleDeleteEvent(selectedEvent)}
+                disabled={saving}
                 className="text-xs h-8"
               >
                 Cancel Schedule
@@ -1386,18 +1306,8 @@ export function GoogleCalendarView() {
                 </Button>
                 <Button
                   size="sm"
-                  onClick={() => {
-                    setEvents((prev) =>
-                      prev.map((e) =>
-                        e.id === selectedEvent.id
-                          ? { ...e, status: e.status === "Running" ? "Scheduled" : "Running" }
-                          : e
-                      )
-                    )
-                    setSelectedEvent((prev) =>
-                      prev ? { ...prev, status: prev.status === "Running" ? "Scheduled" : "Running" } : null
-                    )
-                  }}
+                  onClick={() => void handleUpdateStatus(selectedEvent, selectedEvent.status === "Running" ? "Scheduled" : "Running")}
+                  disabled={saving}
                   className="text-xs h-8 bg-primary text-primary-foreground"
                 >
                   {selectedEvent.status === "Running" ? "Pause Job" : "Dispatch Now"}
@@ -1524,9 +1434,10 @@ export function GoogleCalendarView() {
                 <Button
                   type="submit"
                   size="sm"
+                  disabled={saving}
                   className="text-xs h-8 bg-primary text-primary-foreground"
                 >
-                  Add to Calendar
+                  {saving ? "Saving…" : "Add to Calendar"}
                 </Button>
               </div>
             </form>
