@@ -2,28 +2,19 @@
 
 import * as React from "react"
 import {
-  Server,
   Calendar,
   Table,
-  Play,
-  Pause,
-  Filter,
-  Search,
   Plus,
-  Cpu,
-  Zap,
-  TrendingDown,
-  Clock,
   Layers,
-  Sparkles,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { GoogleCalendarView } from "@/components/schedule-calendar/GoogleCalendarView"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DataStatusBadge } from "@/components/ui/data-status-badge"
 import { initialWorkloads, type Workload } from "@/lib/workload-data"
+import { WorkloadQueue } from "@/components/workloads/WorkloadQueue"
 import {
   Dialog,
   DialogContent,
@@ -36,9 +27,7 @@ import {
 
 export default function WorkloadsPage() {
   const [workloads, setWorkloads] = React.useState<Workload[]>(initialWorkloads)
-  const [displayMode, setDisplayMode] = React.useState<"table" | "calendar">("calendar")
-  const [searchFilter, setSearchFilter] = React.useState("")
-  const [clusterFilter, setClusterFilter] = React.useState<string>("ALL")
+  const [displayMode, setDisplayMode] = React.useState<"table" | "calendar">("table")
   const [registerOpen, setRegisterOpen] = React.useState(false)
 
   // Registration Form State
@@ -49,51 +38,29 @@ export default function WorkloadsPage() {
   const [newJobWindow, setNewJobWindow] = React.useState("02:00 – 06:00 UTC")
   const [newJobDeadline, setNewJobDeadline] = React.useState("12:00 PM UTC")
 
-  const clusters = React.useMemo(() => {
-    return Array.from(new Set(workloads.map((w) => w.machineCluster)))
-  }, [workloads])
-
-  const filteredWorkloads = React.useMemo(() => {
-    return workloads.filter((w) => {
-      const matchesSearch =
-        searchFilter === "" ||
-        w.name.toLowerCase().includes(searchFilter.toLowerCase()) ||
-        w.id.toLowerCase().includes(searchFilter.toLowerCase()) ||
-        w.type.toLowerCase().includes(searchFilter.toLowerCase())
-      const matchesCluster = clusterFilter === "ALL" || w.machineCluster === clusterFilter
-      return matchesSearch && matchesCluster
-    })
-  }, [workloads, searchFilter, clusterFilter])
-
-  const handleToggleWorkload = (id: string) => {
-    setWorkloads((prev) =>
-      prev.map((w) => {
-        if (w.id === id) {
-          return {
-            ...w,
-            status:
-              w.status === "Running" ? "Throttled" : w.status === "Throttled" ? "Running" : "Running",
-          }
-        }
-        return w
-      })
-    )
-  }
-
   const handleRegisterWorkload = (e: React.FormEvent) => {
     e.preventDefault()
     if (!newJobName.trim()) return
 
+    const power = Number(newJobPower) || 500
     const newWorkload: Workload = {
       id: `WL-${Math.floor(100 + Math.random() * 900)}`,
       name: newJobName.trim(),
       type: newJobType,
-      powerKw: Number(newJobPower) || 500,
+      powerKw: power,
+      actualPowerKw: power,
       scheduledWindow: newJobWindow,
       deadline: newJobDeadline,
       savings: "$680 (24%)",
       status: "Scheduled",
       machineCluster: newJobCluster,
+      priority: "Normal",
+      hardware: `${newJobCluster} · Allocated ${power} kW envelope`,
+      precedence: "Operator-submitted batch; standalone dependency chain",
+      slaBuffer: "+2.5 hrs buffer before target deadline",
+      slaRisk: "Low",
+      scheduleRationale: `Slotted into window ${newJobWindow} based on forecast LMP pricing under $22/MWh.`,
+      carbonOffsetKg: Math.round(power * 0.4),
     }
 
     setWorkloads((prev) => [newWorkload, ...prev])
@@ -117,7 +84,7 @@ export default function WorkloadsPage() {
             />
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            Dispatch, reschedule, and throttle flexible compute batches according to ERCOT wholesale price windows.
+            Dispatch, throttle, pause, and inspect flexible compute batches mapped to wholesale ERCOT LMP signals.
           </p>
         </div>
 
@@ -127,33 +94,33 @@ export default function WorkloadsPage() {
               type="button"
               onClick={() => setDisplayMode("table")}
               className={cn(
-                "px-3 py-1.5 rounded-md font-medium transition-all flex items-center gap-1.5",
+                "px-3 py-1.5 rounded-md font-medium transition-all flex items-center gap-1.5 cursor-pointer",
                 displayMode === "table"
                   ? "bg-background text-foreground shadow-xs font-semibold"
                   : "text-muted-foreground hover:text-foreground"
               )}
             >
               <Table className="h-3.5 w-3.5" />
-              Table View
+              Queue Table
             </button>
             <button
               type="button"
               onClick={() => setDisplayMode("calendar")}
               className={cn(
-                "px-3 py-1.5 rounded-md font-medium transition-all flex items-center gap-1.5",
+                "px-3 py-1.5 rounded-md font-medium transition-all flex items-center gap-1.5 cursor-pointer",
                 displayMode === "calendar"
                   ? "bg-background text-foreground shadow-xs font-semibold"
                   : "text-muted-foreground hover:text-foreground"
               )}
             >
               <Calendar className="h-3.5 w-3.5 text-blue-500" />
-              Google Calendar
+              Calendar View
             </button>
           </div>
 
           <Dialog open={registerOpen} onOpenChange={setRegisterOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white">
+              <Button size="sm" className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer">
                 <Plus className="h-4 w-4" /> Register Workload
               </Button>
             </DialogTrigger>
@@ -253,119 +220,7 @@ export default function WorkloadsPage() {
           </CardContent>
         </Card>
       ) : (
-        <Card>
-          <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <div className="flex items-center gap-3 flex-1 max-w-lg">
-              <div className="relative flex-1">
-                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-                <Input
-                  placeholder="Filter by job name or ID..."
-                  value={searchFilter}
-                  onChange={(e) => setSearchFilter(e.target.value)}
-                  className="pl-8 h-9 text-xs"
-                />
-              </div>
-              <select
-                value={clusterFilter}
-                onChange={(e) => setClusterFilter(e.target.value)}
-                className="h-9 rounded-md border border-input bg-background px-3 py-1 text-xs text-muted-foreground"
-              >
-                <option value="ALL">All Clusters</option>
-                {clusters.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="text-xs text-muted-foreground">
-              Showing <span className="font-semibold text-foreground">{filteredWorkloads.length}</span> of{" "}
-              {workloads.length} workloads
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-border text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    <th className="pb-3 pl-2">Job Name & Cluster</th>
-                    <th className="pb-3">Type</th>
-                    <th className="pb-3">Power</th>
-                    <th className="pb-3">Scheduled Window</th>
-                    <th className="pb-3">Hard Deadline</th>
-                    <th className="pb-3">Est. Savings</th>
-                    <th className="pb-3">Status</th>
-                    <th className="pb-3 pr-2 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/60">
-                  {filteredWorkloads.map((item) => (
-                    <tr key={item.id} className="hover:bg-muted/40 transition-colors">
-                      <td className="py-3 pl-2">
-                        <div className="font-semibold text-foreground">{item.name}</div>
-                        <div className="text-[11px] text-muted-foreground font-mono">{item.machineCluster}</div>
-                      </td>
-                      <td className="py-3">
-                        <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
-                          {item.type}
-                        </span>
-                      </td>
-                      <td className="py-3 font-mono font-medium">
-                        {item.powerKw} kW
-                      </td>
-                      <td className="py-3 font-mono text-xs">
-                        {item.scheduledWindow}
-                      </td>
-                      <td className="py-3 text-xs text-muted-foreground">
-                        {item.deadline}
-                      </td>
-                      <td className="py-3 font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">
-                        {item.savings}
-                      </td>
-                      <td className="py-3">
-                        <span
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
-                            item.status === "Running"
-                              ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30"
-                              : item.status === "Throttled"
-                              ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
-                              : "bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30"
-                          }`}
-                        >
-                          <span
-                            className={`h-1.5 w-1.5 rounded-full ${
-                              item.status === "Running"
-                                ? "bg-emerald-500 animate-pulse"
-                                : item.status === "Throttled"
-                                ? "bg-amber-500"
-                                : "bg-blue-500"
-                            }`}
-                          />
-                          {item.status}
-                        </span>
-                      </td>
-                      <td className="py-3 pr-2 text-right">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 text-xs text-muted-foreground hover:text-foreground"
-                          onClick={() => handleToggleWorkload(item.id)}
-                        >
-                          {item.status === "Running" ? (
-                            <Pause className="h-3.5 w-3.5 text-amber-500" />
-                          ) : (
-                            <Play className="h-3.5 w-3.5 text-emerald-500" />
-                          )}
-                          <span className="sr-only">Toggle</span>
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
+        <WorkloadQueue workloads={workloads} onWorkloadsChange={setWorkloads} />
       )}
     </div>
   )
