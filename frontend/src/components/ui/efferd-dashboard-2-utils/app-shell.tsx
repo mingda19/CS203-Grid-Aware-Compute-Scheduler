@@ -37,6 +37,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Separator } from "@/components/ui/separator"
 import { useIsMobile } from "@/components/ui/use-mobile"
+import { DataStatusBadge, type DataStatusType } from "@/components/ui/data-status-badge"
 import {
   authApi,
   freshnessApi,
@@ -62,6 +63,8 @@ export function AppShell({ children }: AppShellProps) {
   const [tourStep, setTourStep] = React.useState(0)
   const [notifications, setNotifications] = React.useState<FreshnessNotification[]>([])
   const [notificationsOpen, setNotificationsOpen] = React.useState(false)
+  const [systemDataStatus, setSystemDataStatus] = React.useState<DataStatusType>("demo")
+  const [systemDataTimestamp, setSystemDataTimestamp] = React.useState<string | null>(null)
 
   const tourSteps = [
     {
@@ -123,8 +126,19 @@ export function AppShell({ children }: AppShellProps) {
         const response = await freshnessApi.getStatus()
         if (cancelled || !response.data) return
         setNotifications((previous) => mergeFreshnessNotifications(previous, response.data?.notifications ?? []))
+        setSystemDataTimestamp(response.data.checkedAt)
+        const datasets = response.data.datasets || []
+        const isHealthy = datasets.length > 0 && datasets.every((d) => d.status === "HEALTHY")
+        const isStale = datasets.some((d) => d.status === "STALE")
+        if (isHealthy) {
+          setSystemDataStatus("live")
+        } else if (isStale) {
+          setSystemDataStatus("cached")
+        } else {
+          setSystemDataStatus("demo")
+        }
       } catch {
-        // The regular database health endpoint remains responsible for connectivity failures.
+        setSystemDataStatus("demo")
       }
     }
 
@@ -383,10 +397,19 @@ export function AppShell({ children }: AppShellProps) {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* Live Data Status Indicator */}
-            <div className="hidden lg:flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-600 dark:text-emerald-400">
-              <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              <span className="font-medium">EIA & ERCOT Feeds Ingested (Fresh)</span>
+            {/* Environment Badge */}
+            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              DEMO SANDBOX
+            </span>
+
+            {/* Standardized System Data Freshness Status */}
+            <div className="hidden lg:block">
+              <DataStatusBadge
+                status={systemDataStatus}
+                updatedAt={systemDataTimestamp}
+                source="System-wide ERCOT & EIA Data Pipeline Status"
+              />
             </div>
 
             {/* Quick Theme Switcher */}

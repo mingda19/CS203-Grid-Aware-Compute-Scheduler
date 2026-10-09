@@ -62,6 +62,7 @@ import {
 } from "@/components/ui/chart"
 import { Input } from "@/components/ui/input"
 import { priceApi, type PricePoint } from "@/lib/api"
+import { DataStatusBadge } from "@/components/ui/data-status-badge"
 
 const chartConfig = {
   price: {
@@ -270,6 +271,49 @@ export function Dashboard() {
     }
   }), [pricePoints])
 
+  const lmpMetrics = React.useMemo(() => {
+    if (pricePoints.length === 0) {
+      return {
+        currentLmp: null,
+        formattedCurrent: "$28.40",
+        diffPercent: 18.2,
+        isDrop: true,
+        rollingAvgFormatted: "$34.72",
+        peakPriceFormatted: "$142.50",
+        peakWindow: "Peak Window: 17:00-20:00",
+      }
+    }
+    const latest = pricePoints[pricePoints.length - 1]
+    const current = latest.sppUsdMwh ?? 0
+
+    // Take recent window (last 288 5-min intervals or all loaded points)
+    const recent = pricePoints.slice(-288)
+    const sum = recent.reduce((acc, p) => acc + (p.sppUsdMwh ?? 0), 0)
+    const avg = recent.length > 0 ? sum / recent.length : current
+    const diff = avg !== 0 ? ((current - avg) / avg) * 100 : 0
+
+    // Find max price in the loaded period
+    let maxPrice = -Infinity
+    let maxTimeStr = "17:00-20:00"
+    for (const p of pricePoints) {
+      if (p.sppUsdMwh != null && p.sppUsdMwh > maxPrice) {
+        maxPrice = p.sppUsdMwh
+        const d = new Date(`${p.intervalStartUtc}Z`)
+        maxTimeStr = `${d.getUTCHours().toString().padStart(2, "0")}:${d.getUTCMinutes().toString().padStart(2, "0")} UTC`
+      }
+    }
+
+    return {
+      currentLmp: current,
+      formattedCurrent: `$${current.toFixed(2)}`,
+      diffPercent: Math.abs(diff),
+      isDrop: diff <= 0,
+      rollingAvgFormatted: `$${avg.toFixed(2)}`,
+      peakPriceFormatted: maxPrice > -Infinity ? `$${maxPrice.toFixed(2)}` : "$142.50",
+      peakWindow: `Peak Window: ${maxTimeStr}`,
+    }
+  }, [pricePoints])
+
   const dateRangeInvalid = dateRange.startDate > dateRange.endDate
 
   const handleApprovePlan = () => {
@@ -338,21 +382,45 @@ export function Dashboard() {
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Real-Time LMP
             </CardTitle>
-            <div className="h-8 w-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
-              <Zap className="h-4 w-4" />
-            </div>
+            <DataStatusBadge
+              size="sm"
+              status={pricesLoading ? "cached" : pricesError ? "unavailable" : pricePoints.length > 0 ? "live" : "demo"}
+              source="ERCOT Settlement Point Price (LZ_NORTH via Spring Boot backend)"
+              updatedAt={pricePoints[pricePoints.length - 1]?.intervalStartUtc ? `${pricePoints[pricePoints.length - 1].intervalStartUtc}Z` : null}
+            />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono text-foreground">$28.40 <span className="text-xs font-normal text-muted-foreground">/ MWh</span></div>
-            <div className="flex items-center gap-1.5 mt-2 text-xs text-emerald-600 dark:text-emerald-400">
-              <TrendingDown className="h-3.5 w-3.5" />
-              <span className="font-semibold">-18.2%</span>
-              <span className="text-muted-foreground">vs 24h rolling avg</span>
+            <div className="text-2xl font-bold font-mono text-foreground">
+              {lmpMetrics.formattedCurrent}{" "}
+              <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
+            </div>
+            <div
+              className={cn(
+                "flex items-center gap-1.5 mt-2 text-xs",
+                lmpMetrics.isDrop
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : "text-amber-500"
+              )}
+            >
+              {lmpMetrics.isDrop ? (
+                <TrendingDown className="h-3.5 w-3.5" />
+              ) : (
+                <TrendingUp className="h-3.5 w-3.5" />
+              )}
+              <span className="font-semibold">
+                {lmpMetrics.isDrop ? "-" : "+"}
+                {lmpMetrics.diffPercent.toFixed(1)}%
+              </span>
+              <span className="text-muted-foreground">
+                vs rolling avg ({lmpMetrics.rollingAvgFormatted})
+              </span>
             </div>
           </CardContent>
           <CardFooter className="pt-0 text-[11px] text-muted-foreground border-t border-border/40 mt-3 flex justify-between">
-            <span>Peak Window: 17:00-20:00</span>
-            <span className="text-amber-500 font-semibold">$142.50</span>
+            <span>{lmpMetrics.peakWindow}</span>
+            <span className="text-amber-500 font-semibold">
+              {lmpMetrics.peakPriceFormatted}
+            </span>
           </CardFooter>
         </Card>
 
@@ -362,9 +430,11 @@ export function Dashboard() {
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Clean Energy Mix
             </CardTitle>
-            <div className="h-8 w-8 rounded-lg bg-teal-500/10 flex items-center justify-center text-teal-600 dark:text-teal-400">
-              <Wind className="h-4 w-4" />
-            </div>
+            <DataStatusBadge
+              size="sm"
+              status="demo"
+              source="ERCOT Clean Fuel Mix Telemetry (Simulated Scenario)"
+            />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-foreground">58.6% <span className="text-xs font-normal text-muted-foreground">Green</span></div>
@@ -385,9 +455,11 @@ export function Dashboard() {
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Compute Load & BESS
             </CardTitle>
-            <div className="h-8 w-8 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-600 dark:text-blue-400">
-              <Battery className="h-4 w-4" />
-            </div>
+            <DataStatusBadge
+              size="sm"
+              status="demo"
+              source="Facility Adapter (BESS & Slurm/K8s Compute Telemetry)"
+            />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-foreground">3.45 MW <span className="text-xs font-normal text-muted-foreground">/ 5.0 MW</span></div>
@@ -409,9 +481,11 @@ export function Dashboard() {
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Projected Savings
             </CardTitle>
-            <div className="h-8 w-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
-              <Sparkles className="h-4 w-4" />
-            </div>
+            <DataStatusBadge
+              size="sm"
+              status="demo"
+              source="Cost Optimization Solver (XGBoost-LSTM v2.4)"
+            />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
@@ -439,12 +513,19 @@ export function Dashboard() {
                   {planApproved ? <CheckCircle2 className="h-5 w-5" /> : <ShieldAlert className="h-5 w-5" />}
                 </div>
                 <div>
-                  <CardTitle className="text-base font-bold">
-                    {planApproved
-                      ? "Optimization Plan #2026-0920-04 Approved & Dispatched"
-                      : "Human-in-the-Loop Schedule Recommendation #2026-0920-04"}
-                  </CardTitle>
-                  <CardDescription className="text-xs">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <CardTitle className="text-base font-bold">
+                      {planApproved
+                        ? "Optimization Plan #2026-0920-04 Approved & Dispatched"
+                        : "Human-in-the-Loop Schedule Recommendation #2026-0920-04"}
+                    </CardTitle>
+                    <DataStatusBadge
+                      size="sm"
+                      status="demo"
+                      source="Optimization Engine Solver Model (XGBoost-LSTM v2.4)"
+                    />
+                  </div>
+                  <CardDescription className="text-xs mt-0.5">
                     {planApproved
                       ? "Workload dispatch instructions sent to Slurm and Kubernetes adapters."
                       : "Action required: Review proposed schedule adjustments to avoid ERCOT price spike."}
@@ -522,9 +603,17 @@ export function Dashboard() {
         <CardHeader>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
-              <CardTitle className="text-lg font-bold flex items-center gap-2">
-                LZ_NORTH Historical Real-Time Price
-              </CardTitle>
+              <div className="flex items-center gap-2 flex-wrap">
+                <CardTitle className="text-lg font-bold flex items-center gap-2">
+                  LZ_NORTH Historical Real-Time Price
+                </CardTitle>
+                <DataStatusBadge
+                  size="sm"
+                  status={pricesLoading ? "cached" : pricesError ? "unavailable" : chartPricePoints.length > 0 ? "live" : "demo"}
+                  source="ERCOT Settlement Point Price (LZ_NORTH via Spring Boot backend)"
+                  updatedAt={chartPricePoints[chartPricePoints.length - 1]?.intervalStartUtc ? `${chartPricePoints[chartPricePoints.length - 1].intervalStartUtc}Z` : null}
+                />
+              </div>
               <CardDescription className="text-xs mt-1">
                 ERCOT settlement point prices in USD/MWh. Timestamps are shown in UTC.
               </CardDescription>
@@ -573,10 +662,17 @@ export function Dashboard() {
       <Card id="workloads" className="scroll-mt-20">
         <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <CardTitle className="text-base font-bold flex items-center gap-2">
-              <Server className="h-4 w-4 text-emerald-500" />
-              Flexible Workload Queue & Execution Schedule
-            </CardTitle>
+            <div className="flex items-center gap-2 flex-wrap">
+              <CardTitle className="text-base font-bold flex items-center gap-2">
+                <Server className="h-4 w-4 text-emerald-500" />
+                Flexible Workload Queue & Execution Schedule
+              </CardTitle>
+              <DataStatusBadge
+                size="sm"
+                status="demo"
+                source="Simulated Workload Adapter (Slurm/Kubernetes)"
+              />
+            </div>
             <CardDescription className="text-xs mt-0.5">
               Active workloads registered with hardware capacity limits, precedence rules, and deadlines.
             </CardDescription>
