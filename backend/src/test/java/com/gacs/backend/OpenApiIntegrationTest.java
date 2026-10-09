@@ -36,6 +36,7 @@ public class OpenApiIntegrationTest {
                 .andExpect(jsonPath("$.paths['/me']").exists())
                 .andExpect(jsonPath("$.paths['/logout']").exists())
                 .andExpect(jsonPath("$.paths['/api/admin/users']").exists())
+                .andExpect(jsonPath("$.paths['/api/prices/forecast']").exists())
                 .andExpect(jsonPath("$.paths['/api/admin/users/{id}/role']").exists())
                 .andExpect(jsonPath("$.components.securitySchemes.bearerAuth").exists())
                 .andExpect(jsonPath("$.components.securitySchemes.cookieAuth").exists());
