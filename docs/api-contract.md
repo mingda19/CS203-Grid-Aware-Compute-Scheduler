@@ -634,6 +634,30 @@ This section details the contractual schemas and interfaces for upcoming sprint 
 
 ### 6.1 Market Forecasts & Grid Signals
 
+#### `GET /api/prices/forecast`
+Returns the latest stored model prediction for each upcoming interval at a settlement location. This endpoint reads `predicted_price`; it does not generate a new forecast.
+* **Query Parameters**:
+  * `location` (string, optional, default: `"LZ_NORTH"`)
+  * `hours` (integer, optional, default: `48`, range: 1–168)
+* **Success Response (200 OK)**:
+  ```json
+  {
+    "success": true,
+    "message": "Price forecast retrieved",
+    "data": {
+      "horizonHours": 48,
+      "points": [
+        {
+          "intervalStartUtc": "2026-10-10T00:00:00",
+          "predictedPrice": 32.5,
+          "modelVersion": "xgboost-baseline",
+          "generatedAt": "2026-10-09T21:00:00"
+        }
+      ]
+    }
+  }
+  ```
+
 #### `GET /api/forecasts/ercot`
 Retrieves forecasted electricity prices and uncertainty intervals for the selected horizon.
 * **Query Parameters**:
