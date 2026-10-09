@@ -15,3 +15,6 @@ __pycache__/
 # convention as data/: nobody commits data files in this repo)
 model/*.csv
 model/models/*.json
+model/models/*.pt
+model/models/folds/*
+model/reports/*.parquet

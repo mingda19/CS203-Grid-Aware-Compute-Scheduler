@@ -64,6 +64,10 @@ const chartConfig = {
     label: "Actual Price ($/MWh)",
     color: "#10b981", // Emerald
   },
+  forecast: {
+    label: "Forecast Price ($/MWh)",
+    color: "#8b5cf6",
+  },
 } satisfies ChartConfig
 
 interface Workload {
@@ -231,6 +235,27 @@ export function Dashboard() {
   const [pricesLoading, setPricesLoading] = React.useState(true)
   const [pricesError, setPricesError] = React.useState<string | null>(null)
   const [totalPriceRecords, setTotalPriceRecords] = React.useState(0)
+  const [forecastPoints, setForecastPoints] = React.useState<NonNullable<Awaited<ReturnType<typeof priceApi.getForecast>>["data"]>["points"]>([])
+  const [forecastLoading, setForecastLoading] = React.useState(true)
+  const [forecastError, setForecastError] = React.useState<string | null>(null)
+  const [forecastHorizon, setForecastHorizon] = React.useState(48)
+  const [forecastRefreshKey, setForecastRefreshKey] = React.useState(0)
+
+  React.useEffect(() => {
+    let cancelled = false
+    setForecastLoading(true)
+    setForecastError(null)
+    priceApi.getForecast({ location: "LZ_NORTH", hours: forecastHorizon }).then((response) => {
+      if (cancelled) return
+      if (!response.success || !response.data) throw new Error(response.message || "Unable to load price forecast")
+      setForecastPoints(response.data.points.filter((point) => point.predictedPrice != null))
+    }).catch((error: unknown) => {
+      if (!cancelled) setForecastError(error instanceof Error ? error.message : "Unable to load price forecast")
+    }).finally(() => {
+      if (!cancelled) setForecastLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [forecastHorizon, forecastRefreshKey])
 
   React.useEffect(() => {
     if (dateRange.startDate > dateRange.endDate) {
@@ -264,6 +289,22 @@ export function Dashboard() {
       time: utcDate.toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" }),
     }
   }), [pricePoints])
+
+  const chartForecastPoints = React.useMemo(() => forecastPoints.map((point) => {
+    const utcDate = new Date(`${point.intervalStartUtc}Z`)
+    return {
+      ...point,
+      price: point.predictedPrice,
+      time: utcDate.toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" }),
+    }
+  }), [forecastPoints])
+
+  const forecastSummary = React.useMemo(() => {
+    if (!forecastPoints.length) return null
+    const sorted = [...forecastPoints].sort((a, b) => (a.predictedPrice ?? 0) - (b.predictedPrice ?? 0))
+    const average = forecastPoints.reduce((sum, point) => sum + (point.predictedPrice ?? 0), 0) / forecastPoints.length
+    return { average, low: sorted[0], high: sorted[sorted.length - 1] }
+  }, [forecastPoints])
 
   const dateRangeInvalid = dateRange.startDate > dateRange.endDate
 
@@ -511,6 +552,61 @@ export function Dashboard() {
           </CardFooter>
         </Card>
       </div>
+
+      {/* Upcoming LZ_NORTH price forecast */}
+      <Card>
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle className="text-lg font-bold flex items-center gap-2"><TrendingDown className="h-5 w-5 text-violet-500" />Upcoming LZ_NORTH Price Forecast</CardTitle>
+            <CardDescription className="text-xs mt-1">Stored model predictions for the next {forecastHorizon} hours, in USD/MWh. Timestamps are UTC.</CardDescription>
+          </div>
+          <div className="flex items-end gap-2">
+            <label className="space-y-1 text-xs text-muted-foreground">
+              <span>Forecast horizon</span>
+              <select aria-label="Forecast horizon" value={forecastHorizon} onChange={(event) => setForecastHorizon(Number(event.target.value))} className="block h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground">
+                <option value={24}>24 hours</option>
+                <option value={48}>48 hours</option>
+                <option value={72}>72 hours</option>
+              </select>
+            </label>
+            <Button variant="outline" size="sm" className="h-9 gap-2" onClick={() => setForecastRefreshKey((key) => key + 1)} disabled={forecastLoading}>
+              <RefreshCw className={`h-3.5 w-3.5 ${forecastLoading ? "animate-spin" : ""}`} /> Refresh
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {forecastLoading ? (
+            <p role="status" className="py-12 text-center text-sm text-muted-foreground">Loading upcoming price forecast…</p>
+          ) : forecastError ? (
+            <p role="alert" className="py-12 text-center text-sm text-destructive">Could not load price forecast: {forecastError}</p>
+          ) : chartForecastPoints.length === 0 ? (
+            <div className="py-12 text-center">
+              <p className="text-sm text-muted-foreground">No upcoming LZ_NORTH forecast is available.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Generate future rows with <code className="rounded bg-muted px-1 py-0.5">python data_scripts/predictions.py</code>, then refresh. Confirm the script and backend use the same database.</p>
+            </div>
+          ) : (
+            <>
+              {forecastSummary && <div className="mb-5 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-lg border border-border/70 p-3"><p className="text-xs text-muted-foreground">Average · {forecastHorizon}h horizon</p><p className="mt-1 font-mono text-lg font-semibold">${forecastSummary.average.toFixed(2)}<span className="ml-1 text-xs font-normal text-muted-foreground">/MWh</span></p></div>
+                <div className="rounded-lg border border-border/70 p-3"><p className="text-xs text-muted-foreground">Lowest forecast</p><p className="mt-1 font-mono text-lg font-semibold text-emerald-600">${forecastSummary.low.predictedPrice?.toFixed(2)}<span className="ml-1 text-xs font-normal text-muted-foreground">/MWh</span></p><p className="text-[11px] text-muted-foreground">{new Date(`${forecastSummary.low.intervalStartUtc}Z`).toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" })}</p></div>
+                <div className="rounded-lg border border-border/70 p-3"><p className="text-xs text-muted-foreground">Highest forecast</p><p className="mt-1 font-mono text-lg font-semibold text-amber-600">${forecastSummary.high.predictedPrice?.toFixed(2)}<span className="ml-1 text-xs font-normal text-muted-foreground">/MWh</span></p><p className="text-[11px] text-muted-foreground">{new Date(`${forecastSummary.high.intervalStartUtc}Z`).toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" })}</p></div>
+              </div>}
+              <ChartContainer config={chartConfig} className="h-72 sm:h-96 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartForecastPoints} margin={{ top: 16, right: 18, left: 0, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" opacity={0.2} vertical={false} />
+                    <XAxis dataKey="time" tickLine={false} axisLine={false} tickMargin={8} minTickGap={36} style={{ fontSize: "11px" }} />
+                    <YAxis tickLine={false} axisLine={false} tickMargin={8} tickFormatter={(value) => `$${value}`} style={{ fontSize: "11px" }} />
+                    <ChartTooltip content={<ChartTooltipContent indicator="dot" />} />
+                    <Line type="monotone" dataKey="price" stroke="#8b5cf6" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} name="Forecast Price ($/MWh)" connectNulls={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartContainer>
+              <p className="mt-3 text-center text-xs text-muted-foreground">{chartForecastPoints.length} forecast intervals · Model {forecastPoints[0]?.modelVersion} · Generated {new Date(`${forecastPoints[0]?.generatedAt}Z`).toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" })}</p>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Historical LZ_NORTH price chart */}
       <Card id="forecasts" className="scroll-mt-20">

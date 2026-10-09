@@ -2,8 +2,10 @@ package com.gacs.backend.controller;
 
 import com.gacs.backend.dto.ApiResponse;
 import com.gacs.backend.dto.PriceHistoryResponse;
+import com.gacs.backend.dto.PriceForecastResponse;
 import com.gacs.backend.model.ElectricalPrice;
 import com.gacs.backend.repository.ElectricalPriceRepository;
+import com.gacs.backend.repository.PredictedPriceRepository;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -12,6 +14,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 
 @RestController
@@ -20,9 +24,31 @@ public class PriceHistoryController {
 
     private static final int MAX_LIMIT = 5000;
     private final ElectricalPriceRepository prices;
+    private final PredictedPriceRepository predictions;
 
-    public PriceHistoryController(ElectricalPriceRepository prices) {
+    public PriceHistoryController(ElectricalPriceRepository prices, PredictedPriceRepository predictions) {
         this.prices = prices;
+        this.predictions = predictions;
+    }
+
+    @GetMapping("/forecast")
+    public ResponseEntity<ApiResponse<PriceForecastResponse>> getForecast(
+        @RequestParam(defaultValue = "LZ_NORTH") String location,
+        @RequestParam(defaultValue = "48") int hours
+    ) {
+        if (location.isBlank() || location.length() > 100) {
+            throw new IllegalArgumentException("location must be a non-empty settlement point name");
+        }
+        if (hours < 1 || hours > 168) {
+            throw new IllegalArgumentException("hours must be between 1 and 168");
+        }
+        LocalDateTime start = LocalDateTime.now(ZoneOffset.UTC);
+        var points = predictions.findLatestForecast(location, start, start.plusHours(hours)).stream()
+            .map(record -> new PriceForecastResponse.ForecastPoint(record.getIntervalStartUtc(),
+                record.getPredictedPrice(), record.getModelVersion(), record.getGeneratedAt()))
+            .toList();
+        return ResponseEntity.ok(ApiResponse.ok("Price forecast retrieved",
+            new PriceForecastResponse(points, hours)));
     }
 
     @GetMapping("/history")

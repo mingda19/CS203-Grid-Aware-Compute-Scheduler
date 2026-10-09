@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
+from urllib.parse import unquote
 
 import openmeteo_requests
 import pandas as pd
@@ -99,6 +100,11 @@ def _parse_database_url(database_url: str) -> sa.engine.URL:
        etc.) - confirmed this actually breaks the hostname in practice.
        URL.create() takes the username/password as plain values instead of a
        string to re-parse, which sidesteps this entirely.
+
+    The username/password are percent-decoded before being handed over, to
+    match DotenvLoader.java: .env may hold the password percent-encoded
+    (%23 for '#', %25 for a literal '%', ...), and URL.create() would
+    otherwise send those escapes to Postgres verbatim as the password.
     """
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql://", 1)
@@ -112,8 +118,8 @@ def _parse_database_url(database_url: str) -> sa.engine.URL:
 
     return sa.engine.URL.create(
         "postgresql+psycopg2",
-        username=username,
-        password=password or None,
+        username=unquote(username),
+        password=unquote(password) or None,
         host=host,
         port=int(port_str) if port_str else None,
         database=dbname,

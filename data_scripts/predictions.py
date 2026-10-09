@@ -30,9 +30,17 @@ Open-Meteo data has no such gap, so at prediction time they are expected to be
 no-ops (each has an `if not missing.any(): continue` guard). They're still run
 defensively, in case a live fetch has a transient gap for a specific hour.
 
+Two model types are served, chosen by the --model file's extension:
+  .json  XGBoost (the default) - one row of FEATURE_COLUMNS per target hour.
+  .pt    seq2seq LSTM (model/lstm_model.py, trained by model/train_lstm.py) -
+         168h of history + the target day's known-ahead inputs. Its artifact
+         carries its own feature list, scalers and price transform, and torch
+         is only imported on this path.
+
 Usage:
   python predictions.py --date 2026-03-02   # predict the 24 hours of that UTC date
   python predictions.py                     # predict tomorrow (UTC), the normal daily run
+  python predictions.py --model ../model/models/lstm_full.pt   # same, with the LSTM
 
 Or import: from predictions import run_predictions
 """
@@ -58,7 +66,8 @@ import ingestion as ing
 logger = logging.getLogger("predictions")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL_PATH = SCRIPT_DIR.parent / "model" / "models" / "xgboost_baseline_full.json"
+MODEL_DIR = SCRIPT_DIR.parent / "model"
+DEFAULT_MODEL_PATH = MODEL_DIR / "models" / "xgboost_baseline_full.json"
 DEFAULT_MODEL_VERSION = "xgboost_baseline_full"
 DEFAULT_LOCATION = "LZ_NORTH"
 # load_forecast_dam uses ERCOT's weather-zone scheme (north/south/west/
@@ -70,6 +79,11 @@ DEFAULT_LOAD_FORECAST_ZONE = "north"
 # Fixed winsorization band the model was trained against - see module docstring.
 WINSORIZE_LOWER = -1393.85
 WINSORIZE_UPPER = 1506.55
+
+# Henry Hub is published on business days with a lag, so the target day's
+# "yesterday" price is the last published one carried forward - but never one
+# older than this.
+GAS_MAX_STALE_DAYS = 7
 
 # Physical / assumed constants (same as model/wind_solar_power_features.py - no
 # real farm metadata exists, see model/model.md S3.5).
@@ -209,13 +223,22 @@ def _iso(dt) -> str:
     return pd.Timestamp(dt).isoformat()
 
 
-def load_price_history(engine: sa.Engine, location: str, since: datetime) -> pd.DataFrame:
+def load_price_history(engine: sa.Engine, location: str, since: datetime,
+                       until: datetime | None = None) -> pd.DataFrame:
+    """Prices from `since` on; `until` (inclusive) caps the query itself, for
+    callers that must not see anything past an information cutoff."""
+    params = {"location": location, "since": _iso(since)}
+    until_clause = ""
+    if until is not None:
+        until_clause = "AND interval_start_utc <= :until "
+        params["until"] = _iso(until)
     query = sa.text(
         "SELECT interval_start_utc AS time, spp_usd_mwh AS price FROM electrical_price "
-        "WHERE location = :location AND interval_start_utc >= :since ORDER BY interval_start_utc"
+        f"WHERE location = :location AND interval_start_utc >= :since {until_clause}"
+        "ORDER BY interval_start_utc"
     )
     with engine.begin() as conn:
-        df = pd.read_sql(query, conn, params={"location": location, "since": _iso(since)})
+        df = pd.read_sql(query, conn, params=params)
     df["time"] = pd.to_datetime(df["time"])
     df["price"] = df["price"].clip(lower=WINSORIZE_LOWER, upper=WINSORIZE_UPPER)
     return df
@@ -252,13 +275,53 @@ def load_load_forecast(engine: sa.Engine, zone: str, start: datetime, end: datet
     return df
 
 
+def load_exogenous(engine: sa.Engine, start: datetime, end: datetime) -> pd.DataFrame:
+    """Hourly exogenous inputs for start..end (both inclusive), one row per
+    hour: gas, wind/solar power proxies and the DAM load forecast. Shared by
+    the XGBoost and LSTM feature builders so both compute them identically.
+    A new exogenous model input (e.g. battery data) needs a column added here.
+    Hours with no source data come back as NaN, not dropped."""
+    start, end = pd.Timestamp(start), pd.Timestamp(end)
+    out = pd.DataFrame({"time": pd.date_range(start, end, freq="h")})
+
+    gas = load_single_column(engine, "fuel_price", "period", "henry_hub_price_usd_mmbtu",
+                             start - timedelta(days=5), end)
+    gas = gas.set_index("time")["henry_hub_price_usd_mmbtu"]
+    if not gas.empty:
+        # Extend the daily index through the target day before the ffill/shift:
+        # stopping at the last published row would leave every day after it
+        # (i.e. any real day-ahead run) without a lag-1d value at all.
+        days = pd.date_range(gas.index.min(), max(gas.index.max(), end.floor("D")), freq="D")
+        gas = gas.reindex(days).ffill(limit=GAS_MAX_STALE_DAYS).shift(1)
+    out["henry_hub_price_usd_mmbtu_lag1d"] = out["time"].dt.floor("D").map(gas)
+
+    wind = load_weather_table(engine, "wind", ["wind_speed_80m", "wind_speed_120m", "temperature_120m"],
+                              start, end + timedelta(hours=1))
+    wind["wind_speed_120m"] = impute_speed_loglog(wind, "wind_speed_120m", "wind_speed_80m")
+    wind = add_wind_power_proxy(wind)
+    wind_total = wind.groupby("time")["wind_power_output_proxy"].sum().rename("wind_power_output_proxy_total")
+    out = out.merge(wind_total.reset_index(), on="time", how="left")
+
+    solar = load_weather_table(engine, "solar", ["shortwave_radiation", "temperature_2m"],
+                               start, end + timedelta(hours=1))
+    solar = add_solar_power_proxy(solar)
+    solar_total = solar.groupby("time")["solar_power_output_proxy"].sum().rename("solar_power_output_proxy_total")
+    out = out.merge(solar_total.reset_index(), on="time", how="left")
+
+    demand = load_load_forecast(engine, DEFAULT_LOAD_FORECAST_ZONE, start, end + timedelta(hours=1))
+    return out.merge(demand, on="time", how="left")
+
+
 # --------------------------------------------------------------------------- #
 # Feature assembly for the target day(s)
 # --------------------------------------------------------------------------- #
 
-def build_features(engine: sa.Engine, target_times: pd.DatetimeIndex, location: str = DEFAULT_LOCATION) -> pd.DataFrame:
+def assemble_xgb_features(price_s: pd.Series, exog: pd.DataFrame, target_times: pd.DatetimeIndex) -> pd.DataFrame:
     """Build the FEATURE_COLUMNS feature matrix for `target_times` (UTC), using
     only data that would be available by the DAM bid deadline the day before.
+    `price_s` is the hourly price history (already clipped to the winsorization
+    band), `exog` the load_exogenous() frame covering `target_times`. No DB
+    access here, so model/evaluate.py runs the exact same code on CSV history.
 
     lag_24h/lag_48h are computed per target hour - they always reach back into
     already-known history (even hour 24 of a 24h-ahead batch has its "24h ago"
@@ -274,10 +337,6 @@ def build_features(engine: sa.Engine, target_times: pd.DatetimeIndex, location: 
     rolling features get slightly "stale" for later hours in the batch -
     measured as a minor effect, unlike lag_1h's."""
     last_known = target_times.min() - timedelta(hours=1)
-    earliest_needed = min(last_known, target_times.min()) - timedelta(hours=168)
-
-    price = load_price_history(engine, location, earliest_needed)
-    price_s = price.set_index("time")["price"].asfreq("h")
 
     frozen = {
         "roll_mean_24h": price_s.loc[last_known - timedelta(hours=23):last_known].mean(),
@@ -291,29 +350,8 @@ def build_features(engine: sa.Engine, target_times: pd.DatetimeIndex, location: 
 
     features = lags.reset_index().rename(columns={"index": "time"})
     features = add_calendar_features(features)
+    features = features.merge(exog, on="time", how="left")
 
-    gas = load_single_column(engine, "fuel_price", "period", "henry_hub_price_usd_mmbtu",
-                             target_times.min() - timedelta(days=5), target_times.max())
-    gas = gas.set_index("time")["henry_hub_price_usd_mmbtu"].asfreq("D").ffill().shift(1)
-    features["henry_hub_price_usd_mmbtu_lag1d"] = features["time"].dt.floor("D").map(gas)
-
-    wind = load_weather_table(engine, "wind", ["wind_speed_80m", "wind_speed_120m", "temperature_120m"],
-                              target_times.min(), target_times.max() + timedelta(hours=1))
-    wind["wind_speed_120m"] = impute_speed_loglog(wind, "wind_speed_120m", "wind_speed_80m")
-    wind = add_wind_power_proxy(wind)
-    wind_total = wind.groupby("time")["wind_power_output_proxy"].sum().rename("wind_power_output_proxy_total")
-    features = features.merge(wind_total.reset_index(), on="time", how="left")
-
-    solar = load_weather_table(engine, "solar", ["shortwave_radiation", "temperature_2m"],
-                               target_times.min(), target_times.max() + timedelta(hours=1))
-    solar = add_solar_power_proxy(solar)
-    solar_total = solar.groupby("time")["solar_power_output_proxy"].sum().rename("solar_power_output_proxy_total")
-    features = features.merge(solar_total.reset_index(), on="time", how="left")
-
-    demand = load_load_forecast(engine, DEFAULT_LOAD_FORECAST_ZONE,
-                                target_times.min(), target_times.max() + timedelta(hours=1))
-    features = features.merge(demand, on="time", how="left")
-    
     features = features.set_index("time").reindex(target_times)[FEATURE_COLUMNS]
     # A left-joined column can come back as dtype "object" instead of float64
     # when the source query returned zero rows for the target window (pandas
@@ -328,26 +366,106 @@ def build_features(engine: sa.Engine, target_times: pd.DatetimeIndex, location: 
     return features
 
 
+def build_features(engine: sa.Engine, target_times: pd.DatetimeIndex, location: str = DEFAULT_LOCATION) -> pd.DataFrame:
+    """assemble_xgb_features() on inputs loaded from the DB."""
+    earliest_needed = target_times.min() - timedelta(hours=1) - timedelta(hours=168)
+    price = load_price_history(engine, location, earliest_needed)
+    price_s = price.set_index("time")["price"].asfreq("h")
+    exog = load_exogenous(engine, target_times.min(), target_times.max())
+    return assemble_xgb_features(price_s, exog, target_times)
+
+
 # --------------------------------------------------------------------------- #
 # Model + predict + write
 # --------------------------------------------------------------------------- #
 
-def load_model(path: Path) -> xgb.XGBRegressor:
-    model = xgb.XGBRegressor()
-    model.load_model(path)
-    return model
+def _lstm_module():
+    """model/lstm_model.py, imported on first use: it pulls in torch, which an
+    XGBoost-only deployment doesn't need to have installed."""
+    if str(MODEL_DIR) not in sys.path:
+        sys.path.insert(0, str(MODEL_DIR))
+    import lstm_model
+    import torch
+    # xgboost and torch each load their own OpenMP runtime; on macOS, letting
+    # both run multi-threaded in one process deadlocks or segfaults. One day
+    # of LSTM inference is far too small to need threads anyway.
+    torch.set_num_threads(1)
+    return lstm_model
 
 
-def predict_prices(model, features: pd.DataFrame, times, location: str,
+def load_model(path: Path):
+    """Returns (kind, model): ("xgb", XGBRegressor) for a .json file, or
+    ("lstm", LSTMForecaster in eval mode, its artifact dict on .artifact) for
+    a .pt file."""
+    path = Path(path)
+    if path.suffix == ".json":
+        model = xgb.XGBRegressor()
+        model.load_model(path)
+        return "xgb", model
+    if path.suffix == ".pt":
+        model, artifact = _lstm_module().load_artifact(path)
+        model.artifact = artifact
+        return "lstm", model
+    raise ValueError(f"Unsupported model file {path.name!r}: expected .json (XGBoost) or .pt (LSTM).")
+
+
+def build_sequence(engine: sa.Engine, target_times: pd.DatetimeIndex, location: str, artifact: dict):
+    """LSTM inputs for `target_times` (the 24 hours of one UTC day): tensors
+    shaped (1, past_window, n_past) and (1, horizon, n_future), clipped,
+    transformed and scaled exactly as the artifact was trained.
+
+    Price is queried only up to the hour before `target_times.min()`; the
+    exogenous inputs cover the history window and the target day. Raises
+    lstm_model.MissingInputError (after logging which inputs) rather than
+    predicting from incomplete inputs; price gaps of a few hours are
+    forward-filled with a warning.
+    """
+    lstm = _lstm_module()
+    import torch
+
+    if len(target_times) != artifact["horizon"]:
+        raise ValueError(f"LSTM predicts {artifact['horizon']} consecutive hours, got {len(target_times)}.")
+    day_start = target_times.min()
+    cutoff = day_start - timedelta(hours=1)
+    history_start = day_start - timedelta(hours=artifact["past_window"])
+
+    frame = load_exogenous(engine, history_start, target_times.max())
+    unknown = [c for c in artifact["exog_cols"] if c not in frame.columns]
+    if unknown:
+        raise ValueError(f"Model needs exogenous columns that load_exogenous doesn't provide: {unknown}")
+    frame = lstm.add_cyclic_calendar(add_calendar_features(frame)).set_index("time")
+
+    price = load_price_history(engine, location, history_start, until=cutoff)
+    frame[lstm.PRICE_COL] = price.set_index("time")["price"]
+    # Same reason as build_features: a source with zero rows comes back as dtype object.
+    frame = frame.apply(pd.to_numeric, errors="coerce")
+
+    try:
+        past, future = lstm.assemble_inputs(frame, day_start, artifact, log=logger)
+    except lstm.MissingInputError as exc:
+        logger.error("Not predicting %s: %s", day_start.date(), exc)
+        raise
+    return torch.from_numpy(past).unsqueeze(0), torch.from_numpy(future).unsqueeze(0)
+
+
+def lstm_predict(model, sequence) -> tuple[np.ndarray | None, np.ndarray, np.ndarray | None]:
+    """(p10, p50, p90) in $/MWh for one day. p10/p90 are None for a point
+    model (trained with --loss mse)."""
+    past, future = sequence
+    preds = _lstm_module().predict_quantiles(model, past, future, model.artifact)[0]
+    by_quantile = dict(zip(model.artifact["arch"]["quantiles"], preds.T))
+    return by_quantile.get(0.1), by_quantile[0.5], by_quantile.get(0.9)
+
+
+def predict_prices(preds, times, location: str,
                    model_version: str, generated_at: datetime) -> pd.DataFrame:
-    preds = model.predict(features)
     gen_at = pd.Timestamp(generated_at)
     if gen_at.tzinfo is not None:
         gen_at = gen_at.tz_convert("UTC").tz_localize(None)
     return pd.DataFrame({
         "interval_start_utc": pd.to_datetime(times),
         "location": location,
-        "predicted_price": preds,
+        "predicted_price": np.asarray(preds, dtype=float),
         "model_version": model_version,
         "generated_at": gen_at,
     })
@@ -375,12 +493,20 @@ def run_predictions(engine: sa.Engine, model_path: Path = DEFAULT_MODEL_PATH,
         start=pd.Timestamp(target_date), periods=24, freq="h",
     )
 
-    logger.info("Building features for %s (%d hours)", target_date, len(target_times))
-    features = build_features(engine, target_times, location)
+    model_path = Path(model_path)
+    kind, model = load_model(model_path)
+    logger.info("Building %s inputs for %s (%d hours)", kind, target_date, len(target_times))
+    if kind == "xgb":
+        preds = model.predict(build_features(engine, target_times, location))
+    else:
+        p10, preds, p90 = lstm_predict(model, build_sequence(engine, target_times, location, model.artifact))
+        if p10 is not None and p90 is not None:
+            # Only the point forecast has a column in predicted_price - the interval is logged.
+            for t, lo, mid, hi in zip(target_times, p10, preds, p90):
+                logger.info("%s  P10 %8.2f  P50 %8.2f  P90 %8.2f", t.strftime("%Y-%m-%d %H:%M"), lo, mid, hi)
 
-    model = load_model(model_path)
     generated_at = datetime.now(timezone.utc)
-    predictions = predict_prices(model, features, target_times, location,
+    predictions = predict_prices(preds, target_times, location,
                                  model_version=model_path.stem, generated_at=generated_at)
 
     added = write_predictions(engine, predictions)
@@ -391,7 +517,7 @@ def run_predictions(engine: sa.Engine, model_path: Path = DEFAULT_MODEL_PATH,
 def main() -> None:
     parser = argparse.ArgumentParser(description="Predict LZ_NORTH DAM prices and write them to predicted_price.")
     parser.add_argument("--date", type=date.fromisoformat, help="target UTC date (default: tomorrow)")
-    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH, help="path to the saved XGBoost model")
+    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH, help="saved model: .json (XGBoost) or .pt (LSTM)")
     args = parser.parse_args()
 
     logging.Formatter.converter = time.gmtime
