@@ -27,7 +27,11 @@ import {
   CircleDashed,
   RefreshCw,
   XCircle,
+  Calendar,
+  Table,
 } from "lucide-react"
+import { cn } from "@/lib/utils"
+import { GoogleCalendarView } from "@/components/schedule-calendar/GoogleCalendarView"
 import {
   Line,
   XAxis,
@@ -219,6 +223,7 @@ const initialWorkloads: Workload[] = [
 
 export function Dashboard() {
   const [workloads, setWorkloads] = React.useState<Workload[]>(initialWorkloads)
+  const [scheduleDisplayMode, setScheduleDisplayMode] = React.useState<"table" | "calendar">("calendar")
   const [planApproved, setPlanApproved] = React.useState(false)
   const [isRejecting, setIsRejecting] = React.useState(false)
   const [dateRange, setDateRange] = React.useState(() => {
@@ -577,6 +582,34 @@ export function Dashboard() {
             </CardDescription>
           </div>
           <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setScheduleDisplayMode("table")}
+                className={cn(
+                  "px-2.5 py-1 rounded-md font-medium transition-all flex items-center gap-1.5",
+                  scheduleDisplayMode === "table"
+                    ? "bg-background text-foreground shadow-xs font-semibold"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Table className="h-3.5 w-3.5" />
+                Table
+              </button>
+              <button
+                type="button"
+                onClick={() => setScheduleDisplayMode("calendar")}
+                className={cn(
+                  "px-2.5 py-1 rounded-md font-medium transition-all flex items-center gap-1.5",
+                  scheduleDisplayMode === "calendar"
+                    ? "bg-background text-foreground shadow-xs font-semibold"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Calendar className="h-3.5 w-3.5 text-blue-500" />
+                Google Calendar
+              </button>
+            </div>
             <Button variant="outline" size="sm" className="text-xs">
               Filter by Cluster
             </Button>
@@ -586,78 +619,82 @@ export function Dashboard() {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-border text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                  <th className="pb-3 pl-2">Job Name & Cluster</th>
-                  <th className="pb-3">Type</th>
-                  <th className="pb-3">Power</th>
-                  <th className="pb-3">Scheduled Window</th>
-                  <th className="pb-3">Hard Deadline</th>
-                  <th className="pb-3">Est. Savings</th>
-                  <th className="pb-3">Status</th>
-                  <th className="pb-3 pr-2 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/60">
-                {workloads.map((item) => (
-                  <tr key={item.id} className="hover:bg-muted/40 transition-colors">
-                    <td className="py-3 pl-2">
-                      <div className="font-semibold text-foreground">{item.name}</div>
-                      <div className="text-[11px] text-muted-foreground font-mono">{item.machineCluster}</div>
-                    </td>
-                    <td className="py-3">
-                      <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
-                        {item.type}
-                      </span>
-                    </td>
-                    <td className="py-3 font-mono font-medium">
-                      {item.powerKw} kW
-                    </td>
-                    <td className="py-3 font-mono text-xs">
-                      {item.scheduledWindow}
-                    </td>
-                    <td className="py-3 text-xs text-muted-foreground">
-                      {item.deadline}
-                    </td>
-                    <td className="py-3 font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">
-                      {item.savings}
-                    </td>
-                    <td className="py-3">
-                      <span
-                        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
-                          item.status === "Running"
-                            ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30"
-                            : item.status === "Throttled"
-                            ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
-                            : "bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30"
-                        }`}
-                      >
-                        <span className={`h-1.5 w-1.5 rounded-full ${item.status === "Running" ? "bg-emerald-500 animate-pulse" : item.status === "Throttled" ? "bg-amber-500" : "bg-blue-500"}`} />
-                        {item.status}
-                      </span>
-                    </td>
-                    <td className="py-3 pr-2 text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 text-xs text-muted-foreground hover:text-foreground"
-                        onClick={() => handleToggleWorkload(item.id)}
-                      >
-                        {item.status === "Running" ? (
-                          <Pause className="h-3.5 w-3.5 text-amber-500" />
-                        ) : (
-                          <Play className="h-3.5 w-3.5 text-emerald-500" />
-                        )}
-                        <span className="sr-only">Toggle</span>
-                      </Button>
-                    </td>
+          {scheduleDisplayMode === "calendar" ? (
+            <GoogleCalendarView />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-border text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    <th className="pb-3 pl-2">Job Name & Cluster</th>
+                    <th className="pb-3">Type</th>
+                    <th className="pb-3">Power</th>
+                    <th className="pb-3">Scheduled Window</th>
+                    <th className="pb-3">Hard Deadline</th>
+                    <th className="pb-3">Est. Savings</th>
+                    <th className="pb-3">Status</th>
+                    <th className="pb-3 pr-2 text-right">Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {workloads.map((item) => (
+                    <tr key={item.id} className="hover:bg-muted/40 transition-colors">
+                      <td className="py-3 pl-2">
+                        <div className="font-semibold text-foreground">{item.name}</div>
+                        <div className="text-[11px] text-muted-foreground font-mono">{item.machineCluster}</div>
+                      </td>
+                      <td className="py-3">
+                        <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
+                          {item.type}
+                        </span>
+                      </td>
+                      <td className="py-3 font-mono font-medium">
+                        {item.powerKw} kW
+                      </td>
+                      <td className="py-3 font-mono text-xs">
+                        {item.scheduledWindow}
+                      </td>
+                      <td className="py-3 text-xs text-muted-foreground">
+                        {item.deadline}
+                      </td>
+                      <td className="py-3 font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">
+                        {item.savings}
+                      </td>
+                      <td className="py-3">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
+                            item.status === "Running"
+                              ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30"
+                              : item.status === "Throttled"
+                              ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
+                              : "bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30"
+                          }`}
+                        >
+                          <span className={`h-1.5 w-1.5 rounded-full ${item.status === "Running" ? "bg-emerald-500 animate-pulse" : item.status === "Throttled" ? "bg-amber-500" : "bg-blue-500"}`} />
+                          {item.status}
+                        </span>
+                      </td>
+                      <td className="py-3 pr-2 text-right">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 text-xs text-muted-foreground hover:text-foreground"
+                          onClick={() => handleToggleWorkload(item.id)}
+                        >
+                          {item.status === "Running" ? (
+                            <Pause className="h-3.5 w-3.5 text-amber-500" />
+                          ) : (
+                            <Play className="h-3.5 w-3.5 text-emerald-500" />
+                          )}
+                          <span className="sr-only">Toggle</span>
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
