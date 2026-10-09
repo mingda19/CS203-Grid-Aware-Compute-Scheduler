@@ -1,6 +1,13 @@
+# CPU-only torch wheels on Linux (CI/servers): the default PyPI wheel bundles CUDA and is several GB.
+--extra-index-url https://download.pytorch.org/whl/cpu
 openmeteo-requests
 pandas
 requests-cache
 retry-requests
 python-dotenv
 gridstatusio
+sqlalchemy
+psycopg2-binary
+xgboost
+holidays
+torch
