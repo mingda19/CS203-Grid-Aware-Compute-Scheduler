@@ -40,6 +40,16 @@ Data is written under `data/`, which is intentionally gitignored. The GridStatus
 supports recent updates, monthly pulls, historical backfills, and alternate ERCOT zones.
 See [data_scripts/README.md](data_scripts/README.md) for its options and schema.
 
+Generate the next UTC day's hourly price forecast and write it to `predicted_price` with:
+
+```bash
+python data_scripts/predictions.py
+```
+
+The forecast dashboard reads these stored predictions from the same database configured
+for the backend. Run the prediction command again after new data is available; the backend
+does not schedule forecast generation automatically.
+
 Run the offline data-script tests with:
 
 ```bash

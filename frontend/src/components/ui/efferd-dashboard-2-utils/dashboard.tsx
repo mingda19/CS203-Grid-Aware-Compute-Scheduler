@@ -71,6 +71,10 @@ const chartConfig = {
     label: "Actual Price ($/MWh)",
     color: "#10b981", // Emerald
   },
+  forecast: {
+    label: "Forecast Price ($/MWh)",
+    color: "#8b5cf6",
+  },
 } satisfies ChartConfig
 
 interface Workload {
@@ -239,6 +243,27 @@ export function Dashboard() {
   const [pricesLoading, setPricesLoading] = React.useState(true)
   const [pricesError, setPricesError] = React.useState<string | null>(null)
   const [totalPriceRecords, setTotalPriceRecords] = React.useState(0)
+  const [forecastPoints, setForecastPoints] = React.useState<NonNullable<Awaited<ReturnType<typeof priceApi.getForecast>>["data"]>["points"]>([])
+  const [forecastLoading, setForecastLoading] = React.useState(true)
+  const [forecastError, setForecastError] = React.useState<string | null>(null)
+  const [forecastHorizon, setForecastHorizon] = React.useState(48)
+  const [forecastRefreshKey, setForecastRefreshKey] = React.useState(0)
+
+  React.useEffect(() => {
+    let cancelled = false
+    setForecastLoading(true)
+    setForecastError(null)
+    priceApi.getForecast({ location: "LZ_NORTH", hours: forecastHorizon }).then((response) => {
+      if (cancelled) return
+      if (!response.success || !response.data) throw new Error(response.message || "Unable to load price forecast")
+      setForecastPoints(response.data.points.filter((point) => point.predictedPrice != null))
+    }).catch((error: unknown) => {
+      if (!cancelled) setForecastError(error instanceof Error ? error.message : "Unable to load price forecast")
+    }).finally(() => {
+      if (!cancelled) setForecastLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [forecastHorizon, forecastRefreshKey])
 
   React.useEffect(() => {
     if (dateRange.startDate > dateRange.endDate) {
@@ -273,6 +298,21 @@ export function Dashboard() {
     }
   }), [pricePoints])
 
+  const chartForecastPoints = React.useMemo(() => forecastPoints.map((point) => {
+    const utcDate = new Date(`${point.intervalStartUtc}Z`)
+    return {
+      ...point,
+      price: point.predictedPrice,
+      time: utcDate.toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" }),
+    }
+  }), [forecastPoints])
+
+  const forecastSummary = React.useMemo(() => {
+    if (!forecastPoints.length) return null
+    const sorted = [...forecastPoints].sort((a, b) => (a.predictedPrice ?? 0) - (b.predictedPrice ?? 0))
+    const average = forecastPoints.reduce((sum, point) => sum + (point.predictedPrice ?? 0), 0) / forecastPoints.length
+    return { average, low: sorted[0], high: sorted[sorted.length - 1] }
+  }, [forecastPoints])
   const lmpMetrics = React.useMemo(() => {
     if (pricePoints.length === 0) {
       return {
@@ -535,6 +575,149 @@ export function Dashboard() {
           </CardFooter>
         </Card>
       </div>
+
+      {/* Human-in-the-Loop Pending Schedule Recommendation Banner (FR-09, FR-10) */}
+      <div id="approvals" className="scroll-mt-20">
+        <Card className={`border-2 transition-all ${planApproved ? "border-emerald-500/50 bg-emerald-500/5" : "border-amber-500/50 bg-amber-500/5"}`}>
+          <CardHeader className="pb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className={`p-2 rounded-lg ${planApproved ? "bg-emerald-500 text-white" : "bg-amber-500 text-white"}`}>
+                  {planApproved ? <CheckCircle2 className="h-5 w-5" /> : <ShieldAlert className="h-5 w-5" />}
+                </div>
+                <div>
+                  <CardTitle className="text-base font-bold">
+                    {planApproved
+                      ? "Optimization Plan #2026-0920-04 Approved & Dispatched"
+                      : "Human-in-the-Loop Schedule Recommendation #2026-0920-04"}
+                  </CardTitle>
+                  <CardDescription className="text-xs">
+                    {planApproved
+                      ? "Workload dispatch instructions sent to Slurm and Kubernetes adapters."
+                      : "Action required: Review proposed schedule adjustments to avoid ERCOT price spike."}
+                  </CardDescription>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${planApproved ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30" : "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"}`}>
+                  {planApproved ? "STATUS: EXECUTING" : "PENDING OPERATOR SIGN-OFF"}
+                </span>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div className="p-4 rounded-xl bg-background/80 border border-border leading-relaxed text-xs sm:text-sm text-foreground space-y-2">
+              <div className="flex items-center gap-2 font-semibold text-emerald-600 dark:text-emerald-400 text-xs">
+                <Info className="h-4 w-4" /> Plain-English Decision Rationale
+              </div>
+              <p>
+                Shifting <strong>Llama-3 Fine-Tuning Run #4</strong> and <strong>Monte Carlo Risk Batch #812</strong> forward into the <strong>01:30 – 05:30 UTC</strong> window takes advantage of sustained West Texas wind generation (curtailed prices at <strong>$14.80/MWh</strong>).
+                During the predicted <strong>17:00 – 20:00 UTC</strong> ERCOT thermal spike (forecasted at <strong>$142.50/MWh</strong> due to solar ramp-down), flexible mining load will be throttled and facility cooling will run on thermal pre-chill reserves.
+              </p>
+              <div className="flex flex-wrap items-center gap-4 pt-1 text-xs text-muted-foreground font-mono">
+                <span>⚡ Projected Net Savings: <strong className="text-foreground font-bold">$4,120 (22.4%)</strong></span>
+                <span>⏱️ Slack Buffer: <strong className="text-foreground font-bold">2.5 hrs</strong></span>
+                <span>🎯 Forecast Confidence: <strong className="text-emerald-500 font-bold">94.8%</strong></span>
+              </div>
+            </div>
+          </CardContent>
+          <CardFooter className="flex flex-wrap items-center justify-between gap-3 pt-0">
+            <span className="text-xs text-muted-foreground">
+              Model: XGBoost-LSTM Hybrid (v2.4) • Ingestion Latency: 1.2m
+            </span>
+            <div className="flex items-center gap-2">
+              {!planApproved ? (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-xs text-destructive hover:bg-destructive/10"
+                    onClick={() => {
+                      if (confirm("Reject proposed optimization and keep standard fixed schedule?")) {
+                        alert("Optimization dismissed. Standard fixed schedule maintained.")
+                      }
+                    }}
+                  >
+                    Reject Plan
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-semibold gap-1.5 shadow-sm"
+                    onClick={handleApprovePlan}
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    Approve & Dispatch Workloads
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => setPlanApproved(false)}
+                >
+                  Modify Schedule
+                </Button>
+              )}
+            </div>
+          </CardFooter>
+        </Card>
+      </div>
+
+      {/* Upcoming LZ_NORTH price forecast */}
+      <Card>
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle className="text-lg font-bold flex items-center gap-2"><TrendingDown className="h-5 w-5 text-violet-500" />Upcoming LZ_NORTH Price Forecast</CardTitle>
+            <CardDescription className="text-xs mt-1">Stored model predictions for the next {forecastHorizon} hours, in USD/MWh. Timestamps are UTC.</CardDescription>
+          </div>
+          <div className="flex items-end gap-2">
+            <label className="space-y-1 text-xs text-muted-foreground">
+              <span>Forecast horizon</span>
+              <select aria-label="Forecast horizon" value={forecastHorizon} onChange={(event) => setForecastHorizon(Number(event.target.value))} className="block h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground">
+                <option value={24}>24 hours</option>
+                <option value={48}>48 hours</option>
+                <option value={72}>72 hours</option>
+              </select>
+            </label>
+            <Button variant="outline" size="sm" className="h-9 gap-2" onClick={() => setForecastRefreshKey((key) => key + 1)} disabled={forecastLoading}>
+              <RefreshCw className={`h-3.5 w-3.5 ${forecastLoading ? "animate-spin" : ""}`} /> Refresh
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {forecastLoading ? (
+            <p role="status" className="py-12 text-center text-sm text-muted-foreground">Loading upcoming price forecast…</p>
+          ) : forecastError ? (
+            <p role="alert" className="py-12 text-center text-sm text-destructive">Could not load price forecast: {forecastError}</p>
+          ) : chartForecastPoints.length === 0 ? (
+            <div className="py-12 text-center">
+              <p className="text-sm text-muted-foreground">No upcoming LZ_NORTH forecast is available.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Generate future rows with <code className="rounded bg-muted px-1 py-0.5">python data_scripts/predictions.py</code>, then refresh. Confirm the script and backend use the same database.</p>
+            </div>
+          ) : (
+            <>
+              {forecastSummary && <div className="mb-5 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-lg border border-border/70 p-3"><p className="text-xs text-muted-foreground">Average · {forecastHorizon}h horizon</p><p className="mt-1 font-mono text-lg font-semibold">${forecastSummary.average.toFixed(2)}<span className="ml-1 text-xs font-normal text-muted-foreground">/MWh</span></p></div>
+                <div className="rounded-lg border border-border/70 p-3"><p className="text-xs text-muted-foreground">Lowest forecast</p><p className="mt-1 font-mono text-lg font-semibold text-emerald-600">${forecastSummary.low.predictedPrice?.toFixed(2)}<span className="ml-1 text-xs font-normal text-muted-foreground">/MWh</span></p><p className="text-[11px] text-muted-foreground">{new Date(`${forecastSummary.low.intervalStartUtc}Z`).toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" })}</p></div>
+                <div className="rounded-lg border border-border/70 p-3"><p className="text-xs text-muted-foreground">Highest forecast</p><p className="mt-1 font-mono text-lg font-semibold text-amber-600">${forecastSummary.high.predictedPrice?.toFixed(2)}<span className="ml-1 text-xs font-normal text-muted-foreground">/MWh</span></p><p className="text-[11px] text-muted-foreground">{new Date(`${forecastSummary.high.intervalStartUtc}Z`).toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" })}</p></div>
+              </div>}
+              <ChartContainer config={chartConfig} className="h-72 sm:h-96 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartForecastPoints} margin={{ top: 16, right: 18, left: 0, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" opacity={0.2} vertical={false} />
+                    <XAxis dataKey="time" tickLine={false} axisLine={false} tickMargin={8} minTickGap={36} style={{ fontSize: "11px" }} />
+                    <YAxis tickLine={false} axisLine={false} tickMargin={8} tickFormatter={(value) => `$${value}`} style={{ fontSize: "11px" }} />
+                    <ChartTooltip content={<ChartTooltipContent indicator="dot" />} />
+                    <Line type="monotone" dataKey="price" stroke="#8b5cf6" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} name="Forecast Price ($/MWh)" connectNulls={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartContainer>
+              <p className="mt-3 text-center text-xs text-muted-foreground">{chartForecastPoints.length} forecast intervals · Model {forecastPoints[0]?.modelVersion} · Generated {new Date(`${forecastPoints[0]?.generatedAt}Z`).toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" })}</p>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Historical LZ_NORTH price chart */}
       <Card id="forecasts" className="scroll-mt-20">

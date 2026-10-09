@@ -37,6 +37,16 @@ export interface PriceHistory {
   offset: number
 }
 
+export interface PriceForecastPoint {
+  intervalStartUtc: string
+  predictedPrice: number | null
+  modelVersion: string
+  generatedAt: string
+}
+
+export interface PriceForecast {
+  points: PriceForecastPoint[]
+  horizonHours: number
 export interface WorkloadSchedule {
   id: number
   title: string
@@ -176,6 +186,14 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
 }
 
 export const priceApi = {
+  getForecast(params: { location: string; hours?: number }): Promise<ApiResponse<PriceForecast>> {
+    const query = new URLSearchParams({
+      location: params.location,
+      hours: String(params.hours ?? 48),
+    })
+    return fetchJson<ApiResponse<PriceForecast>>(`/api/prices/forecast?${query.toString()}`, { cache: "no-store" })
+  },
+
   getHistory(params: { location: string; startDate: string; endDate: string; limit?: number; offset?: number }): Promise<ApiResponse<PriceHistory>> {
     const query = new URLSearchParams({
       location: params.location,
