@@ -657,6 +657,8 @@ Returns the latest stored model prediction for each upcoming interval at a settl
     }
   }
   ```
+* `confidenceScore` (0-1, higher = more confident) is reserved for GRID-68 and is omitted from each point until the model provides it.
+* **Empty window**: `200` with `"points": []`. **Errors**: `400` for blank `location` or `hours` outside 1-168; `403` without a valid token.
 
 #### `GET /api/forecasts/ercot`
 Retrieves forecasted electricity prices and uncertainty intervals for the selected horizon.
@@ -688,35 +690,6 @@ Retrieves forecasted electricity prices and uncertainty intervals for the select
     }
   }
   ```
-
-#### `GET /api/forecasts/prices`
-Implemented endpoint (GRID-49). Returns hourly day-ahead (DAM) price predictions stored in `predicted_price`, one point per UTC target hour. Currently produced by the 24h day-ahead XGBoost pipeline (`data_scripts/predictions.py`); the response carries whatever dates have been generated, so no horizon parameter exists yet. Requires a Bearer token.
-* **Query Parameters**:
-  * `location` (string, optional, default: `"LZ_NORTH"`): Settlement point
-  * `startDate` (date `YYYY-MM-DD`, optional, default: today UTC): first UTC date, inclusive
-  * `endDate` (date, optional, default: `startDate + 1 day`): last UTC date, inclusive; max range 14 days
-* If several runs cover the same hour, the most recently generated one is returned.
-* `confidenceScore` (0-1, higher = more confident) is reserved for GRID-68 and is omitted from each point until the model provides it.
-* **Example**: `GET /api/forecasts/prices?location=LZ_NORTH&startDate=2026-10-09`
-  ```json
-  {
-    "success": true,
-    "message": "Forecast retrieved",
-    "data": {
-      "location": "LZ_NORTH",
-      "points": [
-        {
-          "intervalStartUtc": "2026-10-09T00:00:00",
-          "predictedPriceUsdMwh": 31.75,
-          "modelVersion": "xgboost_baseline_full",
-          "generatedAt": "2026-10-08T12:00:00"
-        }
-      ]
-    }
-  }
-  ```
-* **Empty range**: `200` with `"points": []`. **Errors**: `400` for blank `location`, `endDate` before `startDate`, or range over 14 days; `403` without a valid token.
-* Interactive docs: `/swagger-ui.html`.
 
 ---
 

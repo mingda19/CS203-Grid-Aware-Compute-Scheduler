@@ -26,10 +26,6 @@ public interface PredictedPriceRepository extends JpaRepository<PredictedPrice, 
         String location, LocalDateTime start, LocalDateTime end
     );
 
-    List<PredictedPrice> findByLocationAndIntervalStartUtcGreaterThanEqualAndIntervalStartUtcLessThanOrderByIntervalStartUtcAscGeneratedAtAsc(
-        String location, LocalDateTime startInclusive, LocalDateTime endExclusive
-    );
-
     // All predictions made for one target hour, across model versions/runs - the whole point
     // of keying on generatedAt: lets accuracy be tracked per run, not just per target hour.
     List<PredictedPrice> findByLocationAndIntervalStartUtcOrderByGeneratedAtAsc(
