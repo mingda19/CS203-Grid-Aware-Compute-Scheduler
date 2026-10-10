@@ -107,7 +107,7 @@ pytest
 data_scripts/
   gridstatus_pull.py      the script (fetch_dam_prices() returns the table; update_dam_prices() runs a full pull)
   requirements.txt        runtime dependencies for all data scripts
-  requirements-dev.txt    + pytest
+  requirements-dev.txt    + pytest, scikit-learn (LEAR model tests)
   pytest.ini
   tests/test_gridstatus_pull.py
 ```

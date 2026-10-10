@@ -16,8 +16,13 @@ Models (--models):
             D-1 23:00
   lstm      seq2seq LSTM, inputs built by lstm_model.assemble_inputs (ditto);
             P50 is the point forecast
-  --variant NAME=col1,col2 adds "lstm_NAME": the LSTM retrained with those
-            extra EXOG_COLS (e.g. battery features), compared against lstm.
+  lear      LEAR benchmark (lear_model.py): 24 LASSO hour-models on the full
+            24-hour profiles of previous days, averaged over four calibration
+            windows. Recalibrates itself on the history before each test day
+            (--recal-every), so it is not trained per fold and has no seed.
+  --variant NAME=col1,col2 adds "lstm_NAME" / "lear_NAME" (for whichever of
+            lstm and lear is in --models): that model with those extra
+            EXOG_COLS (e.g. battery features), compared against the plain one.
 
 Modes:
   --mode holdout      train <= 2026-01-31, test 2026-02-01..2026-08-30. Uses
@@ -33,14 +38,17 @@ Usage:
   python model/evaluate.py --mode holdout
   python model/evaluate.py --mode walkforward
   python model/evaluate.py --mode walkforward --variant battery=battery_soc_mwh,battery_net_mw
+  python model/evaluate.py --mode walkforward --models naive_d1,naive_w1,xgb,lstm,lear --seeds 0,1,2
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import math
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
@@ -55,6 +63,7 @@ import predictions as P  # noqa: E402  (imports xgboost - must stay ahead of tor
 import xgboost as xgb  # noqa: E402
 import torch  # noqa: E402
 
+import lear_model as lear  # noqa: E402
 import lstm_model as lm  # noqa: E402
 from train_lstm import EXOG_MAX_FFILL_HOURS, RAW_PRICE_COL, find_data_dir  # noqa: E402
 from train_xgboost_baseline import XGB_PARAMS  # noqa: E402
@@ -88,6 +97,7 @@ FOLDS = [
 HOLDOUT_FOLD = "5"
 
 SPIKE_QUANTILE = 0.95
+LOW_PRICE_QUANTILE = 0.25
 CHEAPEST_N = 6
 SMAPE_MIN_ABS_PRICE = 1.0
 HAC_LAG_DAYS = 7
@@ -103,8 +113,8 @@ REFERENCE_TOLERANCE = 0.05
 
 # Chart identity: one fixed colour per model, never reassigned.
 INK, MUTED, GRID, SURFACE = "#0b0b0b", "#898781", "#e1e0d9", "#fcfcfb"
-MODEL_COLORS = {"lstm": "#2a78d6", "xgb": "#eb6834", "naive_d1": "#1baf7a", "naive_w1": "#eda100"}
-VARIANT_COLORS = ["#e87ba4", "#4a3aa7", "#008300"]
+MODEL_COLORS = {"lstm": "#2a78d6", "xgb": "#eb6834", "lear": "#4a3aa7", "naive_d1": "#1baf7a", "naive_w1": "#eda100"}
+VARIANT_COLORS = ["#e87ba4", "#008300"]
 MODEL_DASHES = {"naive_d1": (4, 2), "naive_w1": (1, 2)}
 
 
@@ -130,12 +140,15 @@ def test_days(frame: pd.DataFrame, first: str, last: str) -> pd.DatetimeIndex:
     return days[counts.reindex(days, fill_value=0).to_numpy() == 24]
 
 
-def day_history(frame: pd.DataFrame, day: pd.Timestamp, future_price=np.nan) -> pd.DataFrame:
-    """What a model may see when forecasting `day`: recent history with the
-    price blanked from `day` 00:00 on. `future_price` swaps the blank for a
-    planted value - the leakage test uses it to prove nothing reads it."""
+def day_history(frame: pd.DataFrame, day: pd.Timestamp, future_price=np.nan,
+                history_days: int | None = HISTORY_DAYS) -> pd.DataFrame:
+    """What a model may see when forecasting `day`: recent history (all of it
+    for history_days=None) with the price blanked from `day` 00:00 on.
+    `future_price` swaps the blank for a planted value - the leakage test uses
+    it to prove nothing reads it."""
     cols = [c for c in frame.columns if c not in PRICE_DERIVED]
-    history = frame.loc[day - pd.Timedelta(days=HISTORY_DAYS):day + pd.Timedelta(hours=23), cols].copy()
+    start = None if history_days is None else day - pd.Timedelta(days=history_days)
+    history = frame.loc[start:day + pd.Timedelta(hours=23), cols].copy()
     history.loc[day:, PRICE] = future_price
     return history
 
@@ -146,6 +159,7 @@ def day_history(frame: pd.DataFrame, day: pd.Timestamp, future_price=np.nan) -> 
 
 class NaiveForecaster:
     seed = None
+    history_days = HISTORY_DAYS
 
     def __init__(self, model_id: str, lag_days: int):
         self.id, self.lag, self.model_version = model_id, pd.Timedelta(days=lag_days), model_id
@@ -159,6 +173,7 @@ class NaiveForecaster:
 
 class XGBForecaster:
     id = "xgb"
+    history_days = HISTORY_DAYS
     seed = XGB_PARAMS["random_state"]
 
     def __init__(self, pretrained: Path | None = None):
@@ -185,6 +200,8 @@ class XGBForecaster:
 
 
 class LSTMForecaster:
+    history_days = HISTORY_DAYS
+
     def __init__(self, model_id: str, seed: int, artifact_path: Path):
         self.id, self.seed, self.path = model_id, seed, artifact_path
 
@@ -205,6 +222,25 @@ class LSTMForecaster:
         preds = lm.predict_quantiles(self.model, past[None], future[None], self.artifact)[0]
         by_quantile = dict(zip(self.artifact["arch"]["quantiles"], preds.T))
         return by_quantile[0.5], by_quantile.get(0.1), by_quantile.get(0.9)
+
+
+class LEARForecaster:
+    seed = None  # deterministic: one run, whatever --seeds says
+    history_days = None  # its calibration windows reach back up to four years
+
+    def __init__(self, model_id: str, extra_exog: list[str], recal_every: int, n_jobs: int):
+        self.id, self.model_version = model_id, f"{model_id}_recal{recal_every}d"
+        self.model = lear.LEARForecaster(exog_cols=[*lear.EXOG_COLS, *extra_exog], recal_every=recal_every,
+                                         price_col=PRICE, n_jobs=n_jobs)
+
+    def fit(self, frame: pd.DataFrame, train_end: pd.Timestamp) -> None:
+        """Nothing per fold: predict_day calibrates on the history before each day."""
+
+    def predict_day(self, history: pd.DataFrame, day: pd.Timestamp):
+        try:
+            return self.model.predict_day(history, day), None, None
+        except lear.MissingInputError as exc:
+            raise lm.MissingInputError(str(exc)) from exc
 
 
 def lstm_artifact_path(model_id: str, train_end: pd.Timestamp, seed: int) -> Path:
@@ -248,7 +284,8 @@ def make_forecasts(forecaster, frame: pd.DataFrame, days: pd.DatetimeIndex, fold
     rows = []
     for day in days:
         try:
-            pred, p10, p90 = forecaster.predict_day(day_history(frame, day), day)
+            history = day_history(frame, day, history_days=forecaster.history_days)
+            pred, p10, p90 = forecaster.predict_day(history, day)
         except lm.MissingInputError as exc:
             print(f"  {forecaster.id} (seed {forecaster.seed}): no forecast for {day.date()} - {exc}")
             continue
@@ -284,8 +321,9 @@ def leakage_test(forecasters: list, frame: pd.DataFrame, days: pd.DatetimeIndex)
     worst = 0.0
     for forecaster in forecasters:
         for day in sample:
-            clean = forecaster.predict_day(day_history(frame, day), day)[0]
-            planted = forecaster.predict_day(day_history(frame, day, future_price=99999.0), day)[0]
+            span = forecaster.history_days
+            clean = forecaster.predict_day(day_history(frame, day, history_days=span), day)[0]
+            planted = forecaster.predict_day(day_history(frame, day, 99999.0, span), day)[0]
             worst = max(worst, float(np.abs(np.asarray(clean) - np.asarray(planted)).max()))
     return worst
 
@@ -319,6 +357,7 @@ def score(df: pd.DataFrame) -> dict:
         "medae": float(abs_err.median()), "smape": float(smape.mean()), "bias": float(err.mean()),
         "mae_winsorized": float(err_w.abs().mean()), "rmse_winsorized": float(np.sqrt((err_w ** 2).mean())),
         "spike_mae": float(abs_err[df["is_spike"]].mean()), "normal_mae": float(abs_err[~df["is_spike"]].mean()),
+        "low_mae": float(abs_err[df["is_low"]].mean()), "low_bias": float(err[df["is_low"]].mean()),
         "cheap_hit": float(np.mean(hits)), "spearman": float(spearman.mean()),
     }
     if df["p10"].notna().all() and df["p90"].notna().all():
@@ -379,6 +418,17 @@ def compare(fc: pd.DataFrame, a: str, b: str) -> dict:
     return {"a": a, "b": b, "delta_mae": float(d.mean()), "ci_lo": float(lo), "ci_hi": float(hi),
             "dm_stat": float(stat), "p_value": math.erfc(abs(stat) / math.sqrt(2)), "n_days": n,
             "significant": bool(hi < 0 or lo > 0)}
+
+
+def apply_rule(pooled: dict, by_fold: list[dict]) -> tuple[bool, int, int, bool]:
+    """The verdict rule for "a is better than b": ΔMAE < 0 with a CI excluding
+    0 on the pooled test days, and the same in at least 4 of 5 folds.
+    Returns (better on the pooled days, folds with lower MAE, folds where it
+    also excludes 0, rule met)."""
+    better = pooled["delta_mae"] < 0 and pooled["significant"]
+    lower = sum(c["delta_mae"] < 0 for c in by_fold)
+    holds = sum(c["delta_mae"] < 0 and c["significant"] for c in by_fold)
+    return better, lower, holds, bool(by_fold) and better and holds >= math.ceil(0.8 * len(by_fold))
 
 
 # --------------------------------------------------------------------------- #
@@ -557,7 +607,10 @@ def main() -> None:
     parser.add_argument("--models", default="naive_d1,naive_w1,xgb,lstm")
     parser.add_argument("--seeds", help="LSTM seeds, comma-separated (default: 0 for holdout, 0,1,2 for walkforward)")
     parser.add_argument("--variant", action="append", default=[], metavar="NAME=col1,col2",
-                        help="also evaluate lstm_NAME: the LSTM retrained with these extra EXOG_COLS")
+                        help="also evaluate lstm_NAME / lear_NAME: that model with these extra EXOG_COLS")
+    parser.add_argument("--recal-every", type=int, default=1, metavar="N",
+                        help="LEAR: recalibrate every N days (1 = daily, as LEAR is defined; 7 for quick runs)")
+    parser.add_argument("--lear-jobs", type=int, default=8, help="LEAR: processes fitting hour-models at once")
     parser.add_argument("--folds", help="walkforward: only these folds, e.g. 3,4,5")
     parser.add_argument("--xgb", type=Path, default=MODELS_DIR / "xgboost_baseline_train.json")
     parser.add_argument("--lstm", type=Path, default=MODELS_DIR / "lstm_train.pt",
@@ -567,13 +620,22 @@ def main() -> None:
     parser.add_argument("--jobs", type=int, default=5, help="LSTM trainings to run at once")
     parser.add_argument("--max-epochs", type=int, help="cap LSTM training epochs (smoke tests only)")
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="  %(name)s: %(message)s")
 
     data_dir = args.data_dir or find_data_dir()
     frame = load_history(data_dir)
     models = [m for m in args.models.split(",") if m]
-    variants = dict(v.split("=", 1) for v in args.variant)
-    models += [f"lstm_{name}" for name in variants]
-    lstm_extra = {"lstm": [], **{f"lstm_{name}": cols.split(",") for name, cols in variants.items()}}
+    variants = {name: cols.split(",") for name, cols in (v.split("=", 1) for v in args.variant)}
+    # A variant extends whichever of lstm/lear is being evaluated (the LSTM if neither is named).
+    lstm_extra, lear_extra = {"lstm": []}, {"lear": []}
+    if "lear" in models:
+        lear_extra.update({f"lear_{name}": cols for name, cols in variants.items()})
+        absent = sorted({c for cols in variants.values() for c in cols if c not in frame.columns})
+        if absent:
+            raise SystemExit(f"--variant columns not in train.csv/val.csv: {absent}")
+    if "lstm" in models or "lear" not in models:
+        lstm_extra.update({f"lstm_{name}": cols for name, cols in variants.items()})
+    models += [m for m in [*lstm_extra, *lear_extra] if m not in ("lstm", "lear")]
     seeds = [int(s) for s in (args.seeds or ("0" if args.mode == "holdout" else "0,1,2")).split(",")]
     wanted = [HOLDOUT_FOLD] if args.mode == "holdout" else (args.folds.split(",") if args.folds else None)
     folds = [f for f in FOLDS if wanted is None or f[0] in wanted]
@@ -592,6 +654,7 @@ def main() -> None:
     train_missing_lstms(lstm_jobs, data_dir, args.jobs, args.max_epochs)
 
     tables, fold_info, leak, reference_rows = [], [], 0.0, []
+    lear_seconds = {m: 0.0 for m in models if m in lear_extra}
     for fold, train_end, first, last in folds:
         train_end = pd.Timestamp(train_end) + pd.Timedelta(hours=23)
         days = test_days(frame, first, last)
@@ -603,12 +666,18 @@ def main() -> None:
                 forecasters.append(NaiveForecaster(model, {"naive_d1": 1, "naive_w1": 7}[model]))
             elif model == "xgb":
                 forecasters.append(XGBForecaster(args.xgb if args.mode == "holdout" else None))
+            elif model in lear_extra:
+                forecasters.append(LEARForecaster(model, lear_extra[model], args.recal_every, args.lear_jobs))
             else:
                 forecasters += [LSTMForecaster(model, j["seed"], j["path"]) for j in lstm_jobs
                                 if j["fold"] == fold and j["model"] == model]
         for forecaster in forecasters:
             forecaster.fit(frame, train_end)
+            started = time.perf_counter()
             tables.append(make_forecasts(forecaster, frame, days, fold, train_end))
+            if forecaster.id in lear_seconds:
+                lear_seconds[forecaster.id] += time.perf_counter() - started
+                print(f"  {forecaster.id}: {len(days)} days in {time.perf_counter() - started:.0f} s", flush=True)
         leak = max(leak, leakage_test(forecasters, frame, days))
         fold_info.append({"fold": fold, "train_end": train_end, "n_days": len(days)})
 
@@ -624,6 +693,8 @@ def main() -> None:
     fc["seed"] = fc["seed"].astype("Int64")
     spike_threshold = fc.groupby("fold")["actual"].quantile(SPIKE_QUANTILE)
     fc["is_spike"] = fc["actual"] > fc["fold"].map(spike_threshold)
+    low_threshold = fc.groupby("fold")["actual"].quantile(LOW_PRICE_QUANTILE)
+    fc["is_low"] = fc["actual"] < fc["fold"].map(low_threshold)
 
     # Every run must cover exactly the same timestamps, 24 per day.
     stamps = fc.groupby(["model", "seed"], dropna=False)["time"].apply(lambda t: tuple(t.sort_values()))
@@ -635,11 +706,14 @@ def main() -> None:
     naive_mae = stats.loc["naive_d1", ("mae", "mean")] if "naive_d1" in models else float("nan")
     multi_fold = len(folds) > 1
     lstm_models = [m for m in models if m in lstm_extra]
+    lear_models = [m for m in models if m in lear_extra]
 
     # ---- significance ----
     pairs = [(m, "xgb") for m in lstm_models if "xgb" in models]
     pairs += [(m, "naive_d1") for m in models if m != "naive_d1" and "naive_d1" in models and m != "naive_w1"]
     pairs += [(m, "lstm") for m in lstm_models if m != "lstm" and "lstm" in models]
+    pairs += [(m, b) for m in lear_models for b in ("xgb", "lstm") if b in models]
+    pairs += [(m, "lear") for m in lear_models if m != "lear" and "lear" in models]
     pooled = [compare(fc, a, b) for a, b in pairs]
     per_fold = {fold: [compare(df, a, b) for a, b in pairs] for fold, df in fc.groupby("fold")} if multi_fold else {}
 
@@ -654,20 +728,23 @@ def main() -> None:
              f"Scored: {n_days} days / {n_hours} hours, {period}. {dropped} day(s) dropped because a model "
              f"could not forecast them. All values are $/MWh against the actual `{RAW_PRICE_COL}`.",
              f"LSTM seeds: {', '.join(map(str, seeds))}"
-             + (" (cells show mean ± std across seeds)." if len(seeds) > 1 else "."), ""]
+             + (" (cells show mean ± std across seeds)." if len(seeds) > 1 else ".")]
+    lines += [f"LEAR runtime ({m}): {secs:.0f} s wall-clock for the {sum(i['n_days'] for i in fold_info)} test "
+              f"days of {'the full walk-forward run' if multi_fold else 'this run'} "
+              f"({secs / sum(i['n_days'] for i in fold_info):.2f} s per day), recalibrating every "
+              f"{args.recal_every} day(s) with {args.lear_jobs} worker process(es)."
+              for m, secs in lear_seconds.items()]
+    lines.append("")
 
     # verdict
     lines += ["## Verdict", ""]
     main_pair = next((c for c in pooled if (c["a"], c["b"]) == ("lstm", "xgb")), None)
     if main_pair:
-        better = main_pair["delta_mae"] < 0 and main_pair["significant"]
+        fold_pairs = [next(c for c in cs if (c["a"], c["b"]) == ("lstm", "xgb")) for cs in per_fold.values()]
+        better, lower, holds, passed = apply_rule(main_pair, fold_pairs)
         lines.append(f"- LSTM − XGBoost MAE: **{main_pair['delta_mae']:+.2f}** (95% CI "
                      f"[{main_pair['ci_lo']:+.2f}, {main_pair['ci_hi']:+.2f}], DM p = {main_pair['p_value']:.4f}).")
         if multi_fold:
-            fold_pairs = [next(c for c in cs if (c["a"], c["b"]) == ("lstm", "xgb")) for cs in per_fold.values()]
-            lower = sum(c["delta_mae"] < 0 for c in fold_pairs)
-            holds = sum(c["delta_mae"] < 0 and c["significant"] for c in fold_pairs)
-            passed = better and holds >= math.ceil(0.8 * len(fold_pairs))
             lines.append(f"- LSTM has the lower MAE in {lower}/{len(fold_pairs)} folds; lower with a CI "
                          f"excluding 0 in {holds}/{len(fold_pairs)}.")
             lines.append(f"- Rule (ΔMAE < 0, CI excludes 0, and that holds in ≥ 4/5 folds): "
@@ -688,6 +765,22 @@ def main() -> None:
         if ("coverage", "mean") in stats.columns:
             lines.append(f"- LSTM P10–P90 interval covers {stat_cell(stats, 'lstm', 'coverage', '.1%')} of actuals "
                          "(target ≈ 80%).")
+    for pair in (c for c in pooled if c["a"] == "lear"):
+        fold_pairs = [next(c for c in cs if (c["a"], c["b"]) == ("lear", pair["b"])) for cs in per_fold.values()]
+        better, lower, holds, passed = apply_rule(pair, fold_pairs)
+        line = (f"- LEAR − {pair['b']} MAE: **{pair['delta_mae']:+.2f}** (95% CI [{pair['ci_lo']:+.2f}, "
+                f"{pair['ci_hi']:+.2f}], DM p = {pair['p_value']:.4f}). ")
+        if multi_fold:
+            outcome = "LEAR is better" if passed else "rule not met - LEAR is not shown to be better"
+            line += (f"Lower MAE in {lower}/{len(fold_pairs)} folds, with a CI excluding 0 in {holds}/"
+                     f"{len(fold_pairs)}: **{outcome}**.")
+        else:
+            line += (f"On this one period LEAR is {'**better**' if better else '**not shown to be better**'}; "
+                     "the ≥ 4/5-folds half of the rule needs `--mode walkforward`.")
+        lines.append(line)
+    if lear_models:
+        lines.append(f"- Cheap-{CHEAPEST_N} hit rate: " + ", ".join(
+            f"{m} {stat_cell(stats, m, 'cheap_hit', '.3f')}" for m in models) + ".")
     lines.append("")
 
     lines += ["## Summary", "", markdown_table([{
@@ -706,12 +799,17 @@ def main() -> None:
         "Model": m, "sMAPE (%)": stat_cell(stats, m, "smape", ".1f"),
         "Mean error (bias)": stat_cell(stats, m, "bias", "+.2f"),
         "Rank correlation": stat_cell(stats, m, "spearman", ".3f"),
+        "Low-price MAE": stat_cell(stats, m, "low_mae"),
+        "Low-price bias": stat_cell(stats, m, "low_bias", "+.2f"),
         "Normal-hour MAE": stat_cell(stats, m, "normal_mae"),
         "MAE (winsorized)": stat_cell(stats, m, "mae_winsorized"),
         "RMSE (winsorized)": stat_cell(stats, m, "rmse_winsorized"),
     } for m in models]), "",
         f"sMAPE skips the {skipped} hour(s) with |actual| < ${SMAPE_MIN_ABS_PRICE:.0f}. Rank correlation = "
-        "Spearman between predicted and actual hourly prices within a day, averaged over days.", ""]
+        "Spearman between the predicted and actual 24-hour profiles of a day, averaged over days. Low-price "
+        f"hours = actual below the test period's {LOW_PRICE_QUANTILE:.0%} quantile (per fold: "
+        + ", ".join(f"fold {f} < ${v:.2f}" for f, v in low_threshold.items()) + "); low-price bias = mean "
+        "(pred − actual) on those hours, positive when the model flattens the dips.", ""]
 
     if ("coverage", "mean") in stats.columns:
         lines += ["## Uncertainty (LSTM)", "", markdown_table([{
@@ -742,7 +840,7 @@ def main() -> None:
                    "Test": f"{sub['time'].min().date()} to {sub['time'].max().date()}", "Days": sub["day"].nunique()}
             row.update({m: fmt(fold_mean[(m, f)], fold_std[(m, f)]) for m in models})
             for c in per_fold[f]:
-                if c["b"] == "xgb" or (c["a"] != "lstm" and c["b"] == "lstm"):
+                if c["b"] == "xgb" or (c["a"] != "lstm" and c["b"] == "lstm") or c["a"] in lear_models:
                     row[f"{c['a']} − {c['b']}"] = (f"{c['delta_mae']:+.2f} [{c['ci_lo']:+.2f}, {c['ci_hi']:+.2f}]"
                                                    f"{' *' if c['significant'] else ''}")
             rows.append(row)
@@ -790,7 +888,7 @@ def main() -> None:
     stem = f"eval_{args.mode}_{date.today().isoformat()}"
     (out_dir / f"{stem}.md").write_text("\n".join(lines))
     keep = ["time", "fold", "model", "model_version", "train_end", "seed", "horizon_h", "actual",
-            "actual_winsorized", "pred", "p10", "p90", "is_spike"]
+            "actual_winsorized", "pred", "p10", "p90", "is_spike", "is_low"]
     fc[keep].to_parquet(out_dir / f"forecasts_{args.mode}.parquet", index=False)
 
     print("\n".join(lines[:lines.index("## By horizon (hour of day)")]))

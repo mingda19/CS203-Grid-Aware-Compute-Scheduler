@@ -2,3 +2,5 @@
 # Install with: pip install -r data_scripts/requirements-dev.txt
 -r requirements.txt
 pytest
+# model/lear_model.py (tests/test_lear.py); serving does not use it yet.
+scikit-learn
