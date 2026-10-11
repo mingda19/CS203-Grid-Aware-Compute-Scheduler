@@ -9,5 +9,6 @@ gridstatusio
 sqlalchemy
 psycopg2-binary
 xgboost
+scikit-learn
 holidays
 torch

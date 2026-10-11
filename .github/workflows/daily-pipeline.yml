@@ -1,0 +1,87 @@
+name: Daily Data Ingestion & Price Prediction
+
+on:
+  schedule:
+    # Runs daily at 21:00 UTC (3:00 PM / 4:00 PM US Central Time)
+    # Matches render.yaml schedule
+    - cron: '0 21 * * *'
+  push:
+    branches:
+      - automation-script
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Datasets to ingest (leave blank for all: weather,eia,dam,load_forecast)'
+        required: false
+        default: ''
+      target_date:
+        description: 'Prediction target date in YYYY-MM-DD (leave blank for tomorrow UTC)'
+        required: false
+        default: ''
+
+concurrency:
+  group: daily-pipeline
+  cancel-in-progress: false
+
+jobs:
+  ingest-and-predict:
+    name: Run Ingestion and Model Prediction
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: data_scripts
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: data_scripts/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Data Ingestion
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GRIDSTATUS_API_KEY: ${{ secrets.GRIDSTATUS_API_KEY }}
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
+        run: |
+          set +e
+          if [ -n "${{ github.event.inputs.only }}" ]; then
+            python ingestion.py --only "${{ github.event.inputs.only }}"
+          else
+            python ingestion.py
+          fi
+          status=$?
+          set -e
+
+          if [ "$status" -eq 1 ]; then
+            echo "::error::ingestion.py hard-failed (exit code 1) - skipping predictions"
+            exit 1
+          elif [ "$status" -eq 2 ]; then
+            echo "::warning::ingestion.py completed with partial data (exit code 2) - proceeding to predictions"
+            exit 0
+          elif [ "$status" -eq 0 ]; then
+            echo "ingestion.py completed successfully (exit code 0)"
+            exit 0
+          else
+            echo "::error::ingestion.py exited with unexpected status $status - aborting"
+            exit "$status"
+          fi
+
+      - name: Run Price Predictions
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -n "${{ github.event.inputs.target_date }}" ]; then
+            python predictions.py --date "${{ github.event.inputs.target_date }}"
+          else
+            python predictions.py
+          fi
