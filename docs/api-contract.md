@@ -657,6 +657,8 @@ Returns the latest stored model prediction for each upcoming interval at a settl
     }
   }
   ```
+* `confidenceScore` (0-1, higher = more confident) is reserved for GRID-68 and is omitted from each point until the model provides it.
+* **Empty window**: `200` with `"points": []`. **Errors**: `400` for blank `location` or `hours` outside 1-168; `403` without a valid token.
 
 #### `GET /api/forecasts/ercot`
 Retrieves forecasted electricity prices and uncertainty intervals for the selected horizon.

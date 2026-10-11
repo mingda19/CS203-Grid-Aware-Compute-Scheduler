@@ -45,7 +45,7 @@ public class PriceHistoryController {
         LocalDateTime start = LocalDateTime.now(ZoneOffset.UTC);
         var points = predictions.findLatestForecast(location, start, start.plusHours(hours)).stream()
             .map(record -> new PriceForecastResponse.ForecastPoint(record.getIntervalStartUtc(),
-                record.getPredictedPrice(), record.getModelVersion(), record.getGeneratedAt()))
+                record.getPredictedPrice(), record.getModelVersion(), record.getGeneratedAt(), null))
             .toList();
         return ResponseEntity.ok(ApiResponse.ok("Price forecast retrieved",
             new PriceForecastResponse(points, hours)));

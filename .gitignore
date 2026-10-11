@@ -18,3 +18,4 @@ model/models/*.json
 model/models/*.pt
 model/models/folds/*
 model/reports/*.parquet
+references/
