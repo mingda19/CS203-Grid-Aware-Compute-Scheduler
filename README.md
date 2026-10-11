@@ -66,3 +66,9 @@ npm run dev
 ```
 
 The frontend is available at `http://localhost:3000` by default.
+
+## Deployment & CI/CD Documentation
+
+- **[Deployment Runbook & Rollback Procedures](docs/deployment-runbook.md)** (AC4.1): Complete operational guide, environment matrix, health checks, and failure rollback playbooks (Render, Vercel, Database).
+- **[Continuous Deployment (CD) Setup Guide](docs/deployment-setup.md)** (AC3.1): Setup guide for Render, Vercel, and GitHub Actions repository secrets.
+- **[Branch Workflow](docs/branch-workflow.md)**: Staging-to-main PR workflow and branch protection rules.

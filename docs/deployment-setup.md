@@ -80,3 +80,10 @@ Under **GitHub Repository $\rightarrow$ Settings $\rightarrow$ Secrets and varia
 | `VERCEL_TOKEN` | Vercel personal access token | Vercel Account Settings $\rightarrow$ Tokens |
 | `VERCEL_ORG_ID` | Vercel Account/Team ID | Vercel Project / Team Settings |
 | `VERCEL_PROJECT_ID` | Vercel Project ID | Vercel Project $\rightarrow$ Settings $\rightarrow$ General |
+
+---
+
+## 5. Operations & Rollback Runbook
+
+For day-to-day release operations, post-deployment smoke tests, failure triage, and step-by-step rollback procedures (Render, Vercel, Database), see the comprehensive [Deployment Runbook & Rollback Procedures](deployment-runbook.md) (GRID-117 AC4 / AC4.1).
+
