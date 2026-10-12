@@ -418,7 +418,6 @@ class EiaDataset:
     table: str
     fetch: Callable
     lookback_days: int
-    period_col: str = "period"
 
 
 EIA_DATASETS = [
@@ -428,8 +427,11 @@ EIA_DATASETS = [
     # EIA's "demand" (electricity/rto/region-data) dropped: its "DF" (day-ahead
     # demand forecast) column is retrospective, not live - confirmed against
     # the real API it lags about as far behind "now" as the actuals ("D") do.
-    # Val RMSE head-to-head: see model/model.md S8.3. Replaced by GridStatus's
-    # ercot_load_forecast_dam below, which is genuinely forward-looking.
+    # Val RMSE head-to-head: see model/model.md S8.3. GridStatus's
+    # ercot_load_forecast_dam replaced it for a while (genuinely
+    # forward-looking, unlike this), but that too was dropped once the model
+    # moved to 2-3 day targets - it only ever publishes one day ahead, so it
+    # can't support that horizon either. See model/model.md S9.2.
 ]
 
 
@@ -441,7 +443,6 @@ def update_eia_dataset(engine: sa.Engine, ds: EiaDataset, session, since: date |
     new = ds.fetch(session, start, today)
     value_cols = [c for c in new.columns if c != "period"]
     new = new.dropna(subset=value_cols, how="all") if value_cols else new
-    new = new.rename(columns={"period": "period"})  # column is already named `period`; DB column is `period`
     return upsert_dataframe(engine, ds.table, new, ["period"])
 
 
@@ -559,81 +560,6 @@ def update_all_dam_prices(engine: sa.Engine, since: date | None = None) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# GridStatus DAM load forecast (ercot_load_forecast_dam) - genuinely forward-
-# looking, unlike EIA's demand_forecast_mwh (the old hourly_demand_forecast
-# table/EIA puller, now removed - see model/model.md S8.3): ERCOT publishes
-# this once/day at 14:30 CT, covering the ENTIRE next delivery day, confirmed
-# live against the real API. One request returns all zones as columns
-# already (no per-zone filter needed, so this costs 1 request/day toward the
-# 250/month budget, not 5). zone is ERCOT's weather-zone scheme
-# (north/south/west/houston/system_total) - a different naming convention
-# from the LZ_ settlement points used for electrical_price (see
-# normalize_load_forecast below and model/model.md S8.3).
-# --------------------------------------------------------------------------- #
-
-LOAD_FORECAST_DATASET = "ercot_load_forecast_dam"
-LOAD_FORECAST_ZONES = ["north", "south", "west", "houston", "system_total"]
-
-
-def normalize_load_forecast(raw: pd.DataFrame) -> pd.DataFrame:
-    cols = ["interval_start_utc", "zone", "load_forecast_mwh", "publish_time_utc"]
-    if raw.empty:
-        return pd.DataFrame(columns=cols)
-    missing = [c for c in ["interval_start_utc", "publish_time_utc", *LOAD_FORECAST_ZONES] if c not in raw.columns]
-    if missing:
-        raise RuntimeError(f"GridStatus response missing {missing}; got {list(raw.columns)}. Schema changed?")
-
-    interval_start = pd.to_datetime(raw["interval_start_utc"], utc=True).dt.tz_localize(None)
-    publish_time = pd.to_datetime(raw["publish_time_utc"], utc=True).dt.tz_localize(None)
-    long_frames = []
-    for zone in LOAD_FORECAST_ZONES:
-        long_frames.append(pd.DataFrame({
-            "interval_start_utc": interval_start,
-            "zone": zone,
-            "load_forecast_mwh": pd.to_numeric(raw[zone], errors="coerce"),
-            "publish_time_utc": publish_time,
-        }))
-    return pd.concat(long_frames, ignore_index=True)[cols]
-
-
-def fetch_load_forecast_dam(client, start: date, end: date, max_rows: int = DEFAULT_MAX_ROWS) -> pd.DataFrame:
-    raw = client.get_dataset(
-        dataset=LOAD_FORECAST_DATASET, start=start.isoformat(), end=end.isoformat(),
-        columns=["interval_start_utc", "publish_time_utc", *LOAD_FORECAST_ZONES],
-        limit=max_rows, verbose=False,
-    )
-    return normalize_load_forecast(raw)
-
-
-def update_load_forecast_dam(engine: sa.Engine, client, since: date | None = None,
-                             now: datetime | None = None, max_rows: int = DEFAULT_MAX_ROWS) -> tuple[int, int]:
-    """Incoming window only (yesterday through tomorrow), same as weather -
-    Supabase holds live/incoming data for serving, not a historical archive.
-    By design: Supabase feeds the backend's live predictions, while model
-    training reads from the CSVs under model/ instead (users plausibly want
-    to see historical price, which is why electrical_price was backfilled in
-    full, but not historical wind/solar/load-forecast). `since` is an
-    explicit escape hatch for a deliberate one-off backfill, not the normal
-    path: passing it widens the start date but the window is still capped at
-    tomorrow, it will NOT pull years of history by default."""
-    now = now or datetime.now(timezone.utc)
-    today = now.astimezone(timezone.utc).date()
-    default_start = today - timedelta(days=1)
-    start = min(since, default_start) if since else default_start
-    end = today + timedelta(days=1)
-
-    new = fetch_load_forecast_dam(client, start, end, max_rows)
-    priced = new.dropna(subset=["load_forecast_mwh"])
-    return upsert_dataframe(engine, "load_forecast_dam", priced, ["interval_start_utc", "zone"])
-
-
-def update_all_load_forecast(engine: sa.Engine, since: date | None = None) -> None:
-    client = make_gridstatus_client()
-    added, total = update_load_forecast_dam(engine, client, since=since)
-    logger.info("[load_forecast] +%d new, %d total in load_forecast_dam", added, total)
-
-
-# --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
 
@@ -642,25 +568,22 @@ class IngestionResult:
     weather_ok: bool = True
     eia_ok: bool = True
     dam_ok: bool = True
-    load_forecast_ok: bool = True
     errors: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
-        return self.weather_ok and self.eia_ok and self.dam_ok and self.load_forecast_ok
+        return self.weather_ok and self.eia_ok and self.dam_ok
 
 
 def run_ingestion(engine: sa.Engine, weather_fn: Callable | None = None, eia_fn: Callable | None = None,
-                  dam_fn: Callable | None = None, load_forecast_fn: Callable | None = None,
-                  now: datetime | None = None) -> IngestionResult:
+                  dam_fn: Callable | None = None, now: datetime | None = None) -> IngestionResult:
     weather_fn = weather_fn or (lambda eng: update_all_weather(eng))
     eia_fn = eia_fn or (lambda eng: update_all_eia_data(eng))
     dam_fn = dam_fn or (lambda eng: update_all_dam_prices(eng))
-    load_forecast_fn = load_forecast_fn or (lambda eng: update_all_load_forecast(eng))
 
     result = IngestionResult()
     for name, fn, attr in [("weather", weather_fn, "weather_ok"), ("eia", eia_fn, "eia_ok"),
-                           ("dam", dam_fn, "dam_ok"), ("load_forecast", load_forecast_fn, "load_forecast_ok")]:
+                           ("dam", dam_fn, "dam_ok")]:
         try:
             fn(engine)
         except Exception as e:  # one source failing must not stop the others
@@ -671,16 +594,16 @@ def run_ingestion(engine: sa.Engine, weather_fn: Callable | None = None, eia_fn:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Daily ingestion: Open-Meteo weather + EIA + GridStatus DAM price/load forecast.")
+    parser = argparse.ArgumentParser(description="Daily ingestion: Open-Meteo weather + EIA + GridStatus DAM price.")
     parser.add_argument("--since", type=date.fromisoformat, help="backfill from YYYY-MM-DD (where supported)")
-    parser.add_argument("--only", help="comma-separated: weather,eia,dam,load_forecast")
+    parser.add_argument("--only", help="comma-separated: weather,eia,dam")
     args = parser.parse_args()
 
     logging.Formatter.converter = time.gmtime
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         datefmt="%Y-%m-%dT%H:%M:%SZ")
 
-    only = set(args.only.split(",")) if args.only else {"weather", "eia", "dam", "load_forecast"}
+    only = set(args.only.split(",")) if args.only else {"weather", "eia", "dam"}
     engine = make_engine()
 
     try:
@@ -689,7 +612,6 @@ def main() -> None:
             weather_fn=(lambda eng: update_all_weather(eng)) if "weather" in only else (lambda eng: None),
             eia_fn=(lambda eng: update_all_eia_data(eng, since=args.since)) if "eia" in only else (lambda eng: None),
             dam_fn=(lambda eng: update_all_dam_prices(eng, since=args.since)) if "dam" in only else (lambda eng: None),
-            load_forecast_fn=(lambda eng: update_all_load_forecast(eng, since=args.since)) if "load_forecast" in only else (lambda eng: None),
         )
     except Exception:
         logger.exception("Ingestion FAILED")
