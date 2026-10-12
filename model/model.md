@@ -329,3 +329,52 @@ today already has a real, settled DAM price by serving time (published the day b
 of today's own wall-clock time. The old "freeze rolling stats at the last-known hour, broadcast
 across the batch" hack (§8.2, needed because the old adjacent-day target could overlap the
 not-yet-known batch) is gone entirely - every anchor hour computes its own fresh rolling window.
+
+### 9.3 Grid-emergency scarcity events: excluded from training
+
+Retargeting to y_0/y_1 surfaced a problem that existed under the old target too, just never
+measured this clearly: `model/evaluate.py`'s rewritten holdout run showed XGBoost's val RMSE at
+101.8 (y_0) - nearly 9x the LSTM's 9.3, and far worse than XGBoost's own in-sample train RMSE of
+11.4. Tracing the worst individual errors (not assuming the aggregate number told the full story)
+found them concentrated almost entirely in a handful of hours around July 4-7, 2026 - predicting
+$700-800/MWh against an actual of $20-40. The `is_us_holiday`, lag and rolling features for those
+hours were all unremarkable; nothing about the inputs looked anomalous.
+
+The actual mechanism: `is_us_holiday=1` is rare (~3.3% of rows), and **2021-02-15 (Presidents' Day)**
+sits inside Winter Storm Uri, with the target pegged at the training target's winsorization
+ceiling ($1506.55/MWh, §3.7/§8.4). A tree splitting on the sparse holiday flag can end up with a
+leaf dominated by just that one contaminated example, and misfires the same way on an unrelated,
+calm holiday that happens to share a similar lag-value range. Checking further (not assuming Uri
+was the only instance) found the same coincidence - an ERCOT grid-emergency scarcity-pricing event
+landing on or right next to a federal holiday - four more times across the training history:
+
+| Event | Window excluded | Holiday |
+|---|---|---|
+| Winter Storm Uri | 2021-02-12 to 2021-02-20 | Presidents' Day (Feb 15) |
+| Winter Storm Elliott | 2022-12-23 to 2022-12-25 | Christmas |
+| Juneteenth 2023 scarcity event | 2023-06-19 to 2023-06-21 | Juneteenth |
+| MLK Day 2024 cold-snap scarcity event | 2024-01-15 to 2024-01-17 | MLK Day |
+| Memorial Day 2024 scarcity event | 2024-05-24 to 2024-05-28 | Memorial Day |
+
+More broadly, scarcity pricing itself is not rare in this market - it recurs most summers (e.g.
+Aug 2020, Jun-Sep 2022, Jun-Sep 2023) regardless of any holiday. Those non-holiday events aren't
+excluded: they're real, repeated market behavior a price model should learn from, and they don't
+trigger this specific failure mode (a sparse categorical flag conditioning the split on a single
+rare extreme example). The five windows above are excluded from training specifically because
+each one *is* that failure mode's precondition - a genuine anomaly (a declared grid emergency
+severe enough to hit the price cap) landing on a day the holiday flag also marks as rare - not
+because high prices in general should be hidden from the model.
+
+**Decision: exclude these five windows from training entirely** (`train_xgboost_baseline.EXCLUDED_PERIODS`,
+duplicated in `train_lstm.py` since an LSTM day-sample's exclusion has to check a 168h encoder
+window, not a single row - kept in sync by hand, not shared code, since the two checks are
+structurally different). Not from validation: none of the five windows fall in `val.csv`'s range
+(2026), so held-out scoring is unaffected either way, and if one ever did, keeping it in val would
+be the right call - the point is to stop the model *learning* a bad generalization from a handful
+of contaminated rows, not to hide how it performs near a real emergency. Result: XGBoost y_0 val
+RMSE dropped from 101.8 to 24.4, MAE from 33.1 to 12.6 - and the July 2026 holiday misprediction
+specifically dropped from $700-800 to within ~$10-40 of actual, back in line with everywhere else
+in val. (Options considered and not taken: dropping `is_us_holiday` entirely, which would lose its
+real signal for the other ~98% of holidays; blanket XGBoost regularization, which is a blunter
+instrument than removing the five contaminating rows directly and would trade away sharpness on
+the other 97% of training data to suppress a problem caused by a handful of specific rows.)

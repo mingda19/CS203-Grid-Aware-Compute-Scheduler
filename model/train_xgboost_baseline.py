@@ -55,6 +55,23 @@ NON_FEATURE_COLS = {"time", "lz_north_price", "lz_north_price_winsorized"}
 # Hours from the anchor row's `time` ("now") to the target hour - model/model.md S9.
 LEAD_HOURS = {"y0": 48, "y1": 72}
 
+# Grid-emergency scarcity-pricing events, each a genuine real-world anomaly,
+# not a data error - excluded from training because a handful of these rows
+# (several coinciding with a federal holiday) let the tree learn "is_us_holiday
+# + these lag ranges -> extreme price" from one rare contaminated example, then
+# misfire the same way on ordinary, uneventful holidays. Dates and rationale:
+# model/model.md S9.3. Also used by train_lstm.py (its own copy, since an
+# LSTM day-sample's exclusion needs to check a 168h encoder window, not a
+# single row) and model/evaluate.py's walk-forward XGBoost retrain path
+# (imports exclude_anomalies from here).
+EXCLUDED_PERIODS = [
+    ("2021-02-12", "2021-02-20"),  # Winter Storm Uri (incl. Presidents' Day)
+    ("2022-12-23", "2022-12-25"),  # Winter Storm Elliott (incl. Christmas)
+    ("2023-06-19", "2023-06-21"),  # Juneteenth 2023 scarcity event
+    ("2024-01-15", "2024-01-17"),  # MLK Day 2024 cold-snap scarcity event
+    ("2024-05-24", "2024-05-28"),  # Memorial Day 2024 scarcity event
+]
+
 XGB_PARAMS = {
     "objective": "reg:squarederror",
     "n_estimators": 500,
@@ -76,6 +93,21 @@ def load_split(name: str) -> pd.DataFrame:
 
 def feature_columns(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns if c not in NON_FEATURE_COLS]
+
+
+def exclude_anomalies(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows whose own `time` falls within an EXCLUDED_PERIODS window.
+    This also keeps any OTHER row from being trained toward one of these as
+    its target "for free": build_target()'s lookup is built from the
+    returned (filtered) frame, so a timestamp that no longer has a row here
+    simply can't be found as anyone's target either."""
+    keep = pd.Series(True, index=df.index)
+    for start, end in EXCLUDED_PERIODS:
+        # end's own date is a string ("YYYY-MM-DD"), parsing to that day's
+        # 00:00 - +23h makes the bound cover that whole day's last hour too,
+        # not just its first.
+        keep &= ~df["time"].between(start, pd.Timestamp(end) + pd.Timedelta(hours=23))
+    return df[keep]
 
 
 def build_target(df: pd.DataFrame, lead_hours: int) -> np.ndarray:
@@ -120,12 +152,12 @@ def main() -> None:
     MODELS_DIR.mkdir(exist_ok=True)
 
     if args.train:
-        train_df = load_split("train")
+        train_df = exclude_anomalies(load_split("train"))
         y = build_target(train_df, lead_hours)
         mask = ~np.isnan(y)
         cols = feature_columns(train_df)
         print(f"Training on {int(mask.sum())} rows ({len(train_df) - int(mask.sum())} dropped - "
-              f"target beyond the data), {len(cols)} features: {cols}")
+              f"target beyond the data or an excluded anomaly), {len(cols)} features: {cols}")
         model = fit_model(train_df.loc[mask, cols], y[mask])
         model.get_booster().set_attr(target=args.target)
         out_path = MODELS_DIR / f"xgboost_{args.target}_train.json"
@@ -151,11 +183,12 @@ def main() -> None:
         train_df = load_split("train")
         val_df = load_split("val")
         full_df = pd.concat([train_df, val_df], ignore_index=True).sort_values("time").reset_index(drop=True)
+        full_df = exclude_anomalies(full_df)
         y = build_target(full_df, lead_hours)
         mask = ~np.isnan(y)
         cols = feature_columns(full_df)
         print(f"Training on {int(mask.sum())} rows (train+val combined, {len(full_df) - int(mask.sum())} "
-              f"dropped), {len(cols)} features: {cols}")
+              f"dropped - target beyond the data or an excluded anomaly), {len(cols)} features: {cols}")
         model = fit_model(full_df.loc[mask, cols], y[mask])
         model.get_booster().set_attr(target=args.target)
         out_path = MODELS_DIR / f"xgboost_{args.target}_full.json"

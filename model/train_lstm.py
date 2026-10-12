@@ -70,6 +70,20 @@ EARLY_STOP_FRACTION = 0.10
 # Hours from the anchor day ("now") to the target day's start - model/model.md S9.
 LEAD_HOURS = {"y0": 48, "y1": 72}
 
+# Grid-emergency scarcity-pricing events, each a genuine real-world anomaly -
+# excluded from training (model/model.md S9.3). Same dates as
+# train_xgboost_baseline.EXCLUDED_PERIODS (duplicated, not imported: an LSTM
+# day-sample's exclusion needs to check a 168h encoder window, not a single
+# row, so the two can't share one filtering function - keep both lists in
+# sync if this is ever revised).
+EXCLUDED_PERIODS = [
+    ("2021-02-12", "2021-02-20"),  # Winter Storm Uri (incl. Presidents' Day)
+    ("2022-12-23", "2022-12-25"),  # Winter Storm Elliott (incl. Christmas)
+    ("2023-06-19", "2023-06-21"),  # Juneteenth 2023 scarcity event
+    ("2024-01-15", "2024-01-17"),  # MLK Day 2024 cold-snap scarcity event
+    ("2024-05-24", "2024-05-28"),  # Memorial Day 2024 scarcity event
+]
+
 ARCH = {"hidden": 128, "layers": 2, "dropout": 0.2}
 LEARNING_RATE = 1e-3
 BATCH_SIZE = 64
@@ -107,13 +121,40 @@ def load_frame(data_dir: Path, splits: list[str], exog_cols: list[str]) -> pd.Da
     return df[[lm.PRICE_COL, *exog_cols, *lm.CALENDAR_COLS]]
 
 
+def day_is_excluded(day: pd.Timestamp, cfg: dict) -> bool:
+    """True if this candidate day's 168h encoder window or target day
+    overlaps an EXCLUDED_PERIODS event. Checked for the encoder too, not just
+    the target: unlike XGBoost (which only sees rolling *summary statistics*
+    of price), the LSTM's encoder reads raw hourly price directly, so an
+    anomaly anywhere in its 168h lookback feeds the model a first-hand,
+    unmistakable view of the event even when neither this day nor its target
+    falls inside the window itself."""
+    lead_hours = cfg.get("lead_hours", 0)
+    encoder_start = day - pd.Timedelta(hours=cfg["past_window"])
+    encoder_end = day - pd.Timedelta(hours=1)
+    target_start = day + pd.Timedelta(hours=lead_hours)
+    target_end = target_start + pd.Timedelta(hours=cfg["horizon"] - 1)
+    for start, end in EXCLUDED_PERIODS:
+        # end's own date is a string ("YYYY-MM-DD"), parsing to that day's
+        # 00:00 - +23h makes the bound cover that whole day's last hour too,
+        # not just its first.
+        start, end = pd.Timestamp(start), pd.Timestamp(end) + pd.Timedelta(hours=23)
+        if encoder_start <= end and start <= encoder_end:
+            return True
+        if target_start <= end and start <= target_end:
+            return True
+    return False
+
+
 def candidate_days(frame: pd.DataFrame, cfg: dict) -> pd.DatetimeIndex:
     """UTC anchor days whose full encoder window and 24 target hours (the
-    target day starts lead_hours after the anchor) fall inside `frame`."""
+    target day starts lead_hours after the anchor) fall inside `frame`, and
+    which don't overlap an excluded anomaly (day_is_excluded)."""
     lead_hours = cfg.get("lead_hours", 0)
     first = (frame.index.min() + pd.Timedelta(hours=cfg["past_window"])).ceil("D")
     last = (frame.index.max() - pd.Timedelta(hours=lead_hours + cfg["horizon"] - 1)).floor("D")
-    return pd.date_range(first, last, freq="D")
+    days = pd.date_range(first, last, freq="D")
+    return days[[not day_is_excluded(d, cfg) for d in days]]
 
 
 def build_samples(frame: pd.DataFrame, days: pd.DatetimeIndex, cfg: dict):
