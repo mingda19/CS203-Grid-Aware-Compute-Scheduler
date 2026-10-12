@@ -16,3 +16,4 @@ __pycache__/
 model/*.csv
 model/models/folds/*
 model/reports/*
+references/
