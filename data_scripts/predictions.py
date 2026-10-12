@@ -84,6 +84,31 @@ LEAD_HOURS = {"y0": 48, "y1": 72}
 WINSORIZE_LOWER = -1393.85
 WINSORIZE_UPPER = 1506.55
 
+# Reference RMSE per (model kind, horizon, hour-of-day UTC of the TARGET hour),
+# measured once on model/evaluate.py's held-out run (model/reports/
+# forecasts_holdout_y0.parquet / forecasts_holdout_y1.parquet) - hand-updated
+# whenever a model is retrained, same "fixed constant" pattern as
+# WINSORIZE_LOWER/WINSORIZE_UPPER above. Used as the denominator of the
+# per-prediction confidence score: how a recent run of real-world errors for
+# this exact slot compares to what held-out evaluation said to expect.
+REFERENCE_RMSE: dict[tuple[str, str], list[float]] = {
+    ("xgb", "y0"):  [60.12, 53.73, 48.09, 38.24, 20.49, 17.81, 12.59, 14.20,
+                     15.62, 20.16, 21.80, 24.86, 25.21, 26.20, 20.70, 16.44,
+                     16.45, 15.44, 16.25, 17.61, 19.51, 25.67, 27.16, 35.22],
+    ("lstm", "y0"): [44.74, 39.72, 42.22, 33.21, 11.51,  8.72,  6.99,  6.93,
+                       7.01,  7.00,  8.23,  9.29,  9.79,  8.94,  8.46,  8.67,
+                       8.37,  8.47,  9.38, 11.06, 13.94, 15.83, 15.46, 23.23],
+    ("xgb", "y1"):  [60.38, 54.94, 49.21, 37.36, 19.17, 17.79, 12.38, 12.56,
+                     10.30, 10.91, 12.21, 14.30, 17.58, 17.69, 13.79, 13.45,
+                     12.69, 14.10, 14.88, 16.57, 19.35, 23.83, 24.80, 35.08],
+    ("lstm", "y1"): [46.40, 42.50, 42.13, 32.97, 11.38,  8.55,  6.56,  6.18,
+                       6.07,  6.04,  7.27,  8.57,  8.99,  8.91,  9.53,  9.78,
+                       9.17,  9.21, 10.58, 13.27, 17.30, 19.79, 19.53, 25.67],
+}
+CONFIDENCE_LOOKBACK_DAYS = 21  # enough for a 7-day-halflife EWM to shed its startup transient
+CONFIDENCE_HALFLIFE_DAYS = 7
+MIN_CONFIDENCE_SAMPLES = 3  # fewer points make "decay" meaningless - that hour is left out, not guessed
+
 # Henry Hub is published on business days with a lag, so a given day's gas
 # price is the last published one carried forward - but never one older than this.
 GAS_MAX_STALE_DAYS = 7
@@ -245,6 +270,86 @@ def load_price_history(engine: sa.Engine, location: str, since: datetime,
     df["time"] = pd.to_datetime(df["time"])
     df["price"] = df["price"].clip(lower=WINSORIZE_LOWER, upper=WINSORIZE_UPPER)
     return df
+
+
+def load_recent_residuals(engine: sa.Engine, location: str, model_version: str,
+                          since: datetime) -> pd.DataFrame:
+    """(predicted, actual) pairs for every target hour `model_version` has a
+    settled actual for, from `since` on - the raw material for the confidence
+    score's live decayed-residual side. Only the latest `generated_at` per
+    interval_start_utc counts (a day-ahead prediction and a same-day revision
+    for the same hour must not double-count) - picked via ROW_NUMBER() rather
+    than a Python-side groupby, since it's cheap to push into the query and
+    keeps this portable to both sqlite (tests) and Postgres like the rest of
+    this module. The INNER JOIN against electrical_price naturally excludes
+    target hours with no settled actual yet - no separate future-date filter
+    needed."""
+    query = sa.text(
+        "WITH latest AS ("
+        "  SELECT interval_start_utc, predicted_price,"
+        "         ROW_NUMBER() OVER (PARTITION BY interval_start_utc"
+        "                            ORDER BY generated_at DESC) AS rn"
+        "  FROM predicted_price"
+        "  WHERE location = :location AND model_version = :model_version"
+        "    AND interval_start_utc >= :since"
+        ")"
+        " SELECT latest.interval_start_utc AS time, latest.predicted_price AS predicted,"
+        "        electrical_price.spp_usd_mwh AS actual"
+        " FROM latest"
+        " JOIN electrical_price"
+        "   ON electrical_price.interval_start_utc = latest.interval_start_utc"
+        "  AND electrical_price.location = :location"
+        " WHERE latest.rn = 1"
+        " ORDER BY latest.interval_start_utc"
+    )
+    with engine.begin() as conn:
+        df = pd.read_sql(query, conn, params={
+            "location": location, "model_version": model_version, "since": _iso(since),
+        })
+    df["time"] = pd.to_datetime(df["time"])
+    return df
+
+
+def decayed_abs_residuals_by_hour(df: pd.DataFrame, min_samples: int = MIN_CONFIDENCE_SAMPLES) -> dict[int, float]:
+    """{hour_of_day: 7-day-halflife-decayed mean |predicted-actual|}, one
+    entry per hour-of-day with >= min_samples observations in `df` (as
+    returned by load_recent_residuals) - fewer points make a "decay"
+    meaningless, so that hour is simply absent, not fabricated. Zero history
+    (a brand-new deployment) returns {}.
+
+    Must sort by time before grouping: Series.ewm(times=...) does not sort or
+    validate its `times` argument - it decays based on the gap between
+    consecutive rows in whatever order they're given, so an unsorted frame
+    silently produces wrong weights with no error (verified empirically, not
+    just assumed from the docs). groupby() preserves each group's original
+    row order, so sorting once up front is enough - no need to re-sort inside
+    the loop."""
+    if df.empty:
+        return {}
+    df = df.sort_values("time")
+    abs_residual = (df["predicted"] - df["actual"]).abs()
+    out: dict[int, float] = {}
+    for hour, idx in abs_residual.groupby(df["time"].dt.hour).groups.items():
+        if len(idx) < min_samples:
+            continue
+        decayed = abs_residual.loc[idx].ewm(
+            halflife=pd.Timedelta(days=CONFIDENCE_HALFLIFE_DAYS), times=df.loc[idx, "time"],
+        ).mean()
+        out[int(hour)] = float(decayed.iloc[-1])
+    return out
+
+
+def confidence_fractions(kind: str, horizon: str, decayed_by_hour: dict[int, float]) -> dict[int, float]:
+    """{hour: decayed_abs_residual / REFERENCE_RMSE[(kind, horizon)][hour]}
+    for all 24 hours. NaN (never 0, never 1) wherever decayed_by_hour has no
+    entry for that hour (no live history yet for this slot)."""
+    ref = REFERENCE_RMSE.get((kind, horizon))
+    out: dict[int, float] = {}
+    for hour in range(24):
+        residual = decayed_by_hour.get(hour)
+        ref_value = ref[hour] if ref is not None else None
+        out[hour] = (residual / ref_value) if (residual is not None and ref_value) else np.nan
+    return out
 
 
 def load_weather_table(engine: sa.Engine, table: str, columns: list[str],
@@ -521,6 +626,18 @@ def run_predictions(engine: sa.Engine, model_paths: dict[str, Path],
 
         predictions = predict_prices(preds, target_times, location,
                                      model_version=model_path.stem, generated_at=generated_at)
+
+        # Confidence score: how a recent (decayed) run of real-world errors
+        # for this exact (kind, horizon, hour-of-day) slot compares to what
+        # held-out evaluation said to expect for it (REFERENCE_RMSE). Fetched
+        # once per horizon, not once per hour.
+        gen_at_naive = pd.Timestamp(generated_at).tz_convert("UTC").tz_localize(None)
+        since = gen_at_naive - timedelta(days=CONFIDENCE_LOOKBACK_DAYS)
+        residuals = load_recent_residuals(engine, location, model_path.stem, since)
+        decayed_by_hour = decayed_abs_residuals_by_hour(residuals)
+        fractions = confidence_fractions(kind, horizon, decayed_by_hour)
+        predictions["confidence_score"] = predictions["interval_start_utc"].dt.hour.map(fractions)
+
         added = write_predictions(engine, predictions)
         logger.info("[%s] Wrote %d predictions for %s (model_version=%s)",
                    horizon, added, target_date, model_path.stem)

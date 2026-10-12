@@ -192,7 +192,7 @@ class RunPredictionsTests(unittest.TestCase):
             conn.execute(sa.text(
                 "CREATE TABLE predicted_price ("
                 "interval_start_utc TEXT, location TEXT, predicted_price REAL, "
-                "model_version TEXT, generated_at TEXT, "
+                "model_version TEXT, generated_at TEXT, confidence_score REAL, "
                 "PRIMARY KEY (interval_start_utc, location, model_version, generated_at))"
             ))
         with tempfile.TemporaryDirectory() as tmp:

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import sys
 import time
@@ -158,6 +159,12 @@ def upsert_dataframe(engine: sa.Engine, table: str, df: pd.DataFrame, key_cols: 
             if isinstance(value, pd.Timestamp):
                 record[key] = value.to_pydatetime()
             elif value is pd.NaT:
+                record[key] = None
+            elif isinstance(value, float) and math.isnan(value):
+                # Postgres float8 (and sqlite) both happily store a literal
+                # NaN as a VALUE distinct from NULL - which breaks `IS NULL`
+                # filtering downstream and isn't valid JSON if ever
+                # serialized as-is. "Missing" should mean NULL, not NaN.
                 record[key] = None
 
     with engine.begin() as conn:
