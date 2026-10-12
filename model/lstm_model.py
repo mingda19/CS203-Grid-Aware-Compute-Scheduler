@@ -6,10 +6,18 @@ data_scripts/predictions.py (serving): all three build model inputs through
 assemble_inputs() below, so the information cutoff, clipping, target
 transform and scaling cannot drift between training and serving.
 
-Information cutoff for target day D (hours D 00:00..23:00 UTC):
-  - price: actuals up to and including D-1 23:00 only (the encoder window);
-  - exogenous + calendar columns: the encoder window AND the 24 hours of D
-    ("known-ahead" values: DAM load forecast, weather-derived proxies, gas).
+Information cutoff for anchor day A (hours A 00:00..23:00 UTC = "now" - the
+day train.csv/val.csv's `time` column refers to), predicting the horizon
+`cfg["lead_hours"]` hours later:
+  - price: actuals up to and including A-1 23:00 only (the encoder window);
+  - exogenous + calendar columns: the encoder window AND the 24 target hours
+    starting at A + lead_hours ("known-ahead" values: weather-derived
+    proxies, gas - never price, which is the target).
+`lead_hours` defaults to 0 (the decoder window starts immediately at A,
+adjacent to the encoder) for artifacts/callers that don't set it - see
+model/model.md S9 for why a >0 gap was introduced (the old adjacent-day
+target was circular: ERCOT's own DAM auction already publishes that day's
+price before a same-day serving run could use this model's guess instead).
 No precomputed rolling/lag column is used - the CSV's roll_* columns include
 the target hour (model/model.md S8.2), so the encoder sees raw price history
 instead.
@@ -106,7 +114,10 @@ def _scaled_price(price: pd.Series, cfg: dict) -> pd.Series:
 
 def assemble_inputs(frame: pd.DataFrame, day_start, cfg: dict,
                     price_ffill_limit: int = MAX_PRICE_FFILL_HOURS, log=None) -> tuple[np.ndarray, np.ndarray]:
-    """Scaled encoder/decoder inputs for the day starting at `day_start`.
+    """Scaled encoder/decoder inputs for the anchor day starting at `day_start`
+    ("now" - train.csv/val.csv's `time` column), predicting `cfg["lead_hours"]`
+    hours ahead (0 if absent, i.e. the decoder window starts immediately at
+    `day_start` with no gap).
 
     `frame` is indexed by naive-UTC hour and holds PRICE_COL ($/MWh, unscaled)
     plus cfg's exog and calendar columns in their raw units. Returns
@@ -118,8 +129,9 @@ def assemble_inputs(frame: pd.DataFrame, day_start, cfg: dict,
     Raises MissingInputError naming every input that has missing hours.
     """
     day_start = pd.Timestamp(day_start)
+    target_start = day_start + pd.Timedelta(hours=cfg.get("lead_hours", 0))
     past_idx = pd.date_range(end=day_start - pd.Timedelta(hours=1), periods=cfg["past_window"], freq="h")
-    future_idx = pd.date_range(day_start, periods=cfg["horizon"], freq="h")
+    future_idx = pd.date_range(target_start, periods=cfg["horizon"], freq="h")
     known_ahead = future_feature_names(cfg)
 
     absent = [c for c in [PRICE_COL, *known_ahead] if c not in frame.columns]
@@ -142,7 +154,8 @@ def assemble_inputs(frame: pd.DataFrame, day_start, cfg: dict,
     missing.update({f"{c} (target day)": int(n) for c, n in future.isna().sum().items() if n})
     if missing:
         detail = ", ".join(f"{name}: {n}h" for name, n in missing.items())
-        raise MissingInputError(f"missing inputs for {day_start.date()} - {detail}")
+        raise MissingInputError(f"missing inputs for anchor {day_start.date()} "
+                                f"(target {target_start.date()}) - {detail}")
 
     past[PRICE_COL] = _scaled_price(past[PRICE_COL], cfg)
     for col in known_ahead:
@@ -153,9 +166,11 @@ def assemble_inputs(frame: pd.DataFrame, day_start, cfg: dict,
 
 
 def target_array(frame: pd.DataFrame, day_start, cfg: dict) -> np.ndarray:
-    """Scaled, transformed prices of the day starting at `day_start` (NaN where
-    the actual is missing)."""
-    idx = pd.date_range(pd.Timestamp(day_start), periods=cfg["horizon"], freq="h")
+    """Scaled, transformed prices of the target day - `cfg["lead_hours"]`
+    (0 if absent) after the anchor day starting at `day_start` - NaN where
+    the actual is missing."""
+    target_start = pd.Timestamp(day_start) + pd.Timedelta(hours=cfg.get("lead_hours", 0))
+    idx = pd.date_range(target_start, periods=cfg["horizon"], freq="h")
     return _scaled_price(frame[PRICE_COL].reindex(idx), cfg).to_numpy(dtype=np.float32)
 
 

@@ -2,28 +2,34 @@
 Train the seq2seq LSTM for LZ_NORTH DAM price (see lstm_model.py for the
 model and the input cutoff rules, LSTM comparison in model/evaluate.py).
 
-One sample per UTC day D: encoder sees the 168 hours before D (price +
-exogenous + calendar), decoder sees D's 24 hours of known-ahead inputs
-(exogenous + calendar, no price), target is D's 24 prices. The price is
-clipped to the fitting set's [p0.5, p99.5] and signed-log transformed; the
-clip bounds, transform and scalers are saved inside the artifact.
+One sample per UTC anchor day A ("now" - train.csv/val.csv's `time` column):
+encoder sees the 168 hours before A (price + exogenous + calendar), decoder
+sees the 24 hours of known-ahead inputs (exogenous + calendar, no price) of
+the TARGET day, which starts LEAD_HOURS[target] after A - not A itself (see
+model/model.md S9 for why: A+0/A+24h targets are circular, since ERCOT's own
+DAM auction already publishes that day's price a full day before a same-day
+serving run could use this model's guess instead). The target is that day's
+24 prices. The price is clipped to the fitting set's [p0.5, p99.5] and
+signed-log transformed; the clip bounds, transform and scalers are saved
+inside the artifact.
 
 Modes:
   --fit-on train      Fit on train.csv only. The last 10% of train days are
                       held out for early stopping; val.csv is never read.
-                      Saves model/models/lstm_train.pt - the model to evaluate.
+                      Saves model/models/lstm_<target>_train.pt - the model
+                      to evaluate.
   --fit-on train+val  Fit on train.csv + val.csv with no held-out data, for
                       production. Runs for the best epoch count (and learning
                       rate schedule) found by the --fit-on train run, read
-                      from its artifact. Saves model/models/lstm_full.pt.
+                      from its artifact. Saves model/models/lstm_<target>_full.pt.
 
 To add a feature (e.g. battery data): append its column name to EXOG_COLS,
 make sure the column is in train.csv/val.csv, retrain. Serving then needs
 that column from predictions.load_exogenous.
 
 Usage:
-  python model/train_lstm.py --fit-on train --seed 0
-  python model/train_lstm.py --fit-on train+val --seed 0
+  python model/train_lstm.py --fit-on train --target y0 --seed 0
+  python model/train_lstm.py --fit-on train+val --target y0 --seed 0
 """
 
 from __future__ import annotations
@@ -49,14 +55,20 @@ OUT_DIR = Path(__file__).resolve().parent
 MODELS_DIR = OUT_DIR / "models"
 
 RAW_PRICE_COL = "lz_north_price"
+# load_forecast_dam_north_mwh dropped: GridStatus only ever publishes it one
+# day ahead, so it can never be a known-ahead input for a 2-3 day target
+# (model/model.md S9.2). Both gas lags are included together, unconditionally
+# of target - matching train.csv's columns, which aren't horizon-specific.
 EXOG_COLS = [
-    "load_forecast_dam_north_mwh",
     "wind_power_output_proxy_total",
     "solar_power_output_proxy_total",
-    "henry_hub_price_usd_mmbtu_lag1d",
+    "henry_hub_price_usd_mmbtu_lag2d",
+    "henry_hub_price_usd_mmbtu_lag3d",
 ]
 EXOG_MAX_FFILL_HOURS = 3
 EARLY_STOP_FRACTION = 0.10
+# Hours from the anchor day ("now") to the target day's start - model/model.md S9.
+LEAD_HOURS = {"y0": 48, "y1": 72}
 
 ARCH = {"hidden": 128, "layers": 2, "dropout": 0.2}
 LEARNING_RATE = 1e-3
@@ -96,9 +108,11 @@ def load_frame(data_dir: Path, splits: list[str], exog_cols: list[str]) -> pd.Da
 
 
 def candidate_days(frame: pd.DataFrame, cfg: dict) -> pd.DatetimeIndex:
-    """UTC days whose full encoder window and 24 target hours fall inside `frame`."""
+    """UTC anchor days whose full encoder window and 24 target hours (the
+    target day starts lead_hours after the anchor) fall inside `frame`."""
+    lead_hours = cfg.get("lead_hours", 0)
     first = (frame.index.min() + pd.Timedelta(hours=cfg["past_window"])).ceil("D")
-    last = (frame.index.max() - pd.Timedelta(hours=cfg["horizon"] - 1)).floor("D")
+    last = (frame.index.max() - pd.Timedelta(hours=lead_hours + cfg["horizon"] - 1)).floor("D")
     return pd.date_range(first, last, freq="D")
 
 
@@ -165,7 +179,9 @@ def dollar_metrics(model, samples, frame: pd.DataFrame, cfg: dict) -> dict:
     against the raw, unclipped price."""
     past, future, _, days = samples
     preds = lm.predict_quantiles(model, past, future, cfg)
-    actual = np.stack([frame[lm.PRICE_COL].reindex(pd.date_range(d, periods=cfg["horizon"], freq="h")).to_numpy()
+    lead_hours = cfg.get("lead_hours", 0)
+    actual = np.stack([frame[lm.PRICE_COL].reindex(
+        pd.date_range(d + pd.Timedelta(hours=lead_hours), periods=cfg["horizon"], freq="h")).to_numpy()
                        for d in days])
     quantiles = cfg["arch"]["quantiles"]
     err = preds[..., quantiles.index(0.5)] - actual
@@ -221,14 +237,17 @@ def fit_fixed_epochs(model, train_ds, loss_name: str, device, seed: int, lr_sche
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train the seq2seq LSTM for LZ_NORTH DAM price.")
     parser.add_argument("--fit-on", choices=["train", "train+val"], default="train")
+    parser.add_argument("--target", choices=["y0", "y1"], required=True,
+                        help="y0: price 48h after `time`. y1: price 72h after `time`. See model/model.md S9.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--loss", choices=["pinball", "mse"], default="pinball",
                         help="pinball: P10/P50/P90 quantiles (default). mse: a plain point model.")
-    parser.add_argument("--tag", help="artifact is saved as models/lstm_<tag>.pt (default: train / full)")
+    parser.add_argument("--tag", help="artifact is saved as models/lstm_<tag>.pt (default: <target>_train / <target>_full)")
     parser.add_argument("--data-dir", type=Path, help="folder holding train.csv and val.csv")
     parser.add_argument("--max-epochs", type=int, default=MAX_EPOCHS)
-    parser.add_argument("--schedule-from", type=Path, default=MODELS_DIR / "lstm_train.pt",
-                        help="--fit-on train+val: the --fit-on train artifact to take the epoch count from")
+    parser.add_argument("--schedule-from", type=Path, default=None,
+                        help="--fit-on train+val: the --fit-on train artifact to take the epoch count from "
+                            "(default: models/lstm_<target>_train.pt)")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--train-end", type=date.fromisoformat,
                         help="fit only on data up to and including this UTC date (walk-forward folds)")
@@ -245,6 +264,7 @@ def main() -> None:
     device = torch.device(args.device)
     data_dir = args.data_dir or find_data_dir()
     MODELS_DIR.mkdir(exist_ok=True)
+    schedule_from = args.schedule_from or MODELS_DIR / f"lstm_{args.target}_train.pt"
 
     splits = ["train"] if args.fit_on == "train" else ["train", "val"]
     exog_cols = EXOG_COLS + [c for c in args.extra_exog.split(",") if c]
@@ -257,6 +277,8 @@ def main() -> None:
         "kind": "lstm",
         "past_window": lm.PAST_WINDOW,
         "horizon": lm.HORIZON,
+        "lead_hours": LEAD_HOURS[args.target],
+        "target": args.target,
         "exog_cols": exog_cols,
         "calendar_cols": list(lm.CALENDAR_COLS),
         "trained_on": args.fit_on,
@@ -290,16 +312,18 @@ def main() -> None:
                    "early_stop": dollar_metrics(model, stop_part, frame, cfg),
                    "fit": dollar_metrics(model, fit_part, frame, cfg)}
     else:
-        if not args.schedule_from.exists():
-            raise FileNotFoundError(f"{args.schedule_from} not found - run --fit-on train first (the epoch "
+        if not schedule_from.exists():
+            raise FileNotFoundError(f"{schedule_from} not found - run --fit-on train first (the epoch "
                                     "count for the final fit comes from it).")
-        _, source = lm.load_artifact(args.schedule_from)
-        if source["trained_on"] != "train" or source["loss"] != args.loss:
-            raise ValueError(f"{args.schedule_from} was trained with fit-on={source['trained_on']}, "
-                             f"loss={source['loss']} - need a --fit-on train run with --loss {args.loss}.")
+        _, source = lm.load_artifact(schedule_from)
+        if (source["trained_on"] != "train" or source["loss"] != args.loss
+                or source.get("lead_hours") != LEAD_HOURS[args.target]):
+            raise ValueError(f"{schedule_from} was trained with fit-on={source['trained_on']}, "
+                             f"loss={source['loss']}, lead_hours={source.get('lead_hours')} - need a "
+                             f"--fit-on train run with --loss {args.loss} --target {args.target}.")
         best_epoch, lr_history = source["best_epoch"], source["lr_history"]
         logger.info("Fitting on all %d days for %d epochs (schedule from %s)", len(days), best_epoch,
-                    args.schedule_from.name)
+                    schedule_from.name)
         train_loss = fit_fixed_epochs(model, to_dataset(past, future, target), args.loss, device, args.seed,
                                       lr_history)
         model.cpu()
@@ -308,7 +332,7 @@ def main() -> None:
 
     artifact = {**cfg, "state_dict": model.state_dict(), "best_epoch": best_epoch, "lr_history": lr_history,
                 "metrics": metrics}
-    tag = args.tag or ("train" if args.fit_on == "train" else "full")
+    tag = args.tag or f"{args.target}_{'train' if args.fit_on == 'train' else 'full'}"
     out_path = args.out or MODELS_DIR / f"lstm_{tag}.pt"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     lm.save_artifact(out_path, artifact)

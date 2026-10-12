@@ -145,14 +145,20 @@ def upsert_dataframe(engine: sa.Engine, table: str, df: pd.DataFrame, key_cols: 
 
     update_cols = [c for c in df.columns if c not in key_cols]
 
-    # pandas Timestamp isn't bindable by sqlite3's raw DBAPI driver (psycopg2 is
-    # more forgiving, but this keeps the same code path correct on both engines).
-    df = df.copy()
-    for col in df.columns:
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].dt.to_pydatetime()
-
     records = df.to_dict(orient="records")
+    # pandas Timestamp isn't bindable by sqlite3's raw DBAPI driver (psycopg2 is
+    # more forgiving, but this keeps the same code path correct on both
+    # engines). Converting at the record level, not via a DataFrame column
+    # assignment: `df[col] = df[col].dt.to_pydatetime()` looks right but
+    # pandas re-infers the assigned object-array of python datetimes right
+    # back into datetime64 dtype, silently undoing the conversion - a plain
+    # dict has no dtype to infer, so the conversion actually sticks.
+    for record in records:
+        for key, value in record.items():
+            if isinstance(value, pd.Timestamp):
+                record[key] = value.to_pydatetime()
+            elif value is pd.NaT:
+                record[key] = None
 
     with engine.begin() as conn:
         before = conn.execute(sa.text(f"SELECT COUNT(*) FROM {table}")).scalar_one()
@@ -291,24 +297,28 @@ def update_weather(engine: sa.Engine, client: openmeteo_requests.Client, dataset
 
 
 def update_all_weather(engine: sa.Engine, reference_date: date | None = None) -> None:
-    """Fetch yesterday through tomorrow (UTC) for all 4 weather datasets.
+    """Fetch yesterday through +3 days (UTC) for all 4 weather datasets.
 
-    Through tomorrow, not just today, on purpose: predictions.py predicts
-    tomorrow's 24 hours (that's what a day-ahead DAM prediction actually is),
-    and needs tomorrow's wind/solar to build those features. Open-Meteo's
-    historical-forecast endpoint does serve forecast data that far out (same
-    endpoint blends historical reanalysis and forecast seamlessly) - confirmed
-    the gap was real: without this, wind/solar were only ever populated
-    through today, so predicting tomorrow built an empty-dataframe feature,
-    which pandas gives dtype "object" when it has nothing to infer a numeric
-    dtype from - and XGBoost's predict() rejects object dtype outright, even
-    though every value in it was NaN."""
+    Through +3 days, not just tomorrow, on purpose: predictions.py predicts
+    y_0 (2 days out) and y_1 (3 days out), and needs the target day's
+    wind/solar to build those features - y_1's target day is the furthest
+    out, so the window has to reach it. (Originally this only went through
+    tomorrow, matching the old single-next-day target; +3 days is the
+    model/model.md S9 retargeting's consequence for this function, even
+    though the retargeting work itself didn't otherwise touch ingestion.py.)
+    Open-Meteo's historical-forecast endpoint does serve forecast data that
+    far out (same endpoint blends historical reanalysis and forecast
+    seamlessly) - confirmed the gap was real: without reaching far enough,
+    wind/solar were missing for the target day, so XGBoost silently predicted
+    from NaN features (handled natively, but degraded) and the LSTM - which
+    raises loudly on any missing known-ahead input rather than degrade -
+    failed outright."""
     client = make_openmeteo_client()
     today = reference_date or datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
-    tomorrow = today + timedelta(days=1)
+    furthest_target = today + timedelta(days=3)
     for dataset in WEATHER_DATASETS:
-        added, total = update_weather(engine, client, dataset, yesterday.isoformat(), tomorrow.isoformat())
+        added, total = update_weather(engine, client, dataset, yesterday.isoformat(), furthest_target.isoformat())
         logger.info("[weather:%s] +%d new, %d total in %s", dataset.name, added, total, dataset.table)
 
 

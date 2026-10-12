@@ -289,3 +289,43 @@ quietly fixing it with detrending, preserves a real, visible gap for later model
 of papering over a weakness that a better architecture is specifically expected to address. A
 calendar "year" feature was considered as a cheaper partial fix for the same trend but intentionally
 left out for the same reason: it would only narrow the gap the baseline is meant to demonstrate.
+
+## 9. Multi-day-ahead retargeting (y_0/y_1)
+
+### 9.1 The problem: "predict tomorrow" was circular
+
+§1 originally framed this as "predict day D's price as of the DAM bid deadline for day D-1."
+That's exactly the problem: ERCOT's DAM auction itself clears and publishes the **entire next
+day's** price by ~13:30 CT the day before - a full day ahead of the model, by definition, since
+that's what "day-ahead market" means. The daily serving job ran at 21:00 UTC (~15:00-16:00 CT),
+*after* that publication. So by the time the job predicted "tomorrow," tomorrow's real, settled
+price was already sitting in `electrical_price` (ingestion pulls 3 days ahead on every run) -
+reading it directly would have been both faster and exactly correct, making the model's guess
+pointless for its stated purpose. Worse, `load_forecast_dam_north_mwh` (§8.3/§8.4) published at
+14:30 CT, *after* DAM's own 13:30 CT settlement - so by the time that feature was even available,
+the real answer it was supposedly helping predict was already out too. This also quietly violated
+§3.1's own leakage rule ("every feature must be something that would actually be known by [the
+bid] deadline").
+
+### 9.2 The fix: push the target past DAM's own 1-day horizon
+
+New targets: **y_0 = price 2 days from now, y_1 = price 3 days from now** - both genuinely
+unknowable at serving time (no DAM auction has cleared for either day yet). `load_forecast_dam_north_mwh`
+cannot support this: GridStatus only ever publishes it one day ahead, so it's never available for
+a 2-3 day target. It's dropped entirely - §8.4's "keep it as a deliberate baseline weakness"
+decision is superseded, not because the earlier measurement was wrong, but because the feature is
+no longer usable at all under the new horizon, independent of how good or bad it was.
+
+`model/train.csv`/`val.csv`'s `time` column was re-scoped to mean **"now"** (the anchor features
+are safely known as of), not the target hour as before. y_0/y_1 are not precomputed columns - the
+training scripts build them by shifting the price column forward 48h/72h from `time`. One shared
+feature vector per anchor row (lags now `lag_72h`/`lag_96h`, gas now `lag2d`+`lag3d` together)
+feeds both targets, trained as two separate models per model type rather than one multi-output
+model, to keep both XGBoost and the LSTM simple.
+
+One simplification fell out of this for free: because 48h and 72h are both multiples of 24, the
+24 anchor hours needed for either target day are always exactly "today" (UTC) - and every hour of
+today already has a real, settled DAM price by serving time (published the day before), regardless
+of today's own wall-clock time. The old "freeze rolling stats at the last-known hour, broadcast
+across the batch" hack (§8.2, needed because the old adjacent-day target could overlap the
+not-yet-known batch) is gone entirely - every anchor hour computes its own fresh rolling window.
