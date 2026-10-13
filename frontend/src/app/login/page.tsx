@@ -12,12 +12,14 @@ import {
   Sparkles,
   Server,
   Cpu,
-  BarChart3,
   CheckCircle,
   AlertCircle,
   KeyRound,
   RotateCcw,
   ArrowLeft,
+  Eye,
+  EyeOff,
+  ExternalLink,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -25,18 +27,55 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { authApi, getStoredUser, setStoredUser } from "@/lib/api"
 
 type AuthMode = "login" | "register" | "verify-otp"
+type LoginTab = "standard" | "demo"
+
+const DEMO_PERSONAS = [
+  {
+    id: "admin",
+    name: "System Administrator",
+    email: "admin@datacenter.io",
+    password: "Admin@2026!",
+    role: "ADMIN",
+    description: "Manage users, view audits, & configure solver policies",
+    icon: ShieldCheck,
+    badgeClass: "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400",
+  },
+  {
+    id: "operator",
+    name: "Elena Vance",
+    email: "elena.vance@datacenter.io",
+    password: "P@ssw0rd2026!",
+    role: "OPERATOR",
+    description: "Primary grid operator: inspect forecasts & approve dispatches",
+    icon: Server,
+    badgeClass: "bg-sky-500/20 text-sky-600 dark:text-sky-400",
+  },
+  {
+    id: "hpc",
+    name: "Marcus Chen",
+    email: "marcus.chen@hpc-grid.org",
+    password: "P@ssw0rd2026!",
+    role: "RESEARCHER",
+    description: "HPC workload engineer: schedule ML fine-tuning jobs",
+    icon: Cpu,
+    badgeClass: "bg-purple-500/20 text-purple-600 dark:text-purple-400",
+  },
+]
 
 export default function LoginPage() {
   const router = useRouter()
 
   // State
   const [mode, setMode] = React.useState<AuthMode>("login")
+  const [loginTab, setLoginTab] = React.useState<LoginTab>("standard")
   const [fullName, setFullName] = React.useState("")
-  const [email, setEmail] = React.useState("admin@datacenter.io")
-  const [password, setPassword] = React.useState("Admin@2026!")
+  const [email, setEmail] = React.useState("")
+  const [password, setPassword] = React.useState("")
+  const [showPassword, setShowPassword] = React.useState(false)
   const [otpCode, setOtpCode] = React.useState("")
   const [rememberMe, setRememberMe] = React.useState(true)
 
@@ -62,19 +101,7 @@ export default function LoginPage() {
     return () => clearInterval(timer)
   }, [resendCooldown])
 
-  // Select demo persona
-  const selectPersona = (
-    personaEmail: string,
-    personaPassword: string,
-    name: string
-  ) => {
-    setEmail(personaEmail)
-    setPassword(personaPassword)
-    setFullName(name)
-    setErrorMessage(null)
-  }
-
-  // Handle Login
+  // Handle Standard Login
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
@@ -94,12 +121,39 @@ export default function LoginPage() {
       if (response.user) {
         setStoredUser(response.user, response.refreshExpiresIn)
       }
-      setSuccessMessage("Login successful! Redirecting to dashboard...")
+      setSuccessMessage("Authentication verified. Loading operations cockpit...")
       setTimeout(() => {
         router.push("/")
-      }, 500)
+      }, 400)
     } catch (err: any) {
-      setErrorMessage(err.message || "Invalid email or password.")
+      setErrorMessage(err.message || "Invalid work email or password.")
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // Handle Demo Persona 1-Click Launch (never exposes plaintext password in input form)
+  const handleLaunchDemoPersona = async (persona: (typeof DEMO_PERSONAS)[number]) => {
+    setIsLoading(true)
+    setErrorMessage(null)
+    setSuccessMessage(null)
+
+    try {
+      const response = await authApi.login({
+        email: persona.email,
+        password: persona.password,
+        rememberMe: true,
+      })
+
+      if (response.user) {
+        setStoredUser(response.user, response.refreshExpiresIn)
+      }
+      setSuccessMessage(`Signed in as ${persona.name}. Loading sandbox...`)
+      setTimeout(() => {
+        router.push("/")
+      }, 350)
+    } catch (err: any) {
+      setErrorMessage(err.message || "Failed to launch demo session.")
     } finally {
       setIsLoading(false)
     }
@@ -119,7 +173,7 @@ export default function LoginPage() {
         fullName: fullName || email.split("@")[0],
       })
 
-      setSuccessMessage(response.message || "OTP code sent to your email! Please enter it below.")
+      setSuccessMessage(response.message || "Verification code sent to your email. Enter it below.")
       setMode("verify-otp")
       setResendCooldown(60)
     } catch (err: any) {
@@ -142,10 +196,10 @@ export default function LoginPage() {
       if (response.user) {
         setStoredUser(response.user)
       }
-      setSuccessMessage("Account verified successfully! Redirecting...")
+      setSuccessMessage("Email verified! Redirecting to dashboard...")
       setTimeout(() => {
         router.push("/")
-      }, 600)
+      }, 500)
     } catch (err: any) {
       setErrorMessage(err.message || "Invalid or expired OTP code.")
     } finally {
@@ -174,40 +228,79 @@ export default function LoginPage() {
     <div className="relative min-h-screen flex items-center justify-center p-4 bg-background selection:bg-emerald-500 selection:text-white overflow-hidden">
       {/* Background Graphic & Ambient Glow */}
       <div className="absolute inset-0 z-0">
-        <img
-          src="https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=1600&auto=format&fit=crop&q=80"
-          alt="Data Center Infrastructure"
-          className="w-full h-full object-cover opacity-15 dark:opacity-10 filter blur-[1px]"
-        />
-        <div className="absolute inset-0 bg-gradient-to-tr from-background via-background/90 to-background/70" />
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute bottom-10 right-10 w-[400px] h-[400px] bg-teal-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(16,185,129,0.15),rgba(255,255,255,0))]" />
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[520px] h-[520px] bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-10 right-10 w-[420px] h-[420px] bg-teal-500/10 rounded-full blur-3xl pointer-events-none" />
       </div>
 
-      <div className="relative z-10 w-full max-w-md space-y-6">
-        {/* Brand Header */}
+      <div className="relative z-10 w-full max-w-md space-y-5">
+        {/* Environment Badge & Brand Header */}
         <div className="text-center space-y-2">
-          <div className="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-400 text-white shadow-xl shadow-emerald-500/25">
-            <Zap className="h-8 w-8 fill-current" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-[11px] font-mono font-semibold text-emerald-600 dark:text-emerald-400 shadow-xs">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span>DEMO SANDBOX · ERCOT NORTH</span>
           </div>
-          <h1 className="text-3xl font-extrabold tracking-tight text-foreground">
-            GACS Platform
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Grid Aware Compute Scheduler • ERCOT Dispatch Control
+
+          <div className="flex items-center justify-center gap-2 pt-1">
+            <div className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-400 text-white shadow-lg shadow-emerald-500/25">
+              <Zap className="h-5 w-5 fill-current" />
+            </div>
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
+              Sign in to GACS
+            </h1>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Grid Aware Compute Scheduler · Wholesale Dispatch Operations
           </p>
         </div>
 
         {/* Auth Card */}
         <Card className="border border-border/80 bg-card/90 backdrop-blur-xl shadow-2xl">
-          <CardHeader className="space-y-1 pb-4">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-xl font-bold text-foreground">
-                {mode === "login" && "Sign in to your account"}
-                {mode === "register" && "Create an account"}
+          <CardHeader className="space-y-2 pb-3">
+            {mode === "login" && (
+              <div className="flex rounded-lg bg-muted/60 p-1 text-xs">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoginTab("standard")
+                    setErrorMessage(null)
+                  }}
+                  className={`flex-1 py-1.5 rounded-md font-medium transition-all ${
+                    loginTab === "standard"
+                      ? "bg-background text-foreground shadow-xs font-semibold"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Standard Sign-In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoginTab("demo")
+                    setErrorMessage(null)
+                  }}
+                  className={`flex-1 py-1.5 rounded-md font-medium transition-all flex items-center justify-center gap-1.5 ${
+                    loginTab === "demo"
+                      ? "bg-background text-foreground shadow-xs font-semibold"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Sparkles className="h-3 w-3 text-emerald-500" />
+                  <span>Launch Demo</span>
+                </button>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between pt-1">
+              <CardTitle className="text-base font-bold text-foreground">
+                {mode === "login" &&
+                  (loginTab === "standard"
+                    ? "Enter Account Credentials"
+                    : "Select Demo Persona")}
+                {mode === "register" && "Create an Account"}
                 {mode === "verify-otp" && "Verify Email with OTP"}
               </CardTitle>
-              {mode === "verify-otp" && (
+              {mode !== "login" && (
                 <button
                   type="button"
                   onClick={() => {
@@ -215,48 +308,61 @@ export default function LoginPage() {
                     setErrorMessage(null)
                     setSuccessMessage(null)
                   }}
-                  className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
+                  className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 cursor-pointer"
                 >
                   <ArrowLeft className="h-3 w-3" /> Back
                 </button>
               )}
             </div>
             <CardDescription className="text-xs">
-              {mode === "login" && "Access real-time ERCOT price curves, dispatch schedules, and optimization approvals."}
-              {mode === "register" && "Enter your details to register. A 6-digit OTP will be sent to your Gmail for verification."}
-              {mode === "verify-otp" && `Please enter the 6-digit verification code sent to ${email}.`}
+              {mode === "login" &&
+                (loginTab === "standard"
+                  ? "Authenticate to access dispatch schedules, real-time LMP, and approvals."
+                  : "One-click access with pre-configured operational roles. No password typing required.")}
+              {mode === "register" &&
+                "Enter your work credentials to register. A 6-digit OTP will be dispatched."}
+              {mode === "verify-otp" && `Enter the 6-digit code sent to ${email}.`}
             </CardDescription>
           </CardHeader>
 
-          <CardContent className="space-y-4">
-            {/* Feedback Banners */}
+          <CardContent className="space-y-4 pt-1">
+            {/* Accessible Feedback Banners */}
             {errorMessage && (
-              <div className="flex items-center gap-2 p-3 text-xs rounded-lg border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{errorMessage}</span>
+              <div
+                role="alert"
+                aria-live="assertive"
+                className="flex items-start gap-2 p-3 text-xs rounded-lg border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400"
+              >
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span className="leading-tight">{errorMessage}</span>
               </div>
             )}
 
             {successMessage && (
-              <div className="flex items-center gap-2 p-3 text-xs rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-                <CheckCircle className="h-4 w-4 shrink-0" />
-                <span>{successMessage}</span>
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex items-start gap-2 p-3 text-xs rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+              >
+                <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span className="leading-tight">{successMessage}</span>
               </div>
             )}
 
-            {/* Mode 1: LOGIN FORM */}
-            {mode === "login" && (
-              <form onSubmit={handleLogin} className="space-y-4">
-                <div className="space-y-2">
+            {/* TAB 1: STANDARD SIGN-IN FORM */}
+            {mode === "login" && loginTab === "standard" && (
+              <form onSubmit={handleLogin} className="space-y-3.5">
+                <div className="space-y-1.5">
                   <Label htmlFor="login-email" className="text-xs font-semibold">
                     Work Email
                   </Label>
                   <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
                     <Input
                       id="login-email"
                       type="email"
-                      placeholder="name@organization.com"
+                      placeholder="operator@datacenter.io"
+                      autoComplete="username"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       required
@@ -265,38 +371,49 @@ export default function LoginPage() {
                   </div>
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <Label htmlFor="login-password" className="text-xs font-semibold">
                       Password
                     </Label>
-                    <a
-                      href="#forgot"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        alert("Password reset instructions sent to registered system administrator.")
+                    <button
+                      type="button"
+                      onClick={() => {
+                        alert("For password reset assistance, please contact your cluster administrator or use Demo Mode.")
                       }}
-                      className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline"
+                      className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
                     >
                       Forgot password?
-                    </a>
+                    </button>
                   </div>
                   <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
                     <Input
                       id="login-password"
-                      type="password"
+                      type={showPassword ? "text" : "password"}
                       placeholder="••••••••"
+                      autoComplete="current-password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       required
-                      className="pl-9 h-10 text-sm"
+                      className="pl-9 pr-9 h-10 text-sm"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                    >
+                      {showPassword ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
                   </div>
                 </div>
 
-                {/* Remember Me & Session Duration Indicator */}
-                <div className="flex items-center justify-between py-1">
+                <div className="flex items-center justify-between py-0.5">
                   <div className="flex items-center space-x-2">
                     <Checkbox
                       id="remember-me"
@@ -307,7 +424,7 @@ export default function LoginPage() {
                       htmlFor="remember-me"
                       className="text-xs font-medium cursor-pointer text-muted-foreground hover:text-foreground select-none"
                     >
-                      Remember me
+                      Remember this workstation
                     </Label>
                   </div>
                 </div>
@@ -320,20 +437,19 @@ export default function LoginPage() {
                   {isLoading ? (
                     <span className="flex items-center gap-2">
                       <span className="h-4 w-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                      Authenticating...
+                      Verifying session...
                     </span>
                   ) : (
                     <>
-                      <span>Enter GACS Dashboard</span>
+                      <span>Enter Operations Cockpit</span>
                       <ArrowRight className="h-4 w-4" />
                     </>
                   )}
                 </Button>
 
-                {/* Switch to Register */}
-                <div className="text-center pt-1">
+                <div className="text-center pt-1.5">
                   <p className="text-xs text-muted-foreground">
-                    Don't have an account?{" "}
+                    Need new credentials?{" "}
                     <button
                       type="button"
                       onClick={() => {
@@ -343,14 +459,64 @@ export default function LoginPage() {
                       }}
                       className="text-emerald-600 dark:text-emerald-400 font-semibold hover:underline cursor-pointer"
                     >
-                      Sign up with OTP
+                      Register with OTP
                     </button>
                   </p>
                 </div>
               </form>
             )}
 
-            {/* Mode 2: REGISTER FORM */}
+            {/* TAB 2: DEMO SANDBOX LAUNCHER */}
+            {mode === "login" && loginTab === "demo" && (
+              <div className="space-y-2.5">
+                <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-muted-foreground">
+                  <p className="text-foreground font-semibold flex items-center gap-1.5">
+                    <Sparkles className="h-3.5 w-3.5 text-emerald-500" />
+                    Pre-seeded Interactive Personas
+                  </p>
+                  <p className="text-[11px] mt-0.5">
+                    Choose a role below to simulate real-time ERCOT dispatch workflows without manual credentials.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  {DEMO_PERSONAS.map((persona) => {
+                    const PersonaIcon = persona.icon
+                    return (
+                      <button
+                        key={persona.id}
+                        type="button"
+                        onClick={() => handleLaunchDemoPersona(persona)}
+                        disabled={isLoading}
+                        className="w-full flex items-center justify-between p-3 rounded-lg border border-border/80 hover:border-emerald-500/60 hover:bg-emerald-500/5 transition-all text-left text-xs group cursor-pointer disabled:opacity-50"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground group-hover:text-emerald-500 group-hover:bg-emerald-500/10 transition-colors">
+                            <PersonaIcon className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <div className="font-semibold text-foreground flex items-center gap-2">
+                              {persona.name}
+                              <span
+                                className={`text-[9px] px-1.5 py-0.2 rounded font-mono font-semibold ${persona.badgeClass}`}
+                              >
+                                {persona.role}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-muted-foreground mt-0.5">
+                              {persona.description}
+                            </div>
+                          </div>
+                        </div>
+                        <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-emerald-500 group-hover:translate-x-0.5 transition-all shrink-0" />
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* MODE: REGISTER FORM */}
             {mode === "register" && (
               <form onSubmit={handleRegister} className="space-y-3">
                 <div className="space-y-1.5">
@@ -362,7 +528,7 @@ export default function LoginPage() {
                     <Input
                       id="reg-fullname"
                       type="text"
-                      placeholder="e.g. Elena Vance"
+                      placeholder="Elena Vance"
                       value={fullName}
                       onChange={(e) => setFullName(e.target.value)}
                       required
@@ -380,7 +546,7 @@ export default function LoginPage() {
                     <Input
                       id="reg-email"
                       type="email"
-                      placeholder="name@organization.com"
+                      placeholder="operator@datacenter.io"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       required
@@ -391,7 +557,7 @@ export default function LoginPage() {
 
                 <div className="space-y-1.5">
                   <Label htmlFor="reg-password" className="text-xs font-semibold">
-                    Password
+                    Set Password
                   </Label>
                   <div className="relative">
                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -420,38 +586,20 @@ export default function LoginPage() {
                     </span>
                   ) : (
                     <>
-                      <span>Send Verification Code</span>
+                      <span>Send 6-Digit OTP</span>
                       <ArrowRight className="h-4 w-4" />
                     </>
                   )}
                 </Button>
-
-                {/* Switch to Login */}
-                <div className="text-center pt-1">
-                  <p className="text-xs text-muted-foreground">
-                    Already have an account?{" "}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMode("login")
-                        setErrorMessage(null)
-                        setSuccessMessage(null)
-                      }}
-                      className="text-emerald-600 dark:text-emerald-400 font-semibold hover:underline cursor-pointer"
-                    >
-                      Sign in
-                    </button>
-                  </p>
-                </div>
               </form>
             )}
 
-            {/* Mode 3: OTP VERIFICATION FORM */}
+            {/* MODE: OTP VERIFICATION */}
             {mode === "verify-otp" && (
-              <form onSubmit={handleVerifyOtp} className="space-y-4">
+              <form onSubmit={handleVerifyOtp} className="space-y-3.5">
                 <div className="space-y-2">
                   <Label htmlFor="otp-input" className="text-xs font-semibold">
-                    6-Digit OTP Code
+                    6-Digit Verification Code
                   </Label>
                   <div className="relative">
                     <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -490,7 +638,6 @@ export default function LoginPage() {
                   )}
                 </Button>
 
-                {/* Resend OTP */}
                 <div className="flex items-center justify-between text-xs pt-1">
                   <button
                     type="button"
@@ -499,7 +646,7 @@ export default function LoginPage() {
                     className="text-emerald-600 dark:text-emerald-400 font-semibold hover:underline flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                   >
                     <RotateCcw className="h-3 w-3" />
-                    {resendCooldown > 0 ? `Resend code in ${resendCooldown}s` : "Resend code"}
+                    {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : "Resend code"}
                   </button>
 
                   <button
@@ -516,115 +663,25 @@ export default function LoginPage() {
                 </div>
               </form>
             )}
-
-            {/* Quick Demo Personas (Only in Login Mode) */}
-            {mode === "login" && (
-              <>
-                <div className="relative my-4">
-                  <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-border" />
-                  </div>
-                  <div className="relative flex justify-center text-xs uppercase">
-                    <span className="bg-card px-2 text-muted-foreground font-medium text-[11px]">
-                      Or Select Demo Persona
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <div className="grid grid-cols-1 gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        selectPersona("admin@datacenter.io", "Admin@2026!", "System Administrator")
-                      }
-                      className={`flex items-center justify-between p-2.5 rounded-lg border text-left text-xs transition-all cursor-pointer ${
-                        email === "admin@datacenter.io"
-                          ? "border-emerald-500 bg-emerald-500/10 text-foreground font-semibold"
-                          : "border-border hover:bg-accent text-muted-foreground"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <ShieldCheck className="h-4 w-4 text-emerald-500" />
-                        <div>
-                          <div className="font-semibold text-foreground flex items-center gap-1.5">
-                            System Administrator
-                            <span className="text-[10px] bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 px-1.5 py-0.2 rounded font-mono">
-                              ADMIN
-                            </span>
-                          </div>
-                          <div className="text-[10px] text-muted-foreground">Manage users & role privileges via /admin</div>
-                        </div>
-                      </div>
-                      {email === "admin@datacenter.io" && (
-                        <CheckCircle className="h-4 w-4 text-emerald-500" />
-                      )}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        selectPersona("elena.vance@datacenter.io", "P@ssw0rd2026!", "Elena Vance")
-                      }
-                      className={`flex items-center justify-between p-2.5 rounded-lg border text-left text-xs transition-all cursor-pointer ${
-                        email === "elena.vance@datacenter.io"
-                          ? "border-emerald-500 bg-emerald-500/10 text-foreground font-semibold"
-                          : "border-border hover:bg-accent text-muted-foreground"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <Server className="h-4 w-4 text-emerald-500" />
-                        <div>
-                          <div className="font-semibold text-foreground flex items-center gap-1.5">
-                            Elena Vance
-                            <span className="text-[10px] bg-muted text-muted-foreground px-1.5 py-0.2 rounded font-mono">
-                              USER
-                            </span>
-                          </div>
-                          <div className="text-[10px] text-muted-foreground">Standard operator: view & schedule compute</div>
-                        </div>
-                      </div>
-                      {email === "elena.vance@datacenter.io" && (
-                        <CheckCircle className="h-4 w-4 text-emerald-500" />
-                      )}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        selectPersona("marcus.chen@hpc-grid.org", "P@ssw0rd2026!", "Marcus Chen")
-                      }
-                      className={`flex items-center justify-between p-2.5 rounded-lg border text-left text-xs transition-all cursor-pointer ${
-                        email === "marcus.chen@hpc-grid.org"
-                          ? "border-emerald-500 bg-emerald-500/10 text-foreground font-semibold"
-                          : "border-border hover:bg-accent text-muted-foreground"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <Cpu className="h-4 w-4 text-teal-500" />
-                        <div>
-                          <div className="font-semibold text-foreground flex items-center gap-1.5">
-                            Marcus Chen
-                            <span className="text-[10px] bg-muted text-muted-foreground px-1.5 py-0.2 rounded font-mono">
-                              USER
-                            </span>
-                          </div>
-                          <div className="text-[10px] text-muted-foreground">Standard operator: ML training workloads</div>
-                        </div>
-                      </div>
-                      {email === "marcus.chen@hpc-grid.org" && (
-                        <CheckCircle className="h-4 w-4 text-emerald-500" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
           </CardContent>
 
-          <CardFooter className="flex items-center justify-center border-t border-border/50 py-3 text-[11px] text-muted-foreground gap-2">
-            <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
-            <span>Connected to Spring Boot • NERC-CIP & SOC2 Compliant</span>
+          <CardFooter className="flex items-center justify-between border-t border-border/50 py-3 text-[11px] text-muted-foreground">
+            <div className="flex items-center gap-1.5">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
+              <span>Spring Boot API · JWT HttpOnly</span>
+            </div>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="underline decoration-dotted cursor-help text-[10px]">
+                    Compliance Scope
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-[11px] max-w-xs">
+                  Targeted for NERC-CIP reliability standards and SOC2 Type II audit logging requirements.
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </CardFooter>
         </Card>
       </div>
