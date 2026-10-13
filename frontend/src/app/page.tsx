@@ -1,5 +1,5 @@
-import Demo from "@/components/ui/demo";
+import { redirect } from "next/navigation";
 
 export default function Home() {
-  return <Demo />;
+  redirect("/overview");
 }

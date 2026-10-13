@@ -26,6 +26,23 @@ def make_engine() -> sa.Engine:
 
 
 # --------------------------------------------------------------------------- #
+# DATABASE_URL parsing
+# --------------------------------------------------------------------------- #
+
+class ParseDatabaseUrlTests(unittest.TestCase):
+    def test_percent_encoded_password_is_decoded(self):
+        url = ing._parse_database_url("postgresql://postgres.ref:p%40ss%23w%25rd%2A@db.example.com:6543/postgres")
+        self.assertEqual(url.password, "p@ss#w%rd*")
+        self.assertEqual(url.username, "postgres.ref")
+        self.assertEqual((url.host, url.port, url.database), ("db.example.com", 6543, "postgres"))
+
+    def test_plain_password_is_left_alone(self):
+        url = ing._parse_database_url("postgres://postgres:plainPass123@db.example.com/postgres")
+        self.assertEqual(url.password, "plainPass123")
+        self.assertEqual(url.drivername, "postgresql+psycopg2")
+
+
+# --------------------------------------------------------------------------- #
 # Generic upsert helper - the one piece of new infrastructure every source uses
 # --------------------------------------------------------------------------- #
 
@@ -226,42 +243,6 @@ class DamPriceIngestionTests(unittest.TestCase):
         self.assertEqual(ing.DEFAULT_DAM_LOCATIONS, ["LZ_NORTH"])
 
 
-class LoadForecastDamIngestionTests(unittest.TestCase):
-    def setUp(self):
-        self.engine = make_engine()
-        with self.engine.begin() as conn:
-            conn.execute(sa.text(
-                "CREATE TABLE load_forecast_dam (interval_start_utc TEXT, zone TEXT, "
-                "load_forecast_mwh REAL, publish_time_utc TEXT, PRIMARY KEY (interval_start_utc, zone))"
-            ))
-
-    def test_normalize_reshapes_wide_zones_to_long_rows(self):
-        raw = pd.DataFrame([{
-            "interval_start_utc": "2026-10-06T00:00:00+00:00",
-            "publish_time_utc": "2026-10-05T19:30:00+00:00",
-            "north": 20282.2, "south": 100.0, "west": 200.0, "houston": 300.0, "system_total": 20882.2,
-        }])
-        out = ing.normalize_load_forecast(raw)
-        self.assertEqual(len(out), 5)  # one row per zone
-        self.assertEqual(set(out["zone"]), set(ing.LOAD_FORECAST_ZONES))
-        north_row = out[out["zone"] == "north"].iloc[0]
-        self.assertEqual(north_row["load_forecast_mwh"], 20282.2)
-
-    def test_update_load_forecast_dam_upserts_all_zones(self):
-        raw = pd.DataFrame([{
-            "interval_start_utc": "2026-10-06T00:00:00+00:00",
-            "publish_time_utc": "2026-10-05T19:30:00+00:00",
-            "north": 20282.2, "south": 100.0, "west": 200.0, "houston": 300.0, "system_total": 20882.2,
-        }])
-        client = FakeGridStatusClient(raw)
-        added, total = ing.update_load_forecast_dam(self.engine, client, now=datetime(2026, 10, 6, tzinfo=timezone.utc))
-        self.assertEqual((added, total), (5, 5))
-
-        with self.engine.begin() as conn:
-            rows = pd.read_sql("SELECT * FROM load_forecast_dam", conn)
-        self.assertEqual(len(rows), 5)
-
-
 # --------------------------------------------------------------------------- #
 # EIA fetchers - pivot/rename logic ported from eia_pull.py; pinned here since
 # eia_pull.py is being deleted.
@@ -322,21 +303,16 @@ class OrchestrationTests(unittest.TestCase):
             calls.append("dam")
             return 1
 
-        def load_forecast_ok(*a, **k):
-            calls.append("load_forecast")
-            return 1
-
         result = ing.run_ingestion(
             engine,
             weather_fn=boom,
             eia_fn=eia_ok,
             dam_fn=dam_ok,
-            load_forecast_fn=load_forecast_ok,
         )
-        self.assertEqual(sorted(calls), ["dam", "eia", "load_forecast", "weather"])
+        self.assertEqual(sorted(calls), ["dam", "eia", "weather"])
         self.assertFalse(result.weather_ok)
         self.assertTrue(result.eia_ok)
-        self.assertTrue(result.load_forecast_ok)
+        self.assertTrue(result.dam_ok)
 
 
 if __name__ == "__main__":

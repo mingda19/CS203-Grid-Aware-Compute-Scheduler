@@ -1,0 +1,33 @@
+@baseUrl = http://localhost:8080
+
+### 1. Log in first (edit email/password); the token is reused by the requests below
+# @name login
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+    "email": "engineer@datacenter.io",
+    "password": "SecurePassword123!"
+}
+
+###
+@token = {{login.response.body.accessToken}}
+
+### Forecast, defaults (LZ_NORTH, 48 hours)
+GET {{baseUrl}}/api/prices/forecast
+Authorization: Bearer {{token}}
+
+### Forecast, custom location and horizon
+GET {{baseUrl}}/api/prices/forecast?location=LZ_NORTH&hours=24
+Authorization: Bearer {{token}}
+
+### Expect 400: hours out of range (valid is 1-168)
+GET {{baseUrl}}/api/prices/forecast?hours=169
+Authorization: Bearer {{token}}
+
+### Expect 400: blank location
+GET {{baseUrl}}/api/prices/forecast?location=%20
+Authorization: Bearer {{token}}
+
+### Expect 403: no token
+GET {{baseUrl}}/api/prices/forecast

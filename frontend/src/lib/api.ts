@@ -38,6 +38,42 @@ export interface PriceHistory {
   offset: number
 }
 
+export interface PriceForecastPoint {
+  intervalStartUtc: string
+  predictedPrice: number | null
+  modelVersion: string
+  generatedAt: string
+}
+
+export interface PriceForecast {
+  points: PriceForecastPoint[]
+  horizonHours: number
+}
+
+export interface WorkloadSchedule {
+  id: number
+  title: string
+  type: string
+  cluster: string
+  powerKw: number
+  savings: string | null
+  status: "Scheduled" | "Running" | "Throttled" | "Completed"
+  startUtc: string
+  endUtc: string
+  notes: string | null
+}
+
+export interface CreateWorkloadSchedule {
+  title: string
+  type: string
+  cluster: string
+  powerKw: number
+  savings: string | null
+  startUtc: string
+  endUtc: string
+  notes?: string
+}
+
 export interface DatasetFreshness {
   dataset: string
   latestRecordTimestamp: string | null
@@ -192,6 +228,14 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
 }
 
 export const priceApi = {
+  getForecast(params: { location: string; hours?: number }): Promise<ApiResponse<PriceForecast>> {
+    const query = new URLSearchParams({
+      location: params.location,
+      hours: String(params.hours ?? 48),
+    })
+    return fetchJson<ApiResponse<PriceForecast>>(`/api/prices/forecast?${query.toString()}`, { cache: "no-store" })
+  },
+
   getHistory(params: { location: string; startDate: string; endDate: string; limit?: number; offset?: number }): Promise<ApiResponse<PriceHistory>> {
     const query = new URLSearchParams({
       location: params.location,
@@ -201,6 +245,30 @@ export const priceApi = {
       offset: String(params.offset ?? 0),
     })
     return fetchJson<ApiResponse<PriceHistory>>(`/api/prices/history?${query.toString()}`, { cache: "no-store" })
+  },
+}
+
+export const workloadScheduleApi = {
+  list(): Promise<ApiResponse<WorkloadSchedule[]>> {
+    return fetchJson<ApiResponse<WorkloadSchedule[]>>("/api/workload-schedules", { cache: "no-store" })
+  },
+
+  create(payload: CreateWorkloadSchedule): Promise<ApiResponse<WorkloadSchedule>> {
+    return fetchJson<ApiResponse<WorkloadSchedule>>("/api/workload-schedules", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  updateStatus(id: number, status: WorkloadSchedule["status"]): Promise<ApiResponse<WorkloadSchedule>> {
+    return fetchJson<ApiResponse<WorkloadSchedule>>(`/api/workload-schedules/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    })
+  },
+
+  remove(id: number): Promise<ApiResponse<void>> {
+    return fetchJson<ApiResponse<void>>(`/api/workload-schedules/${id}`, { method: "DELETE" })
   },
 }
 

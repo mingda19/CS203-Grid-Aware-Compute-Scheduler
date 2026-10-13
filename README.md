@@ -40,6 +40,16 @@ Data is written under `data/`, which is intentionally gitignored. The GridStatus
 supports recent updates, monthly pulls, historical backfills, and alternate ERCOT zones.
 See [data_scripts/README.md](data_scripts/README.md) for its options and schema.
 
+Generate the next UTC day's hourly price forecast and write it to `predicted_price` with:
+
+```bash
+python data_scripts/predictions.py
+```
+
+The forecast dashboard reads these stored predictions from the same database configured
+for the backend. Run the prediction command again after new data is available; the backend
+does not schedule forecast generation automatically.
+
 Run the offline data-script tests with:
 
 ```bash
@@ -66,9 +76,3 @@ npm run dev
 ```
 
 The frontend is available at `http://localhost:3000` by default.
-
-## Deployment & CI/CD Documentation
-
-- **[Deployment Runbook & Rollback Procedures](docs/deployment-runbook.md)** (AC4.1): Complete operational guide, environment matrix, health checks, and failure rollback playbooks (Render, Vercel, Database).
-- **[Continuous Deployment (CD) Setup Guide](docs/deployment-setup.md)** (AC3.1): Setup guide for Render, Vercel, and GitHub Actions repository secrets.
-- **[Branch Workflow](docs/branch-workflow.md)**: Staging-to-main PR workflow and branch protection rules.
