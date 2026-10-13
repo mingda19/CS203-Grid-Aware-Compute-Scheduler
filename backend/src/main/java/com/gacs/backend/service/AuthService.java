@@ -61,6 +61,9 @@ public class AuthService {
     @Value("${security.jwt.cookie-secure:false}")
     private boolean cookieSecure;
 
+    @Value("${security.jwt.cookie-same-site:Lax}")
+    private String cookieSameSite = "Lax";
+
     /**
      * Registers a new user or refreshes registration for an unverified account.
      * Encrypts the password using BCrypt before storing in the database.
@@ -224,13 +227,15 @@ public class AuthService {
             addRefreshTokenCookie(httpResponse, refreshToken.getToken(), refreshExpirySeconds);
         }
 
-        return AuthResponse.successWithToken(
+        AuthResponse response = AuthResponse.successWithToken(
                 "Login successful.",
                 new UserDto(user),
                 accessToken,
                 jwtUtils.getJwtExpirationMs() / 1000,
                 refreshExpirySeconds
         );
+        response.setRefreshToken(refreshToken.getToken());
+        return response;
     }
 
     /**
@@ -254,13 +259,15 @@ public class AuthService {
             addRefreshTokenCookie(httpResponse, rotatedToken.getToken(), refreshExpirySeconds);
         }
 
-        return AuthResponse.successWithToken(
+        AuthResponse response = AuthResponse.successWithToken(
                 "Token refreshed successfully.",
                 new UserDto(user),
                 newAccessToken,
                 jwtUtils.getJwtExpirationMs() / 1000,
                 refreshExpirySeconds
         );
+        response.setRefreshToken(rotatedToken.getToken());
+        return response;
     }
 
     /**
@@ -297,35 +304,43 @@ public class AuthService {
     }
 
     private void addRefreshTokenCookie(HttpServletResponse response, String refreshToken, long maxAgeSeconds) {
+        boolean secure = cookieSecure || "None".equalsIgnoreCase(cookieSameSite);
         ResponseCookie cookie = ResponseCookie.from("refreshToken", refreshToken)
                 .httpOnly(true)
-                .secure(cookieSecure)
+                .secure(secure)
                 .path("/")
                 .maxAge(maxAgeSeconds)
-                .sameSite("Lax")
+                .sameSite(cookieSameSite)
                 .build();
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
     }
 
     private void clearRefreshTokenCookie(HttpServletResponse response) {
+        boolean secure = cookieSecure || "None".equalsIgnoreCase(cookieSameSite);
         ResponseCookie cookie = ResponseCookie.from("refreshToken", "")
                 .httpOnly(true)
-                .secure(cookieSecure)
+                .secure(secure)
                 .path("/")
                 .maxAge(0)
-                .sameSite("Lax")
+                .sameSite(cookieSameSite)
                 .build();
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
     }
 
     private String extractRefreshTokenFromCookie(HttpServletRequest request) {
-        if (request == null || request.getCookies() == null) {
+        if (request == null) {
             return null;
         }
-        for (Cookie cookie : request.getCookies()) {
-            if ("refreshToken".equals(cookie.getName())) {
-                return cookie.getValue();
+        if (request.getCookies() != null) {
+            for (Cookie cookie : request.getCookies()) {
+                if ("refreshToken".equals(cookie.getName())) {
+                    return cookie.getValue();
+                }
             }
+        }
+        String headerToken = request.getHeader("X-Refresh-Token");
+        if (headerToken != null && !headerToken.trim().isEmpty()) {
+            return headerToken.trim();
         }
         return null;
     }

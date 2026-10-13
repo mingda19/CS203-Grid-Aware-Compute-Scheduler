@@ -21,9 +21,11 @@ import {
   LogOut,
   SlidersHorizontal,
   HelpCircle,
+  Clock,
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
+import { formatSgtTime, formatSgtDateTime } from "@/lib/date-utils"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -37,9 +39,11 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Separator } from "@/components/ui/separator"
 import { useIsMobile } from "@/components/ui/use-mobile"
+import { DataStatusBadge, type DataStatusType } from "@/components/ui/data-status-badge"
 import {
   authApi,
   freshnessApi,
+  getAccessToken,
   getStoredUser,
   removeStoredUser,
   type FreshnessNotification,
@@ -62,32 +66,41 @@ export function AppShell({ children }: AppShellProps) {
   const [tourStep, setTourStep] = React.useState(0)
   const [notifications, setNotifications] = React.useState<FreshnessNotification[]>([])
   const [notificationsOpen, setNotificationsOpen] = React.useState(false)
+  const [systemDataStatus, setSystemDataStatus] = React.useState<DataStatusType>("demo")
+  const [systemDataTimestamp, setSystemDataTimestamp] = React.useState<string | null>(null)
+
+  const pathname = usePathname()
 
   const tourSteps = [
     {
       title: "Your operations overview",
       description: "This page brings together your energy conditions, compute activity, and estimated savings. Start here to see what is happening today.",
-      target: "overview",
+      target: "overview-root",
+      href: "/overview",
     },
     {
       title: "Review suggested changes",
       description: "Pending approvals show schedule recommendations that need your review. Read the expected impact before approving or rejecting a change.",
-      target: "approvals",
+      target: "approvals-root",
+      href: "/approvals",
     },
     {
       title: "See your scheduled work",
       description: "The workload scheduler lists compute jobs, their current status, and when they are planned to run. A schedule can move flexible work to a lower-cost time.",
-      target: "workloads",
+      target: "workloads-root",
+      href: "/workloads",
     },
     {
       title: "Understand the forecast",
       description: "Price & Wind Forecast compares expected electricity prices with planned compute use. Higher bars or peaks indicate times when energy may cost more.",
-      target: "forecasts",
+      target: "forecasts-root",
+      href: "/forecasts",
     },
     {
       title: "You’re ready to explore",
       description: "Use the menu on the left to move between areas. You can reopen this guide anytime with the help button at the top of the page.",
       target: null,
+      href: null,
     },
   ]
 
@@ -106,12 +119,15 @@ export function AppShell({ children }: AppShellProps) {
       setTourOpen(true)
     }
 
-    // Transparently hydrate / refresh in-memory JWT access token using HttpOnly cookie
-    authApi.refreshToken().catch(() => {
-      // If refresh fails (cookie expired or revoked), clear state and redirect
-      removeStoredUser()
-      router.push("/login")
-    })
+    // If access token is missing, attempt restoring it via refresh token
+    const token = getAccessToken()
+    if (!token) {
+      authApi.refreshToken().catch(() => {
+        // If refresh also fails, clear state and redirect
+        removeStoredUser()
+        router.push("/login")
+      })
+    }
   }, [router])
 
   React.useEffect(() => {
@@ -123,8 +139,19 @@ export function AppShell({ children }: AppShellProps) {
         const response = await freshnessApi.getStatus()
         if (cancelled || !response.data) return
         setNotifications((previous) => mergeFreshnessNotifications(previous, response.data?.notifications ?? []))
+        setSystemDataTimestamp(response.data.checkedAt)
+        const datasets = response.data.datasets || []
+        const isHealthy = datasets.length > 0 && datasets.every((d) => d.status === "HEALTHY")
+        const isStale = datasets.some((d) => d.status === "STALE")
+        if (isHealthy) {
+          setSystemDataStatus("live")
+        } else if (isStale) {
+          setSystemDataStatus("cached")
+        } else {
+          setSystemDataStatus("demo")
+        }
       } catch {
-        // The regular database health endpoint remains responsible for connectivity failures.
+        setSystemDataStatus("demo")
       }
     }
 
@@ -181,21 +208,23 @@ export function AppShell({ children }: AppShellProps) {
 
   const goToTourStep = (nextStep: number) => {
     setTourStep(nextStep)
-    const target = tourSteps[nextStep]?.target
+    const step = tourSteps[nextStep]
+    if (step?.href && pathname !== step.href) {
+      router.push(step.href)
+    }
+    const target = step?.target
     if (target) {
-      window.setTimeout(() => document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50)
+      window.setTimeout(() => document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "center" }), 120)
     }
   }
 
   const navItems = [
-    { label: "Live Grid & Overview", icon: LayoutDashboard, href: "#overview", active: true },
-    { label: "Workload Scheduler", icon: CalendarClock, href: "#workloads", badge: "4 Active" },
-    { label: "Price & Wind Forecast", icon: TrendingDown, href: "#forecasts" },
-    { label: "Battery & Energy Mix", icon: BatteryCharging, href: "#battery" },
-    { label: "Pending Approvals", icon: CheckCircle2, href: "#approvals", badge: "1 New", highlight: true },
-    { label: "Historical Audit Logs", icon: FileText, href: "#audit" },
-    { label: "Facility Constraints", icon: SlidersHorizontal, href: "#constraints" },
-    { label: "System Settings", icon: Settings, href: "#settings" },
+    { label: "Live Grid & Overview", icon: LayoutDashboard, href: "/overview", active: pathname === "/overview" || pathname === "/" },
+    { label: "Workload Scheduler", icon: CalendarClock, href: "/workloads", badge: "4 Active", active: pathname?.startsWith("/workloads") },
+    { label: "Price & Wind Forecast", icon: TrendingDown, href: "/forecasts", active: pathname?.startsWith("/forecasts") },
+    { label: "Battery & Energy Mix", icon: BatteryCharging, href: "/energy", active: pathname?.startsWith("/energy") },
+    { label: "Pending Approvals", icon: CheckCircle2, href: "/approvals", badge: "1 New", highlight: true, active: pathname?.startsWith("/approvals") },
+    { label: "Historical Audit Logs", icon: FileText, href: "/audit", active: pathname?.startsWith("/audit") },
   ]
 
   const sidebarContent = (
@@ -239,7 +268,7 @@ export function AppShell({ children }: AppShellProps) {
         {navItems.map((item) => {
           const Icon = item.icon
           return (
-            <a
+            <Link
               key={item.label}
               href={item.href}
               onClick={() => isMobile && setMobileOpen(false)}
@@ -266,7 +295,7 @@ export function AppShell({ children }: AppShellProps) {
                   {item.badge}
                 </span>
               )}
-            </a>
+            </Link>
           )
         })}
 
@@ -383,10 +412,37 @@ export function AppShell({ children }: AppShellProps) {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* Live Data Status Indicator */}
-            <div className="hidden lg:flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-600 dark:text-emerald-400">
-              <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              <span className="font-medium">EIA & ERCOT Feeds Ingested (Fresh)</span>
+            {/* Standardized Singapore Timezone Indicator */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-medium bg-muted/60 text-foreground border border-border cursor-help select-none">
+                    <Clock className="h-3 w-3 text-cyan-500" />
+                    <span>SGT (UTC+8)</span>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs max-w-xs">
+                  <p className="font-semibold text-foreground">Singapore Standard Time (SGT)</p>
+                  <p className="text-muted-foreground text-[11px] mt-0.5">
+                    All workload dispatch windows, forecast horizons, and calendar slots are standardized to UTC+8.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            {/* Environment Badge */}
+            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              DEMO SANDBOX
+            </span>
+
+            {/* Standardized System Data Freshness Status */}
+            <div className="hidden lg:block">
+              <DataStatusBadge
+                status={systemDataStatus}
+                updatedAt={systemDataTimestamp}
+                source="System-wide ERCOT & EIA Data Pipeline Status"
+              />
             </div>
 
             {/* Quick Theme Switcher */}

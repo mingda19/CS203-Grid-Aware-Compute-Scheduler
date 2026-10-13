@@ -14,6 +14,7 @@ export interface AuthResponse {
   requiresOtp?: boolean
   email?: string
   accessToken?: string
+  refreshToken?: string
   tokenType?: string
   expiresIn?: number
   refreshExpiresIn?: number
@@ -35,6 +36,42 @@ export interface PriceHistory {
   totalRecords: number
   limit: number
   offset: number
+}
+
+export interface PriceForecastPoint {
+  intervalStartUtc: string
+  predictedPrice: number | null
+  modelVersion: string
+  generatedAt: string
+}
+
+export interface PriceForecast {
+  points: PriceForecastPoint[]
+  horizonHours: number
+}
+
+export interface WorkloadSchedule {
+  id: number
+  title: string
+  type: string
+  cluster: string
+  powerKw: number
+  savings: string | null
+  status: "Scheduled" | "Running" | "Throttled" | "Completed"
+  startUtc: string
+  endUtc: string
+  notes: string | null
+}
+
+export interface CreateWorkloadSchedule {
+  title: string
+  type: string
+  cluster: string
+  powerKw: number
+  savings: string | null
+  startUtc: string
+  endUtc: string
+  notes?: string
 }
 
 export interface DatasetFreshness {
@@ -59,17 +96,55 @@ export interface DataFreshnessResponse {
   checkedAt: string
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080"
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080").replace(/\/+$/, "")
 
-// In-memory access token storage (secure against XSS exfiltration from localStorage)
+// Storage keys
+const ACCESS_TOKEN_KEY = "gacs_access_token"
+const REFRESH_TOKEN_KEY = "gacs_refresh_token"
+
+// In-memory access token cache
 let inMemoryAccessToken: string | null = null
 
 export function setAccessToken(token: string | null): void {
   inMemoryAccessToken = token
+  if (typeof window !== "undefined") {
+    if (token) {
+      localStorage.setItem(ACCESS_TOKEN_KEY, token)
+    } else {
+      localStorage.removeItem(ACCESS_TOKEN_KEY)
+    }
+  }
 }
 
 export function getAccessToken(): string | null {
-  return inMemoryAccessToken
+  if (inMemoryAccessToken) {
+    return inMemoryAccessToken
+  }
+  if (typeof window !== "undefined") {
+    const stored = localStorage.getItem(ACCESS_TOKEN_KEY)
+    if (stored) {
+      inMemoryAccessToken = stored
+      return stored
+    }
+  }
+  return null
+}
+
+export function setRefreshToken(token: string | null): void {
+  if (typeof window !== "undefined") {
+    if (token) {
+      localStorage.setItem(REFRESH_TOKEN_KEY, token)
+    } else {
+      localStorage.removeItem(REFRESH_TOKEN_KEY)
+    }
+  }
+}
+
+export function getRefreshToken(): string | null {
+  if (typeof window !== "undefined") {
+    return localStorage.getItem(REFRESH_TOKEN_KEY)
+  }
+  return null
 }
 
 async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -87,21 +162,22 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
     endpoint.includes("/verify-otp") ||
     endpoint.includes("/resend-otp")
 
-  // If in-memory access token is missing on a protected route, attempt restoring it from the HttpOnly cookie
-  if (!inMemoryAccessToken && !isPublicAuthEndpoint && typeof window !== "undefined") {
+  // If access token is missing on a protected route, attempt restoring it
+  if (!getAccessToken() && !isPublicAuthEndpoint && typeof window !== "undefined") {
     try {
       const refreshed = await authApi.refreshToken()
       if (refreshed.accessToken) {
         setAccessToken(refreshed.accessToken)
       }
     } catch {
-      // Cookie might be expired or not present
+      // Cookie or refresh token might be expired or not present
     }
   }
 
   // Attach JWT Bearer token if available
-  if (inMemoryAccessToken && !headers["Authorization"]) {
-    headers["Authorization"] = `Bearer ${inMemoryAccessToken}`
+  const token = getAccessToken()
+  if (token && !headers["Authorization"]) {
+    headers["Authorization"] = `Bearer ${token}`
   }
 
   const response = await fetch(url, {
@@ -152,6 +228,14 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
 }
 
 export const priceApi = {
+  getForecast(params: { location: string; hours?: number }): Promise<ApiResponse<PriceForecast>> {
+    const query = new URLSearchParams({
+      location: params.location,
+      hours: String(params.hours ?? 48),
+    })
+    return fetchJson<ApiResponse<PriceForecast>>(`/api/prices/forecast?${query.toString()}`, { cache: "no-store" })
+  },
+
   getHistory(params: { location: string; startDate: string; endDate: string; limit?: number; offset?: number }): Promise<ApiResponse<PriceHistory>> {
     const query = new URLSearchParams({
       location: params.location,
@@ -161,6 +245,30 @@ export const priceApi = {
       offset: String(params.offset ?? 0),
     })
     return fetchJson<ApiResponse<PriceHistory>>(`/api/prices/history?${query.toString()}`, { cache: "no-store" })
+  },
+}
+
+export const workloadScheduleApi = {
+  list(): Promise<ApiResponse<WorkloadSchedule[]>> {
+    return fetchJson<ApiResponse<WorkloadSchedule[]>>("/api/workload-schedules", { cache: "no-store" })
+  },
+
+  create(payload: CreateWorkloadSchedule): Promise<ApiResponse<WorkloadSchedule>> {
+    return fetchJson<ApiResponse<WorkloadSchedule>>("/api/workload-schedules", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  updateStatus(id: number, status: WorkloadSchedule["status"]): Promise<ApiResponse<WorkloadSchedule>> {
+    return fetchJson<ApiResponse<WorkloadSchedule>>(`/api/workload-schedules/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    })
+  },
+
+  remove(id: number): Promise<ApiResponse<void>> {
+    return fetchJson<ApiResponse<void>>(`/api/workload-schedules/${id}`, { method: "DELETE" })
   },
 }
 
@@ -219,6 +327,10 @@ export const authApi = {
       setAccessToken(response.accessToken)
     }
 
+    if (response.refreshToken) {
+      setRefreshToken(response.refreshToken)
+    }
+
     // allows navigation to protected routes immediately after login
     if (response.user) {
       setStoredUser(response.user, response.refreshExpiresIn)
@@ -228,12 +340,22 @@ export const authApi = {
   },
 
   async refreshToken(): Promise<AuthResponse> {
+    const headers: Record<string, string> = {}
+    const rToken = getRefreshToken()
+    if (rToken) {
+      headers["X-Refresh-Token"] = rToken
+    }
     const response = await fetchJson<AuthResponse>("/api/auth/refresh", {
       method: "POST",
+      headers,
     })
 
     if (response.accessToken) {
       setAccessToken(response.accessToken)
+    }
+
+    if (response.refreshToken) {
+      setRefreshToken(response.refreshToken)
     }
 
     if (response.user) {
@@ -250,12 +372,17 @@ export const authApi = {
   },
 
   async logout(): Promise<ApiResponse<void>> {
+    const headers: Record<string, string> = {}
+    const rToken = getRefreshToken()
+    if (rToken) {
+      headers["X-Refresh-Token"] = rToken
+    }
     try {
       return await fetchJson<ApiResponse<void>>("/logout", {
         method: "POST",
+        headers,
       })
     } finally {
-      setAccessToken(null)
       removeStoredUser()
     }
   },
@@ -314,11 +441,16 @@ export function setStoredUser(user: User, maxAgeSeconds?: number): void {
 }
 
 export function removeStoredUser(): void {
-  if (typeof window === "undefined") return
-  try {
-    localStorage.removeItem(USER_STORAGE_KEY)
-    document.cookie = `${COOKIE_NAME}=; path=/; max-age=0; SameSite=Lax`
-  } catch {
-    // Ignore
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.removeItem(USER_STORAGE_KEY)
+      localStorage.removeItem(ACCESS_TOKEN_KEY)
+      localStorage.removeItem(REFRESH_TOKEN_KEY)
+      document.cookie = `${COOKIE_NAME}=; path=/; max-age=0; SameSite=Lax`
+    } catch {
+      // Ignore
+    }
   }
+  setAccessToken(null)
+  setRefreshToken(null)
 }

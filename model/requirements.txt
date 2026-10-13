@@ -1,0 +1,6 @@
+# Training + evaluation scripts under model/ (serving only needs data_scripts/requirements.txt).
+# Install with: pip install -r model/requirements.txt
+-r ../data_scripts/requirements.txt
+scikit-learn
+pyarrow
+matplotlib
