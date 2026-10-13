@@ -13,16 +13,22 @@ Reuses ingestion.upsert_dataframe for the DB write rather than duplicating it
 (predictions.py and ingestion.py are "self contained" with respect to the
 pruned EDA scripts, not with respect to each other).
 
+Two targets are predicted every run, from the same anchor day ("now," the
+day whose data is safely known): y_0 = price 48h later, y_1 = price 72h
+later. Earlier this was a single "predict tomorrow" target, but that was
+circular - ERCOT's own DAM auction already publishes an entire day's price
+a full day before this job runs, so "tomorrow" was never actually unknown.
+See model/model.md S9 for the full reasoning.
+
 Known gap, not yet solved here (flagging rather than silently glossing over
-it): the model was trained on a price target winsorized at a FIXED 4-std band
-computed once from the full 2020-2026 training history (mean=56.35,
+it): the models were trained on a price target winsorized at a FIXED 4-std
+band computed once from the full 2020-2026 training history (mean=56.35,
 std=362.55 -> band [-1393.85, 1506.55]). Live price-lag features must be
 clipped to that SAME fixed band, not a band recomputed from a small recent
-window (which would drift from what the model was trained on).
-WINSORIZE_LOWER/WINSORIZE_UPPER below hardcode that band; if the model is
-ever retrained on a different window, these must be updated together with
-it, or predictions will be computed on a different scale than the model
-expects.
+window (which would drift from what the models were trained on).
+WINSORIZE_LOWER/WINSORIZE_UPPER below hardcode that band; if a model is ever
+retrained on a different window, these must be updated together with it, or
+predictions will be computed on a different scale than the model expects.
 
 Separately: the imputation functions exist to backfill a HISTORICAL gap
 (Open-Meteo didn't serve wind_speed_120m etc. before 2021-03-23) - live
@@ -30,17 +36,18 @@ Open-Meteo data has no such gap, so at prediction time they are expected to be
 no-ops (each has an `if not missing.any(): continue` guard). They're still run
 defensively, in case a live fetch has a transient gap for a specific hour.
 
-Two model types are served, chosen by the --model file's extension:
-  .json  XGBoost (the default) - one row of FEATURE_COLUMNS per target hour.
+Two model types are served per horizon, chosen by the model file's extension:
+  .json  XGBoost (the default) - one row of FEATURE_COLUMNS per anchor hour.
   .pt    seq2seq LSTM (model/lstm_model.py, trained by model/train_lstm.py) -
          168h of history + the target day's known-ahead inputs. Its artifact
-         carries its own feature list, scalers and price transform, and torch
-         is only imported on this path.
+         carries its own feature list, scalers, price transform and
+         lead_hours, and torch is only imported on this path.
 
 Usage:
-  python predictions.py --date 2026-03-02   # predict the 24 hours of that UTC date
-  python predictions.py                     # predict tomorrow (UTC), the normal daily run
-  python predictions.py --model ../model/models/lstm_full.pt   # same, with the LSTM
+  python predictions.py                       # both horizons, anchored on today (UTC) - the normal daily run
+  python predictions.py --date 2026-03-02     # anchor on that UTC date instead of today
+  python predictions.py --horizon y0          # only the 48h-ahead target
+  python predictions.py --model-y0 ../model/models/lstm_y0_full.pt   # same, with the LSTM
 
 Or import: from predictions import run_predictions
 """
@@ -67,22 +74,43 @@ logger = logging.getLogger("predictions")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 MODEL_DIR = SCRIPT_DIR.parent / "model"
-DEFAULT_MODEL_PATH = MODEL_DIR / "models" / "xgboost_baseline_full.json"
-DEFAULT_MODEL_VERSION = "xgboost_baseline_full"
+DEFAULT_MODEL_PATH_Y0 = MODEL_DIR / "models" / "xgboost_y0_full.json"
+DEFAULT_MODEL_PATH_Y1 = MODEL_DIR / "models" / "xgboost_y1_full.json"
 DEFAULT_LOCATION = "LZ_NORTH"
-# load_forecast_dam uses ERCOT's weather-zone scheme (north/south/west/
-# houston/system_total), a different naming convention from the LZ_
-# settlement points above - see model/model.md S8.3. Must not be confused
-# with DEFAULT_LOCATION; passing "LZ_NORTH" here matches zero rows.
-DEFAULT_LOAD_FORECAST_ZONE = "north"
+# Hours from the anchor day ("now") to each target day's start - model/model.md S9.
+LEAD_HOURS = {"y0": 48, "y1": 72}
 
-# Fixed winsorization band the model was trained against - see module docstring.
+# Fixed winsorization band the models were trained against - see module docstring.
 WINSORIZE_LOWER = -1393.85
 WINSORIZE_UPPER = 1506.55
 
-# Henry Hub is published on business days with a lag, so the target day's
-# "yesterday" price is the last published one carried forward - but never one
-# older than this.
+# Reference RMSE per (model kind, horizon, hour-of-day UTC of the TARGET hour),
+# measured once on model/evaluate.py's held-out run (model/reports/
+# forecasts_holdout_y0.parquet / forecasts_holdout_y1.parquet) - hand-updated
+# whenever a model is retrained, same "fixed constant" pattern as
+# WINSORIZE_LOWER/WINSORIZE_UPPER above. Used as the denominator of the
+# per-prediction confidence score: how a recent run of real-world errors for
+# this exact slot compares to what held-out evaluation said to expect.
+REFERENCE_RMSE: dict[tuple[str, str], list[float]] = {
+    ("xgb", "y0"):  [60.12, 53.73, 48.09, 38.24, 20.49, 17.81, 12.59, 14.20,
+                     15.62, 20.16, 21.80, 24.86, 25.21, 26.20, 20.70, 16.44,
+                     16.45, 15.44, 16.25, 17.61, 19.51, 25.67, 27.16, 35.22],
+    ("lstm", "y0"): [44.74, 39.72, 42.22, 33.21, 11.51,  8.72,  6.99,  6.93,
+                       7.01,  7.00,  8.23,  9.29,  9.79,  8.94,  8.46,  8.67,
+                       8.37,  8.47,  9.38, 11.06, 13.94, 15.83, 15.46, 23.23],
+    ("xgb", "y1"):  [60.38, 54.94, 49.21, 37.36, 19.17, 17.79, 12.38, 12.56,
+                     10.30, 10.91, 12.21, 14.30, 17.58, 17.69, 13.79, 13.45,
+                     12.69, 14.10, 14.88, 16.57, 19.35, 23.83, 24.80, 35.08],
+    ("lstm", "y1"): [46.40, 42.50, 42.13, 32.97, 11.38,  8.55,  6.56,  6.18,
+                       6.07,  6.04,  7.27,  8.57,  8.99,  8.91,  9.53,  9.78,
+                       9.17,  9.21, 10.58, 13.27, 17.30, 19.79, 19.53, 25.67],
+}
+CONFIDENCE_LOOKBACK_DAYS = 21  # enough for a 7-day-halflife EWM to shed its startup transient
+CONFIDENCE_HALFLIFE_DAYS = 7
+MIN_CONFIDENCE_SAMPLES = 3  # fewer points make "decay" meaningless - that hour is left out, not guessed
+
+# Henry Hub is published on business days with a lag, so a given day's gas
+# price is the last published one carried forward - but never one older than this.
 GAS_MAX_STALE_DAYS = 7
 
 # Physical / assumed constants (same as model/wind_solar_power_features.py - no
@@ -96,10 +124,10 @@ NOCT_C = 45.0
 GAMMA_PER_C = 0.004
 
 FEATURE_COLUMNS = [
-    "lag_24h", "lag_48h", "roll_mean_24h", "roll_std_24h", "roll_mean_168h", "roll_std_168h",
+    "lag_72h", "lag_96h", "roll_mean_24h", "roll_std_24h", "roll_mean_168h", "roll_std_168h",
     "hour", "day_of_week", "month", "is_us_holiday",
-    "henry_hub_price_usd_mmbtu_lag1d",
-    "wind_power_output_proxy_total", "solar_power_output_proxy_total", "load_forecast_dam_north_mwh"
+    "henry_hub_price_usd_mmbtu_lag2d", "henry_hub_price_usd_mmbtu_lag3d",
+    "wind_power_output_proxy_total", "solar_power_output_proxy_total",
 ]
 
 
@@ -244,6 +272,86 @@ def load_price_history(engine: sa.Engine, location: str, since: datetime,
     return df
 
 
+def load_recent_residuals(engine: sa.Engine, location: str, model_version: str,
+                          since: datetime) -> pd.DataFrame:
+    """(predicted, actual) pairs for every target hour `model_version` has a
+    settled actual for, from `since` on - the raw material for the confidence
+    score's live decayed-residual side. Only the latest `generated_at` per
+    interval_start_utc counts (a day-ahead prediction and a same-day revision
+    for the same hour must not double-count) - picked via ROW_NUMBER() rather
+    than a Python-side groupby, since it's cheap to push into the query and
+    keeps this portable to both sqlite (tests) and Postgres like the rest of
+    this module. The INNER JOIN against electrical_price naturally excludes
+    target hours with no settled actual yet - no separate future-date filter
+    needed."""
+    query = sa.text(
+        "WITH latest AS ("
+        "  SELECT interval_start_utc, predicted_price,"
+        "         ROW_NUMBER() OVER (PARTITION BY interval_start_utc"
+        "                            ORDER BY generated_at DESC) AS rn"
+        "  FROM predicted_price"
+        "  WHERE location = :location AND model_version = :model_version"
+        "    AND interval_start_utc >= :since"
+        ")"
+        " SELECT latest.interval_start_utc AS time, latest.predicted_price AS predicted,"
+        "        electrical_price.spp_usd_mwh AS actual"
+        " FROM latest"
+        " JOIN electrical_price"
+        "   ON electrical_price.interval_start_utc = latest.interval_start_utc"
+        "  AND electrical_price.location = :location"
+        " WHERE latest.rn = 1"
+        " ORDER BY latest.interval_start_utc"
+    )
+    with engine.begin() as conn:
+        df = pd.read_sql(query, conn, params={
+            "location": location, "model_version": model_version, "since": _iso(since),
+        })
+    df["time"] = pd.to_datetime(df["time"])
+    return df
+
+
+def decayed_abs_residuals_by_hour(df: pd.DataFrame, min_samples: int = MIN_CONFIDENCE_SAMPLES) -> dict[int, float]:
+    """{hour_of_day: 7-day-halflife-decayed mean |predicted-actual|}, one
+    entry per hour-of-day with >= min_samples observations in `df` (as
+    returned by load_recent_residuals) - fewer points make a "decay"
+    meaningless, so that hour is simply absent, not fabricated. Zero history
+    (a brand-new deployment) returns {}.
+
+    Must sort by time before grouping: Series.ewm(times=...) does not sort or
+    validate its `times` argument - it decays based on the gap between
+    consecutive rows in whatever order they're given, so an unsorted frame
+    silently produces wrong weights with no error (verified empirically, not
+    just assumed from the docs). groupby() preserves each group's original
+    row order, so sorting once up front is enough - no need to re-sort inside
+    the loop."""
+    if df.empty:
+        return {}
+    df = df.sort_values("time")
+    abs_residual = (df["predicted"] - df["actual"]).abs()
+    out: dict[int, float] = {}
+    for hour, idx in abs_residual.groupby(df["time"].dt.hour).groups.items():
+        if len(idx) < min_samples:
+            continue
+        decayed = abs_residual.loc[idx].ewm(
+            halflife=pd.Timedelta(days=CONFIDENCE_HALFLIFE_DAYS), times=df.loc[idx, "time"],
+        ).mean()
+        out[int(hour)] = float(decayed.iloc[-1])
+    return out
+
+
+def confidence_fractions(kind: str, horizon: str, decayed_by_hour: dict[int, float]) -> dict[int, float]:
+    """{hour: decayed_abs_residual / REFERENCE_RMSE[(kind, horizon)][hour]}
+    for all 24 hours. NaN (never 0, never 1) wherever decayed_by_hour has no
+    entry for that hour (no live history yet for this slot)."""
+    ref = REFERENCE_RMSE.get((kind, horizon))
+    out: dict[int, float] = {}
+    for hour in range(24):
+        residual = decayed_by_hour.get(hour)
+        ref_value = ref[hour] if ref is not None else None
+        out[hour] = (residual / ref_value) if (residual is not None and ref_value) else np.nan
+    return out
+
+
 def load_weather_table(engine: sa.Engine, table: str, columns: list[str],
                        start: datetime, end: datetime) -> pd.DataFrame:
     col_list = ", ".join(["location_id", "time"] + columns)
@@ -263,24 +371,17 @@ def load_single_column(engine: sa.Engine, table: str, time_col: str, value_col: 
     df["time"] = pd.to_datetime(df["time"])
     return df
 
-def load_load_forecast(engine: sa.Engine, zone: str, start: datetime, end: datetime) -> pd.DataFrame:
-    query = sa.text(
-        "SELECT interval_start_utc AS time, load_forecast_mwh AS load_forecast_dam_north_mwh "
-        "FROM load_forecast_dam "
-        "WHERE zone = :zone AND interval_start_utc >= :start AND interval_start_utc < :end"
-    )
-    with engine.begin() as conn:
-        df = pd.read_sql(query, conn, params={"zone": zone, "start": _iso(start), "end": _iso(end)})
-    df["time"] = pd.to_datetime(df["time"])
-    return df
-
 
 def load_exogenous(engine: sa.Engine, start: datetime, end: datetime) -> pd.DataFrame:
     """Hourly exogenous inputs for start..end (both inclusive), one row per
-    hour: gas, wind/solar power proxies and the DAM load forecast. Shared by
-    the XGBoost and LSTM feature builders so both compute them identically.
-    A new exogenous model input (e.g. battery data) needs a column added here.
-    Hours with no source data come back as NaN, not dropped."""
+    hour: gas (2 and 3 day lags) and wind/solar power proxies. Shared by the
+    XGBoost and LSTM feature builders so both compute them identically. A new
+    exogenous model input (e.g. battery data) needs a column added here.
+    Hours with no source data come back as NaN, not dropped.
+
+    No load forecast here: GridStatus's ercot_load_forecast_dam only ever
+    publishes one day ahead, so it can never be a known-ahead input for the
+    48h/72h targets this module predicts - see model/model.md S9.2."""
     start, end = pd.Timestamp(start), pd.Timestamp(end)
     out = pd.DataFrame({"time": pd.date_range(start, end, freq="h")})
 
@@ -288,12 +389,13 @@ def load_exogenous(engine: sa.Engine, start: datetime, end: datetime) -> pd.Data
                              start - timedelta(days=5), end)
     gas = gas.set_index("time")["henry_hub_price_usd_mmbtu"]
     if not gas.empty:
-        # Extend the daily index through the target day before the ffill/shift:
+        # Extend the daily index through the target day before the ffill:
         # stopping at the last published row would leave every day after it
-        # (i.e. any real day-ahead run) without a lag-1d value at all.
+        # (i.e. any real day-ahead run) without a lag value at all.
         days = pd.date_range(gas.index.min(), max(gas.index.max(), end.floor("D")), freq="D")
-        gas = gas.reindex(days).ffill(limit=GAS_MAX_STALE_DAYS).shift(1)
-    out["henry_hub_price_usd_mmbtu_lag1d"] = out["time"].dt.floor("D").map(gas)
+        gas = gas.reindex(days).ffill(limit=GAS_MAX_STALE_DAYS)
+    out["henry_hub_price_usd_mmbtu_lag2d"] = out["time"].dt.floor("D").map(gas.shift(2))
+    out["henry_hub_price_usd_mmbtu_lag3d"] = out["time"].dt.floor("D").map(gas.shift(3))
 
     wind = load_weather_table(engine, "wind", ["wind_speed_80m", "wind_speed_120m", "temperature_120m"],
                               start, end + timedelta(hours=1))
@@ -306,57 +408,47 @@ def load_exogenous(engine: sa.Engine, start: datetime, end: datetime) -> pd.Data
                                start, end + timedelta(hours=1))
     solar = add_solar_power_proxy(solar)
     solar_total = solar.groupby("time")["solar_power_output_proxy"].sum().rename("solar_power_output_proxy_total")
-    out = out.merge(solar_total.reset_index(), on="time", how="left")
-
-    demand = load_load_forecast(engine, DEFAULT_LOAD_FORECAST_ZONE, start, end + timedelta(hours=1))
-    return out.merge(demand, on="time", how="left")
+    return out.merge(solar_total.reset_index(), on="time", how="left")
 
 
 # --------------------------------------------------------------------------- #
-# Feature assembly for the target day(s)
+# Feature assembly for the anchor day
 # --------------------------------------------------------------------------- #
 
-def assemble_xgb_features(price_s: pd.Series, exog: pd.DataFrame, target_times: pd.DatetimeIndex) -> pd.DataFrame:
-    """Build the FEATURE_COLUMNS feature matrix for `target_times` (UTC), using
-    only data that would be available by the DAM bid deadline the day before.
-    `price_s` is the hourly price history (already clipped to the winsorization
-    band), `exog` the load_exogenous() frame covering `target_times`. No DB
-    access here, so model/evaluate.py runs the exact same code on CSV history.
+def assemble_xgb_features(price_s: pd.Series, exog: pd.DataFrame, anchor_times: pd.DatetimeIndex) -> pd.DataFrame:
+    """Build the FEATURE_COLUMNS feature matrix for `anchor_times` (UTC) -
+    "now," the hour each row's features are safely known as of, NOT the
+    target hour (the target is `anchor + lead_hours`; model/model.md S9).
+    `price_s` is the hourly price history (already clipped to the
+    winsorization band), `exog` the load_exogenous() frame covering
+    `anchor_times`. No DB access here, so model/evaluate.py runs the exact
+    same code on CSV history (currently stale there - out of scope for the
+    y_0/y_1 change, model/model.md S9).
 
-    lag_24h/lag_48h are computed per target hour - they always reach back into
-    already-known history (even hour 24 of a 24h-ahead batch has its "24h ago"
-    land on the already-known day before). The rolling features are different:
-    hour 2+ of a same-batch day-ahead prediction would need part of its own
-    window to include not-yet-known (also-being-predicted) hours, so they're
-    frozen as of the last known actual hour and broadcast across the whole
-    batch instead of varying per target hour. (lag_1h had this same problem far
-    more severely - freezing it the same way still made predictions much
-    worse, not better, measured head-to-head under this same realistic
-    serving simulation - so it was dropped from the model entirely rather
-    than frozen. Full numbers: model/model.md S8.2.) Known limitation: the
-    rolling features get slightly "stale" for later hours in the batch -
-    measured as a minor effect, unlike lag_1h's."""
-    last_known = target_times.min() - timedelta(hours=1)
-
-    frozen = {
-        "roll_mean_24h": price_s.loc[last_known - timedelta(hours=23):last_known].mean(),
-        "roll_std_24h": price_s.loc[last_known - timedelta(hours=23):last_known].std(),
-        "roll_mean_168h": price_s.loc[last_known - timedelta(hours=167):last_known].mean(),
-        "roll_std_168h": price_s.loc[last_known - timedelta(hours=167):last_known].std(),
-    }
-    lags = pd.DataFrame([frozen] * len(target_times), index=target_times)
-    lags["lag_24h"] = price_s.reindex(target_times - timedelta(hours=24)).to_numpy()
-    lags["lag_48h"] = price_s.reindex(target_times - timedelta(hours=48)).to_numpy()
+    Every column is computed directly per anchor row via a plain trailing
+    `.rolling()` window ending at that row - no freezing/broadcasting needed
+    (unlike the old single adjacent-day target). Because lead_hours here are
+    multiples of 24, the 24 anchor hours needed for a target day are always
+    exactly "today" relative to when this job runs, and every hour of today
+    already has a real, settled DAM price by then (published the day
+    before) - so there's no not-yet-known overlap to freeze around."""
+    lags = pd.DataFrame(index=anchor_times)
+    lags["lag_72h"] = price_s.reindex(anchor_times - timedelta(hours=72)).to_numpy()
+    lags["lag_96h"] = price_s.reindex(anchor_times - timedelta(hours=96)).to_numpy()
+    lags["roll_mean_24h"] = price_s.rolling(24).mean().reindex(anchor_times).to_numpy()
+    lags["roll_std_24h"] = price_s.rolling(24).std().reindex(anchor_times).to_numpy()
+    lags["roll_mean_168h"] = price_s.rolling(168).mean().reindex(anchor_times).to_numpy()
+    lags["roll_std_168h"] = price_s.rolling(168).std().reindex(anchor_times).to_numpy()
 
     features = lags.reset_index().rename(columns={"index": "time"})
     features = add_calendar_features(features)
     features = features.merge(exog, on="time", how="left")
 
-    features = features.set_index("time").reindex(target_times)[FEATURE_COLUMNS]
+    features = features.set_index("time").reindex(anchor_times)[FEATURE_COLUMNS]
     # A left-joined column can come back as dtype "object" instead of float64
-    # when the source query returned zero rows for the target window (pandas
+    # when the source query returned zero rows for the anchor window (pandas
     # can't infer a numeric dtype with nothing to infer from) - e.g. if
-    # ingestion hasn't reached the target date yet. XGBoost's predict() rejects
+    # ingestion hasn't reached the anchor date yet. XGBoost's predict() rejects
     # object dtype outright, even though every value in it is NaN and it's
     # otherwise perfectly able to handle missing values (missing=np.nan in
     # XGB_PARAMS). Coerce explicitly so a genuinely-missing feature degrades to
@@ -366,13 +458,13 @@ def assemble_xgb_features(price_s: pd.Series, exog: pd.DataFrame, target_times: 
     return features
 
 
-def build_features(engine: sa.Engine, target_times: pd.DatetimeIndex, location: str = DEFAULT_LOCATION) -> pd.DataFrame:
+def build_features(engine: sa.Engine, anchor_times: pd.DatetimeIndex, location: str = DEFAULT_LOCATION) -> pd.DataFrame:
     """assemble_xgb_features() on inputs loaded from the DB."""
-    earliest_needed = target_times.min() - timedelta(hours=1) - timedelta(hours=168)
+    earliest_needed = anchor_times.min() - timedelta(hours=168)
     price = load_price_history(engine, location, earliest_needed)
     price_s = price.set_index("time")["price"].asfreq("h")
-    exog = load_exogenous(engine, target_times.min(), target_times.max())
-    return assemble_xgb_features(price_s, exog, target_times)
+    exog = load_exogenous(engine, anchor_times.min(), anchor_times.max())
+    return assemble_xgb_features(price_s, exog, anchor_times)
 
 
 # --------------------------------------------------------------------------- #
@@ -410,11 +502,12 @@ def load_model(path: Path):
 
 
 def build_sequence(engine: sa.Engine, target_times: pd.DatetimeIndex, location: str, artifact: dict):
-    """LSTM inputs for `target_times` (the 24 hours of one UTC day): tensors
+    """LSTM inputs for `target_times` (the 24 hours of one UTC target day,
+    `artifact.get("lead_hours", 0)` hours after the anchor day): tensors
     shaped (1, past_window, n_past) and (1, horizon, n_future), clipped,
     transformed and scaled exactly as the artifact was trained.
 
-    Price is queried only up to the hour before `target_times.min()`; the
+    Price is queried only up to the hour before the anchor day; the
     exogenous inputs cover the history window and the target day. Raises
     lstm_model.MissingInputError (after logging which inputs) rather than
     predicting from incomplete inputs; price gaps of a few hours are
@@ -425,9 +518,10 @@ def build_sequence(engine: sa.Engine, target_times: pd.DatetimeIndex, location: 
 
     if len(target_times) != artifact["horizon"]:
         raise ValueError(f"LSTM predicts {artifact['horizon']} consecutive hours, got {len(target_times)}.")
-    day_start = target_times.min()
-    cutoff = day_start - timedelta(hours=1)
-    history_start = day_start - timedelta(hours=artifact["past_window"])
+    lead_hours = artifact.get("lead_hours", 0)
+    anchor = target_times.min() - timedelta(hours=lead_hours)
+    cutoff = anchor - timedelta(hours=1)
+    history_start = anchor - timedelta(hours=artifact["past_window"])
 
     frame = load_exogenous(engine, history_start, target_times.max())
     unknown = [c for c in artifact["exog_cols"] if c not in frame.columns]
@@ -441,9 +535,9 @@ def build_sequence(engine: sa.Engine, target_times: pd.DatetimeIndex, location: 
     frame = frame.apply(pd.to_numeric, errors="coerce")
 
     try:
-        past, future = lstm.assemble_inputs(frame, day_start, artifact, log=logger)
+        past, future = lstm.assemble_inputs(frame, anchor, artifact, log=logger)
     except lstm.MissingInputError as exc:
-        logger.error("Not predicting %s: %s", day_start.date(), exc)
+        logger.error("Not predicting %s: %s", target_times.min().date(), exc)
         raise
     return torch.from_numpy(past).unsqueeze(0), torch.from_numpy(future).unsqueeze(0)
 
@@ -481,52 +575,100 @@ def write_predictions(engine: sa.Engine, predictions_df: pd.DataFrame) -> int:
 
 @dataclass
 class PredictionResult:
+    horizon: str
     target_date: date
     rows_written: int
     model_version: str
 
 
-def run_predictions(engine: sa.Engine, model_path: Path = DEFAULT_MODEL_PATH,
-                    target_date: date | None = None, location: str = DEFAULT_LOCATION) -> PredictionResult:
-    target_date = target_date or (datetime.now(timezone.utc).date() + timedelta(days=1))
-    target_times = pd.date_range(
-        start=pd.Timestamp(target_date), periods=24, freq="h",
-    )
-
-    model_path = Path(model_path)
-    kind, model = load_model(model_path)
-    logger.info("Building %s inputs for %s (%d hours)", kind, target_date, len(target_times))
-    if kind == "xgb":
-        preds = model.predict(build_features(engine, target_times, location))
-    else:
-        p10, preds, p90 = lstm_predict(model, build_sequence(engine, target_times, location, model.artifact))
-        if p10 is not None and p90 is not None:
-            # Only the point forecast has a column in predicted_price - the interval is logged.
-            for t, lo, mid, hi in zip(target_times, p10, preds, p90):
-                logger.info("%s  P10 %8.2f  P50 %8.2f  P90 %8.2f", t.strftime("%Y-%m-%d %H:%M"), lo, mid, hi)
-
+def run_predictions(engine: sa.Engine, model_paths: dict[str, Path],
+                    anchor_date: date | None = None, location: str = DEFAULT_LOCATION) -> list[PredictionResult]:
+    """One run, two independent horizons by default (`model_paths` keys:
+    "y0", "y1"). Each horizon builds/predicts/writes on its own - the anchor
+    hours are provably the same 24 hours of `anchor_date` for both (lead
+    times are multiples of 24h), but this is a once-daily batch job, so the
+    redundant DB round-trip is simpler than sharing one feature build."""
+    anchor_date = anchor_date or datetime.now(timezone.utc).date()
     generated_at = datetime.now(timezone.utc)
-    predictions = predict_prices(preds, target_times, location,
-                                 model_version=model_path.stem, generated_at=generated_at)
+    results = []
+    for horizon, model_path in model_paths.items():
+        model_path = Path(model_path)
+        kind, model = load_model(model_path)
+        # Prefer the loaded model's own self-described target/lead_hours over
+        # LEAD_HOURS[horizon] (used only as a fallback for an artifact that
+        # doesn't carry one) - this is what actually determines the target
+        # date below, so a model loaded under the wrong --model-y0/--model-y1
+        # slot gets a loud warning instead of silently computing the wrong
+        # target day for the gap it was really trained on.
+        if kind == "xgb":
+            trained_for = model.get_booster().attr("target")
+        else:
+            trained_for = model.artifact.get("target")
+        lead_hours = LEAD_HOURS.get(trained_for, LEAD_HOURS[horizon])
+        if trained_for is not None and trained_for != horizon:
+            logger.warning("%s was trained with --target %s, but is being served as %s - "
+                           "check --model-%s points at the right file.", model_path.name, trained_for,
+                           horizon, horizon)
+        target_date = anchor_date + timedelta(hours=lead_hours)
+        target_times = pd.date_range(start=pd.Timestamp(target_date), periods=24, freq="h")
 
-    added = write_predictions(engine, predictions)
-    logger.info("Wrote %d predictions for %s (model_version=%s)", added, target_date, model_path.stem)
-    return PredictionResult(target_date=target_date, rows_written=added, model_version=model_path.stem)
+        logger.info("[%s] Building %s inputs for %s (%d hours)", horizon, kind, target_date, len(target_times))
+        if kind == "xgb":
+            anchor_times = target_times - timedelta(hours=lead_hours)
+            preds = model.predict(build_features(engine, anchor_times, location))
+        else:
+            p10, preds, p90 = lstm_predict(model, build_sequence(engine, target_times, location, model.artifact))
+            if p10 is not None and p90 is not None:
+                # Only the point forecast has a column in predicted_price - the interval is logged.
+                for t, lo, mid, hi in zip(target_times, p10, preds, p90):
+                    logger.info("[%s] %s  P10 %8.2f  P50 %8.2f  P90 %8.2f", horizon,
+                               t.strftime("%Y-%m-%d %H:%M"), lo, mid, hi)
+
+        predictions = predict_prices(preds, target_times, location,
+                                     model_version=model_path.stem, generated_at=generated_at)
+
+        # Confidence score: how a recent (decayed) run of real-world errors
+        # for this exact (kind, horizon, hour-of-day) slot compares to what
+        # held-out evaluation said to expect for it (REFERENCE_RMSE). Fetched
+        # once per horizon, not once per hour.
+        gen_at_naive = pd.Timestamp(generated_at).tz_convert("UTC").tz_localize(None)
+        since = gen_at_naive - timedelta(days=CONFIDENCE_LOOKBACK_DAYS)
+        residuals = load_recent_residuals(engine, location, model_path.stem, since)
+        decayed_by_hour = decayed_abs_residuals_by_hour(residuals)
+        fractions = confidence_fractions(kind, horizon, decayed_by_hour)
+        predictions["confidence_score"] = predictions["interval_start_utc"].dt.hour.map(fractions)
+
+        added = write_predictions(engine, predictions)
+        logger.info("[%s] Wrote %d predictions for %s (model_version=%s)",
+                   horizon, added, target_date, model_path.stem)
+        results.append(PredictionResult(horizon=horizon, target_date=target_date,
+                                        rows_written=added, model_version=model_path.stem))
+    return results
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Predict LZ_NORTH DAM prices and write them to predicted_price.")
-    parser.add_argument("--date", type=date.fromisoformat, help="target UTC date (default: tomorrow)")
-    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH, help="saved model: .json (XGBoost) or .pt (LSTM)")
+    parser = argparse.ArgumentParser(description="Predict LZ_NORTH DAM prices (y0: 48h ahead, y1: 72h ahead) "
+                                                 "and write them to predicted_price.")
+    parser.add_argument("--date", type=date.fromisoformat, dest="anchor_date",
+                        help="anchor UTC date - \"now,\" the day features are safely known as of "
+                            "(default: today). Target dates are this plus 48h (y0) / 72h (y1).")
+    parser.add_argument("--horizon", choices=["y0", "y1", "both"], default="both")
+    parser.add_argument("--model-y0", type=Path, default=DEFAULT_MODEL_PATH_Y0,
+                        help="saved y0 model: .json (XGBoost) or .pt (LSTM)")
+    parser.add_argument("--model-y1", type=Path, default=DEFAULT_MODEL_PATH_Y1,
+                        help="saved y1 model: .json (XGBoost) or .pt (LSTM)")
     args = parser.parse_args()
 
     logging.Formatter.converter = time.gmtime
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         datefmt="%Y-%m-%dT%H:%M:%SZ")
 
+    model_paths = {h: p for h, p in [("y0", args.model_y0), ("y1", args.model_y1)]
+                  if args.horizon in (h, "both")}
+
     engine = ing.make_engine()
     try:
-        run_predictions(engine, model_path=args.model, target_date=args.date)
+        run_predictions(engine, model_paths, anchor_date=args.anchor_date)
     except Exception:
         logger.exception("Prediction run FAILED")
         sys.exit(1)

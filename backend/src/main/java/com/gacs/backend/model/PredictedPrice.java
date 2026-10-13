@@ -43,4 +43,11 @@ public class PredictedPrice {
 
     @Column(name = "predicted_price")
     private Double predictedPrice;
+
+    // How a recent (decayed) run of real-world errors for this prediction's
+    // (model kind, horizon, hour-of-day) slot compares to the reference RMSE
+    // measured on held-out evaluation - null until enough real history has
+    // accumulated. See data_scripts/predictions.py's REFERENCE_RMSE / S9 commentary.
+    @Column(name = "confidence_score")
+    private Double confidenceScore;
 }

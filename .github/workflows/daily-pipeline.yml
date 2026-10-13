@@ -2,22 +2,33 @@ name: Daily Data Ingestion & Price Prediction
 
 on:
   schedule:
-    # Runs daily at 21:00 UTC (3:00 PM / 4:00 PM US Central Time)
-    # Matches render.yaml schedule
+    # Runs daily at 21:00 UTC (3:00 PM / 4:00 PM US Central Time). GitHub only
+    # fires `schedule` for the workflow file as it exists on the repo's
+    # default branch - this has no effect until model/retraining merges to
+    # main, which is expected for now while the model is still changing.
     - cron: '0 21 * * *'
   push:
     branches:
-      - automation-script
+      - model/retraining
   workflow_dispatch:
     inputs:
       only:
         description: 'Datasets to ingest (leave blank for all: weather,eia,dam,load_forecast)'
         required: false
         default: ''
-      target_date:
-        description: 'Prediction target date in YYYY-MM-DD (leave blank for tomorrow UTC)'
+      anchor_date:
+        description: 'Anchor UTC date in YYYY-MM-DD - "now," predictions are this plus 48h (y0) / 72h (y1) (leave blank for today UTC)'
         required: false
         default: ''
+      horizon:
+        description: 'Which target(s) to predict'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - y0
+          - y1
 
 concurrency:
   group: daily-pipeline
@@ -80,8 +91,11 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          if [ -n "${{ github.event.inputs.target_date }}" ]; then
-            python predictions.py --date "${{ github.event.inputs.target_date }}"
-          else
-            python predictions.py
+          args=()
+          if [ -n "${{ github.event.inputs.anchor_date }}" ]; then
+            args+=(--date "${{ github.event.inputs.anchor_date }}")
           fi
+          if [ -n "${{ github.event.inputs.horizon }}" ]; then
+            args+=(--horizon "${{ github.event.inputs.horizon }}")
+          fi
+          python predictions.py "${args[@]}"

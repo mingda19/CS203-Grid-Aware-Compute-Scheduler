@@ -2,37 +2,41 @@
 Validate and compare the LZ_NORTH DAM price models against actual prices
 they never trained on (PRD FR-11: MAE + RMSE by horizon and model version).
 
-Every model forecasts each test day D (24 UTC hours) from what it would have
-at the DAM deadline: price actuals up to D-1 23:00, plus D's known-ahead
-inputs. That cutoff is enforced here, not trusted: each model is handed a
-history frame whose price is blanked from D 00:00 on, and none of the CSV's
-precomputed lag_*/roll_* columns (which include the target hour).
+Every model forecasts a fixed horizon (--target) from an anchor day A (24 UTC
+hours): price actuals up to A-1 23:00, plus the target day's (A + lead_hours)
+known-ahead inputs. That cutoff is enforced here, not trusted: each model is
+handed a history frame whose price is blanked from the target day's 00:00 on
+(A's own price stays visible - it's already fully settled by anchor time, see
+model/model.md S9.2), and none of the CSV's precomputed lag_*/roll_* columns
+(which include the target hour).
 
 Models (--models):
-  naive_d1  price at the same hour on D-1
-  naive_w1  price at the same hour on D-7
-  xgb       XGBoost baseline, features built by predictions.assemble_xgb_features
-            (the code that serves it): lags per hour, rolling stats frozen at
-            D-1 23:00
-  lstm      seq2seq LSTM, inputs built by lstm_model.assemble_inputs (ditto);
-            P50 is the point forecast
+  naive_last_known  price at the same hour on A-1 (the most recent day that's
+                    actually known - "yesterday relative to the target" is
+                    itself still in A's future once lead_hours > 24h)
+  naive_w1          price at the same hour, 7 days before the target
+  xgb               XGBoost baseline, features built by
+                    predictions.assemble_xgb_features (the code that serves
+                    it): lags/rolling stats per anchor hour
+  lstm              seq2seq LSTM, inputs built by lstm_model.assemble_inputs
+                    (ditto); P50 is the point forecast
   --variant NAME=col1,col2 adds "lstm_NAME": the LSTM retrained with those
             extra EXOG_COLS (e.g. battery features), compared against lstm.
 
-Modes:
+Modes (always combined with --target y0 [48h ahead] or y1 [72h ahead]):
   --mode holdout      train <= 2026-01-31, test 2026-02-01..2026-08-30. Uses
-                      models/xgboost_baseline_train.json and models/lstm_train.pt.
+                      models/xgboost_<target>_train.json and models/lstm_<target>_train.pt.
   --mode walkforward  five expanding-window folds (FOLDS below); XGBoost and
                       the LSTM are retrained per fold, the LSTM once per seed.
                       Fold artifacts are cached under models/folds/.
 
-Writes, under model/reports/: forecasts_<mode>.parquet (every prediction),
-eval_<mode>_<date>.md, and plots/<mode>_*.png.
+Writes, under model/reports/: forecasts_<mode>_<target>.parquet (every
+prediction), eval_<mode>_<target>_<date>.md, and plots/<mode>_<target>_*.png.
 
 Usage:
-  python model/evaluate.py --mode holdout
-  python model/evaluate.py --mode walkforward
-  python model/evaluate.py --mode walkforward --variant battery=battery_soc_mwh,battery_net_mw
+  python model/evaluate.py --mode holdout --target y0
+  python model/evaluate.py --mode walkforward --target y0
+  python model/evaluate.py --mode walkforward --target y0 --variant battery=battery_soc_mwh,battery_net_mw
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ import torch  # noqa: E402
 
 import lstm_model as lm  # noqa: E402
 from train_lstm import EXOG_MAX_FFILL_HOURS, RAW_PRICE_COL, find_data_dir  # noqa: E402
-from train_xgboost_baseline import XGB_PARAMS  # noqa: E402
+from train_xgboost_baseline import XGB_PARAMS, build_target, exclude_anomalies  # noqa: E402
 
 # xgboost and torch each load their own OpenMP runtime; on macOS, letting both
 # run multi-threaded in one process deadlocks or segfaults (and importing
@@ -70,14 +74,18 @@ REPORTS_DIR = OUT_DIR / "reports"
 
 PRICE = lm.PRICE_COL
 WINSORIZED_COL = "lz_north_price_winsorized"
-XGB_EXOG = ["henry_hub_price_usd_mmbtu_lag1d", "wind_power_output_proxy_total",
-            "solar_power_output_proxy_total", "load_forecast_dam_north_mwh"]
+# Hours from the anchor day ("now") to the target day's start - mirrors
+# predictions.LEAD_HOURS / train_xgboost_baseline.LEAD_HOURS / train_lstm.LEAD_HOURS.
+LEAD_HOURS = {"y0": 48, "y1": 72}
+XGB_EXOG = ["henry_hub_price_usd_mmbtu_lag2d", "henry_hub_price_usd_mmbtu_lag3d",
+            "wind_power_output_proxy_total", "solar_power_output_proxy_total"]
 # Derived from price, including the target hour - never shown to a model at prediction time.
-PRICE_DERIVED = ["lag_24h", "lag_48h", "roll_mean_24h", "roll_std_24h", "roll_mean_168h", "roll_std_168h",
+PRICE_DERIVED = ["lag_72h", "lag_96h", "roll_mean_24h", "roll_std_24h", "roll_mean_168h", "roll_std_168h",
                  WINSORIZED_COL]
 HISTORY_DAYS = 15  # history handed to a model per day: covers the 168h windows and the D-7 naive
 
-# (fold, last train day, first test day, last test day)
+# (fold, last train day, first test day, last test day) - "test day" is the
+# anchor day; the scored (target) period is this range shifted forward by lead_hours.
 FOLDS = [
     ("1", "2023-12-31", "2024-01-01", "2024-06-30"),
     ("2", "2024-06-30", "2024-07-01", "2024-12-31"),
@@ -94,18 +102,16 @@ HAC_LAG_DAYS = 7
 BOOTSTRAP_BLOCK_DAYS = 7
 BOOTSTRAP_DRAWS = 2000
 LEAK_TEST_DAYS = 12
-REFERENCE = {  # measured earlier on val, raw price: (MAE, RMSE)
-    "naive_d1": (9.06, 21.99),
-    "xgb": (9.65, 18.66),
-    "xgb on CSV features (leaky rolls)": (8.89, 16.65),
-}
-REFERENCE_TOLERANCE = 0.05
+# No REFERENCE sanity-check numbers here (unlike before the y_0/y_1 retargeting,
+# model/model.md S9): those were measured under the old 1-day target and no
+# longer apply. Not replaced with guessed numbers - a real baseline can be
+# hardcoded back in once this rewrite has real output to measure from.
 
 # Chart identity: one fixed colour per model, never reassigned.
 INK, MUTED, GRID, SURFACE = "#0b0b0b", "#898781", "#e1e0d9", "#fcfcfb"
-MODEL_COLORS = {"lstm": "#2a78d6", "xgb": "#eb6834", "naive_d1": "#1baf7a", "naive_w1": "#eda100"}
+MODEL_COLORS = {"lstm": "#2a78d6", "xgb": "#eb6834", "naive_last_known": "#1baf7a", "naive_w1": "#eda100"}
 VARIANT_COLORS = ["#e87ba4", "#4a3aa7", "#008300"]
-MODEL_DASHES = {"naive_d1": (4, 2), "naive_w1": (1, 2)}
+MODEL_DASHES = {"naive_last_known": (4, 2), "naive_w1": (1, 2)}
 
 
 # --------------------------------------------------------------------------- #
@@ -123,20 +129,29 @@ def day_hours(day: pd.Timestamp) -> pd.DatetimeIndex:
     return pd.date_range(day, periods=24, freq="h")
 
 
-def test_days(frame: pd.DataFrame, first: str, last: str) -> pd.DatetimeIndex:
-    """Days in [first, last] with all 24 actual prices."""
+def test_days(frame: pd.DataFrame, first: str, last: str, lead_hours: int) -> pd.DatetimeIndex:
+    """Anchor days in [first, last] whose TARGET day (anchor + lead_hours) has
+    all 24 actual prices - that's what scoring needs, not what the anchor
+    itself needs. lead_hours is always a multiple of 24h, so the shifted
+    range stays midnight-aligned with the day-floored counts below."""
     days = pd.date_range(first, last, freq="D")
+    targets = days + pd.Timedelta(hours=lead_hours)
     counts = frame[PRICE].notna().groupby(frame.index.floor("D")).sum()
-    return days[counts.reindex(days, fill_value=0).to_numpy() == 24]
+    return days[counts.reindex(targets, fill_value=0).to_numpy() == 24]
 
 
-def day_history(frame: pd.DataFrame, day: pd.Timestamp, future_price=np.nan) -> pd.DataFrame:
-    """What a model may see when forecasting `day`: recent history with the
-    price blanked from `day` 00:00 on. `future_price` swaps the blank for a
-    planted value - the leakage test uses it to prove nothing reads it."""
+def day_history(frame: pd.DataFrame, day: pd.Timestamp, lead_hours: int, future_price=np.nan) -> pd.DataFrame:
+    """What a model may see when forecasting the target day (anchor `day` +
+    lead_hours): history through the target day's last hour, with price
+    blanked from the target day's first hour on. `future_price` swaps the
+    blank for a planted value - the leakage test uses it to prove nothing
+    reads it. The anchor day's own price stays visible (unblanked) - it's
+    production's "today," already fully settled by anchor time (model/model.md
+    S9.2); only the target day's price must never leak in."""
+    target = day + pd.Timedelta(hours=lead_hours)
     cols = [c for c in frame.columns if c not in PRICE_DERIVED]
-    history = frame.loc[day - pd.Timedelta(days=HISTORY_DAYS):day + pd.Timedelta(hours=23), cols].copy()
-    history.loc[day:, PRICE] = future_price
+    history = frame.loc[day - pd.Timedelta(days=HISTORY_DAYS):target + pd.Timedelta(hours=23), cols].copy()
+    history.loc[target:, PRICE] = future_price
     return history
 
 
@@ -147,36 +162,45 @@ def day_history(frame: pd.DataFrame, day: pd.Timestamp, future_price=np.nan) -> 
 class NaiveForecaster:
     seed = None
 
-    def __init__(self, model_id: str, lag_days: int):
-        self.id, self.lag, self.model_version = model_id, pd.Timedelta(days=lag_days), model_id
+    def __init__(self, model_id: str, lag_days: int, lead_hours: int):
+        self.id = self.model_version = model_id
+        self.lag, self.lead_hours = pd.Timedelta(days=lag_days), lead_hours
 
     def fit(self, frame: pd.DataFrame, train_end: pd.Timestamp) -> None:
         pass
 
     def predict_day(self, history: pd.DataFrame, day: pd.Timestamp):
-        return history[PRICE].reindex(day_hours(day) - self.lag).to_numpy(), None, None
+        target = day + pd.Timedelta(hours=self.lead_hours)
+        return history[PRICE].reindex(day_hours(target) - self.lag).to_numpy(), None, None
 
 
 class XGBForecaster:
     id = "xgb"
     seed = XGB_PARAMS["random_state"]
 
-    def __init__(self, pretrained: Path | None = None):
-        self.pretrained = pretrained
+    def __init__(self, pretrained: Path | None, target: str, lead_hours: int):
+        self.pretrained, self.target, self.lead_hours = pretrained, target, lead_hours
 
     def fit(self, frame: pd.DataFrame, train_end: pd.Timestamp) -> None:
         """Hold-out: the saved train-only model. Walk-forward: refit exactly as
-        train_xgboost_baseline.py does (CSV feature columns, winsorized target)
-        on rows up to train_end."""
+        train_xgboost_baseline.py does (CSV feature columns, target looked up
+        by timestamp via build_target) on rows up to train_end."""
         if self.pretrained is not None:
             self.model = xgb.XGBRegressor()
             self.model.load_model(self.pretrained)
+            trained_for = self.model.get_booster().attr("target")
+            if trained_for is not None and trained_for != self.target:
+                print(f"WARNING: {self.pretrained.name} was trained with --target {trained_for}, "
+                      f"but is being evaluated as {self.target} - check --xgb points at the right file.")
             self.model_version = self.pretrained.stem
             return
-        rows = frame.loc[:train_end].dropna(subset=[WINSORIZED_COL])
+        rows = exclude_anomalies(frame.loc[:train_end].reset_index())
+        y = build_target(rows, self.lead_hours)
+        mask = ~np.isnan(y)
         self.model = xgb.XGBRegressor(**XGB_PARAMS, missing=np.nan)
-        self.model.fit(rows[P.FEATURE_COLUMNS], rows[WINSORIZED_COL])
-        self.model_version = f"xgboost_baseline_trainend_{train_end.date()}"
+        self.model.fit(rows.loc[mask, P.FEATURE_COLUMNS], y[mask])
+        self.model.get_booster().set_attr(target=self.target)
+        self.model_version = f"xgboost_baseline_trainend_{train_end.date()}_{self.target}"
 
     def predict_day(self, history: pd.DataFrame, day: pd.Timestamp):
         price = history[PRICE].clip(P.WINSORIZE_LOWER, P.WINSORIZE_UPPER)
@@ -185,17 +209,21 @@ class XGBForecaster:
 
 
 class LSTMForecaster:
-    def __init__(self, model_id: str, seed: int, artifact_path: Path):
-        self.id, self.seed, self.path = model_id, seed, artifact_path
+    def __init__(self, model_id: str, seed: int, artifact_path: Path, lead_hours: int):
+        self.id, self.seed, self.path, self.lead_hours = model_id, seed, artifact_path, lead_hours
 
     def fit(self, frame: pd.DataFrame, train_end: pd.Timestamp) -> None:
         """Training happens in train_lstm.py (see train_missing_lstms); this
-        loads the artifact and refuses one that has seen the test period."""
+        loads the artifact and refuses one that has seen the test period, or
+        was trained for a different horizon than this evaluation run."""
         self.model, self.artifact = lm.load_artifact(self.path)
         seen_until = pd.Timestamp(self.artifact["train_end"])
-        if self.artifact["trained_on"] != "train" or seen_until > train_end:
+        artifact_lead = self.artifact.get("lead_hours")
+        if (self.artifact["trained_on"] != "train" or seen_until > train_end
+                or artifact_lead != self.lead_hours):
             raise ValueError(f"{self.path.name} was trained on data up to {seen_until} "
-                             f"({self.artifact['trained_on']}) - past this fold's train end {train_end}.")
+                             f"({self.artifact['trained_on']}), lead_hours={artifact_lead} - expected "
+                             f"lead_hours={self.lead_hours}, past this fold's train end {train_end}.")
         self.model_version = self.path.stem
 
     def predict_day(self, history: pd.DataFrame, day: pd.Timestamp):
@@ -207,8 +235,8 @@ class LSTMForecaster:
         return by_quantile[0.5], by_quantile.get(0.1), by_quantile.get(0.9)
 
 
-def lstm_artifact_path(model_id: str, train_end: pd.Timestamp, seed: int) -> Path:
-    return FOLDS_DIR / f"{model_id}_trainend_{train_end.date()}_seed{seed}.pt"
+def lstm_artifact_path(model_id: str, target: str, train_end: pd.Timestamp, seed: int) -> Path:
+    return FOLDS_DIR / f"{model_id}_{target}_trainend_{train_end.date()}_seed{seed}.pt"
 
 
 def train_missing_lstms(jobs: list[dict], data_dir: Path, workers: int, max_epochs: int | None) -> None:
@@ -222,9 +250,9 @@ def train_missing_lstms(jobs: list[dict], data_dir: Path, workers: int, max_epoc
     print(f"Training {len(todo)} LSTM artifact(s), {workers} at a time ...", flush=True)
 
     def train(job: dict) -> None:
-        cmd = [sys.executable, str(OUT_DIR / "train_lstm.py"), "--fit-on", "train", "--seed", str(job["seed"]),
-               "--train-end", str(job["train_end"].date()), "--out", str(job["path"]), "--threads", "1",
-               "--data-dir", str(data_dir), "--extra-exog", ",".join(job["extra_exog"])]
+        cmd = [sys.executable, str(OUT_DIR / "train_lstm.py"), "--fit-on", "train", "--target", job["target"],
+               "--seed", str(job["seed"]), "--train-end", str(job["train_end"].date()), "--out", str(job["path"]),
+               "--threads", "1", "--data-dir", str(data_dir), "--extra-exog", ",".join(job["extra_exog"])]
         if max_epochs:
             cmd += ["--max-epochs", str(max_epochs)]
         with open(job["path"].with_suffix(".log"), "w") as log:
@@ -242,22 +270,25 @@ def train_missing_lstms(jobs: list[dict], data_dir: Path, workers: int, max_epoc
 # --------------------------------------------------------------------------- #
 
 def make_forecasts(forecaster, frame: pd.DataFrame, days: pd.DatetimeIndex, fold: str,
-                   train_end: pd.Timestamp) -> pd.DataFrame:
+                   train_end: pd.Timestamp, lead_hours: int) -> pd.DataFrame:
     """Long table, one row per (hour, model, seed):
-    time, model, seed, horizon_h (1-24), actual, pred, p10, p90 + traceability."""
+    time, model, seed, horizon_h (1-24), actual, pred, p10, p90 + traceability.
+    `days` are anchor days; predictions come back anchor-hour-ordered but
+    represent the target day (anchor + lead_hours), so "time"/"actual" are
+    keyed on the target hours, not the anchor's."""
     rows = []
     for day in days:
         try:
-            pred, p10, p90 = forecaster.predict_day(day_history(frame, day), day)
+            pred, p10, p90 = forecaster.predict_day(day_history(frame, day, lead_hours), day)
         except lm.MissingInputError as exc:
             print(f"  {forecaster.id} (seed {forecaster.seed}): no forecast for {day.date()} - {exc}")
             continue
-        hours = day_hours(day)
+        target_hours = day_hours(day + pd.Timedelta(hours=lead_hours))
         rows.append(pd.DataFrame({
-            "time": hours, "horizon_h": np.arange(1, 25), "pred": pred,
+            "time": target_hours, "horizon_h": np.arange(1, 25), "pred": pred,
             "p10": np.nan if p10 is None else p10, "p90": np.nan if p90 is None else p90,
-            "actual": frame[PRICE].reindex(hours).to_numpy(),
-            "actual_winsorized": frame[WINSORIZED_COL].reindex(hours).to_numpy(),
+            "actual": frame[PRICE].reindex(target_hours).to_numpy(),
+            "actual_winsorized": frame[WINSORIZED_COL].reindex(target_hours).to_numpy(),
         }))
     out = pd.concat(rows, ignore_index=True)
     out["model"], out["seed"], out["fold"] = forecaster.id, forecaster.seed, fold
@@ -276,16 +307,16 @@ def keep_common_days(fc: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     return fc[fc["day"].isin(good_days)].drop(columns="run").reset_index(drop=True), dropped
 
 
-def leakage_test(forecasters: list, frame: pd.DataFrame, days: pd.DatetimeIndex) -> float:
+def leakage_test(forecasters: list, frame: pd.DataFrame, days: pd.DatetimeIndex, lead_hours: int) -> float:
     """Re-forecast a sample of days with an absurd price planted at every hour
-    from D 00:00 on. Any model that reads price at or after D 00:00 changes
-    its forecast; returns the largest change seen (must be 0)."""
+    from the target day's 00:00 on. Any model that reads price at or after
+    that changes its forecast; returns the largest change seen (must be 0)."""
     sample = days[np.linspace(0, len(days) - 1, min(LEAK_TEST_DAYS, len(days))).astype(int)]
     worst = 0.0
     for forecaster in forecasters:
         for day in sample:
-            clean = forecaster.predict_day(day_history(frame, day), day)[0]
-            planted = forecaster.predict_day(day_history(frame, day, future_price=99999.0), day)[0]
+            clean = forecaster.predict_day(day_history(frame, day, lead_hours), day)[0]
+            planted = forecaster.predict_day(day_history(frame, day, lead_hours, future_price=99999.0), day)[0]
             worst = max(worst, float(np.abs(np.asarray(clean) - np.asarray(planted)).max()))
     return worst
 
@@ -505,13 +536,10 @@ def make_plots(fc: pd.DataFrame, frame: pd.DataFrame, models: list[str], mode: s
     ax.legend()
     save(fig, "residual_hist")
 
-    # Bias: mean error by hour, month and load decile.
-    load = frame["load_forecast_dam_north_mwh"].reindex(fc["time"]).to_numpy()
-    fc = fc.assign(month=fc["time"].dt.strftime("%Y-%m"), hour=fc["horizon_h"] - 1,
-                   load_decile=pd.qcut(pd.Series(load, index=fc.index), 10, labels=False, duplicates="drop") + 1)
-    fig, axes = plt.subplots(1, 3, figsize=(14, 3.8), sharey=True)
-    for ax, (col, label) in zip(axes, [("hour", "Hour (UTC)"), ("month", "Month"),
-                                       ("load_decile", "Load forecast decile (1 = lowest)")]):
+    # Bias: mean error by hour and month.
+    fc = fc.assign(month=fc["time"].dt.strftime("%Y-%m"), hour=fc["horizon_h"] - 1)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3.8), sharey=True)
+    for ax, (col, label) in zip(axes, [("hour", "Hour (UTC)"), ("month", "Month")]):
         bias = mean_over_seeds(fc, "err", [col]).unstack(0).sort_index()
         x = np.arange(len(bias))
         for m in shown:
@@ -554,19 +582,28 @@ def make_plots(fc: pd.DataFrame, frame: pd.DataFrame, models: list[str], mode: s
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate and compare the LZ_NORTH price models.")
     parser.add_argument("--mode", choices=["holdout", "walkforward"], default="holdout")
-    parser.add_argument("--models", default="naive_d1,naive_w1,xgb,lstm")
+    parser.add_argument("--target", choices=["y0", "y1"], required=True,
+                        help="y0: evaluate the 48h-ahead model. y1: the 72h-ahead model. See model/model.md S9.")
+    parser.add_argument("--models", default="naive_last_known,naive_w1,xgb,lstm")
     parser.add_argument("--seeds", help="LSTM seeds, comma-separated (default: 0 for holdout, 0,1,2 for walkforward)")
     parser.add_argument("--variant", action="append", default=[], metavar="NAME=col1,col2",
                         help="also evaluate lstm_NAME: the LSTM retrained with these extra EXOG_COLS")
     parser.add_argument("--folds", help="walkforward: only these folds, e.g. 3,4,5")
-    parser.add_argument("--xgb", type=Path, default=MODELS_DIR / "xgboost_baseline_train.json")
-    parser.add_argument("--lstm", type=Path, default=MODELS_DIR / "lstm_train.pt",
-                        help="holdout: the --fit-on train artifact used for lstm seed 0")
+    parser.add_argument("--xgb", type=Path, help="default: models/xgboost_<target>_train.json")
+    parser.add_argument("--lstm", type=Path,
+                        help="holdout: the --fit-on train artifact used for lstm seed 0 "
+                            "(default: models/lstm_<target>_train.pt)")
     parser.add_argument("--data-dir", type=Path, help="folder holding train.csv and val.csv")
     parser.add_argument("--out-dir", type=Path, default=REPORTS_DIR)
     parser.add_argument("--jobs", type=int, default=5, help="LSTM trainings to run at once")
     parser.add_argument("--max-epochs", type=int, help="cap LSTM training epochs (smoke tests only)")
     args = parser.parse_args()
+
+    lead_hours = LEAD_HOURS[args.target]
+    xgb_path = args.xgb or MODELS_DIR / f"xgboost_{args.target}_train.json"
+    lstm_path = args.lstm or MODELS_DIR / f"lstm_{args.target}_train.pt"
+    run_id = f"{args.mode}_{args.target}"
+    naive_lag_days = {"naive_last_known": math.ceil(lead_hours / 24) + 1, "naive_w1": 7}
 
     data_dir = args.data_dir or find_data_dir()
     frame = load_history(data_dir)
@@ -584,41 +621,34 @@ def main() -> None:
         train_end = pd.Timestamp(train_end) + pd.Timedelta(hours=23)
         for model in (m for m in models if m in lstm_extra):
             for seed in seeds:
-                path = lstm_artifact_path(model, train_end, seed)
-                if args.mode == "holdout" and model == "lstm" and seed == 0 and args.lstm.exists():
-                    path = args.lstm
+                path = lstm_artifact_path(model, args.target, train_end, seed)
+                if args.mode == "holdout" and model == "lstm" and seed == 0 and lstm_path.exists():
+                    path = lstm_path
                 lstm_jobs.append({"fold": fold, "model": model, "seed": seed, "train_end": train_end,
-                                  "path": path, "extra_exog": lstm_extra[model]})
+                                  "path": path, "extra_exog": lstm_extra[model], "target": args.target})
     train_missing_lstms(lstm_jobs, data_dir, args.jobs, args.max_epochs)
 
-    tables, fold_info, leak, reference_rows = [], [], 0.0, []
+    tables, fold_info, leak = [], [], 0.0
     for fold, train_end, first, last in folds:
         train_end = pd.Timestamp(train_end) + pd.Timedelta(hours=23)
-        days = test_days(frame, first, last)
-        print(f"Fold {fold}: train <= {train_end.date()}, test {days[0].date()} .. {days[-1].date()} "
+        days = test_days(frame, first, last, lead_hours)
+        print(f"Fold {fold}: train <= {train_end.date()}, test (anchor) {days[0].date()} .. {days[-1].date()} "
               f"({len(days)} days)", flush=True)
         forecasters = []
         for model in models:
             if model.startswith("naive"):
-                forecasters.append(NaiveForecaster(model, {"naive_d1": 1, "naive_w1": 7}[model]))
+                forecasters.append(NaiveForecaster(model, naive_lag_days[model], lead_hours))
             elif model == "xgb":
-                forecasters.append(XGBForecaster(args.xgb if args.mode == "holdout" else None))
+                forecasters.append(XGBForecaster(xgb_path if args.mode == "holdout" else None,
+                                                 args.target, lead_hours))
             else:
-                forecasters += [LSTMForecaster(model, j["seed"], j["path"]) for j in lstm_jobs
+                forecasters += [LSTMForecaster(model, j["seed"], j["path"], lead_hours) for j in lstm_jobs
                                 if j["fold"] == fold and j["model"] == model]
         for forecaster in forecasters:
             forecaster.fit(frame, train_end)
-            tables.append(make_forecasts(forecaster, frame, days, fold, train_end))
-        leak = max(leak, leakage_test(forecasters, frame, days))
+            tables.append(make_forecasts(forecaster, frame, days, fold, train_end, lead_hours))
+        leak = max(leak, leakage_test(forecasters, frame, days, lead_hours))
         fold_info.append({"fold": fold, "train_end": train_end, "n_days": len(days)})
-
-        if fold == HOLDOUT_FOLD and "xgb" in models:
-            # Reference check: the same XGBoost on the CSV's own (leaky) feature columns.
-            hours = pd.DatetimeIndex(np.concatenate([day_hours(d) for d in days]))
-            xgb_model = next(f for f in forecasters if f.id == "xgb").model
-            err = xgb_model.predict(frame.loc[hours, P.FEATURE_COLUMNS]) - frame.loc[hours, PRICE]
-            reference_rows.append(("xgb on CSV features (leaky rolls)", float(err.abs().mean()),
-                                   float(np.sqrt((err ** 2).mean()))))
 
     fc, dropped = keep_common_days(pd.concat(tables, ignore_index=True))
     fc["seed"] = fc["seed"].astype("Int64")
@@ -632,13 +662,14 @@ def main() -> None:
     n_days, n_hours = fc["day"].nunique(), fc["time"].nunique()
 
     stats = score_models(fc)
-    naive_mae = stats.loc["naive_d1", ("mae", "mean")] if "naive_d1" in models else float("nan")
+    naive_mae = stats.loc["naive_last_known", ("mae", "mean")] if "naive_last_known" in models else float("nan")
     multi_fold = len(folds) > 1
     lstm_models = [m for m in models if m in lstm_extra]
 
     # ---- significance ----
     pairs = [(m, "xgb") for m in lstm_models if "xgb" in models]
-    pairs += [(m, "naive_d1") for m in models if m != "naive_d1" and "naive_d1" in models and m != "naive_w1"]
+    pairs += [(m, "naive_last_known") for m in models
+             if m != "naive_last_known" and "naive_last_known" in models and m != "naive_w1"]
     pairs += [(m, "lstm") for m in lstm_models if m != "lstm" and "lstm" in models]
     pooled = [compare(fc, a, b) for a, b in pairs]
     per_fold = {fold: [compare(df, a, b) for a, b in pairs] for fold, df in fc.groupby("fold")} if multi_fold else {}
@@ -646,7 +677,7 @@ def main() -> None:
     # ---- report ----
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
-    plots = make_plots(fc, frame, models, args.mode, out_dir / "plots")
+    plots = make_plots(fc, frame, models, run_id, out_dir / "plots")
 
     period = f"{fc['time'].min().date()} to {fc['time'].max().date()}"
     title = "hold-out" if args.mode == "holdout" else f"walk-forward, {len(folds)} folds"
@@ -697,7 +728,7 @@ def main() -> None:
         "Spike MAE": stat_cell(stats, m, "spike_mae"), f"Cheap-{CHEAPEST_N} hit": stat_cell(stats, m, "cheap_hit", ".3f"),
         "Coverage P10–P90": stat_cell(stats, m, "coverage", ".1%"),
     } for m in models]), "",
-        "Skill = 1 − MAE / MAE of naive_d1. Spike hours = actual above the test period's 95th percentile "
+        "Skill = 1 − MAE / MAE of naive_last_known. Spike hours = actual above the test period's 95th percentile "
         f"(per fold). Cheap-{CHEAPEST_N} hit = share of the day's {CHEAPEST_N} cheapest actual hours that are "
         f"also among the model's {CHEAPEST_N} cheapest predicted hours.", ""]
 
@@ -752,7 +783,8 @@ def main() -> None:
     horizon_mae = mean_over_seeds(fc, "abs_err", ["horizon_h"]).unstack(0)[models]
     horizon_rmse = np.sqrt(mean_over_seeds(fc, "sq_err", ["horizon_h"]).unstack(0)[models])
     lines += ["## By horizon (hour of day)", "",
-              "Horizon h = h hours after the D-1 23:00 UTC cutoff, i.e. UTC hour h−1 of the target day.", "",
+              f"Horizon h = UTC hour h−1 of the target day, {lead_hours}h after the anchor day used for "
+              f"this run (--target {args.target}).", "",
               markdown_table([{"Horizon": h, **{f"{m} MAE": f"{horizon_mae.loc[h, m]:.2f}" for m in models},
                                **{f"{m} RMSE": f"{horizon_rmse.loc[h, m]:.2f}" for m in models}}
                               for h in horizon_mae.index]), ""]
@@ -770,31 +802,19 @@ def main() -> None:
     # sanity checks
     lines += ["## Sanity checks", "",
               f"- **Leakage:** {'PASS' if leak == 0 else 'FAIL'} - re-forecasting sample days with a price of "
-              f"$99,999 planted from D 00:00 on changed forecasts by at most {leak:g}.",
+              f"$99,999 planted from the target day's first hour on changed forecasts by at most {leak:g}.",
               f"- **Coverage of the day:** PASS - every model has exactly 24 forecasts for each of the {n_days} "
               "days, on identical timestamps."]
-    if HOLDOUT_FOLD in {f[0] for f in folds}:
-        hold = score_models(fc[fc["fold"] == HOLDOUT_FOLD])
-        checks = [(m, hold.loc[m, ("mae", "mean")], hold.loc[m, ("rmse", "mean")])
-                  for m in ("naive_d1", "xgb") if m in models] + reference_rows
-        ref_rows = []
-        for name, got_mae, got_rmse in checks:
-            ref_mae, ref_rmse = REFERENCE[name]
-            ok = abs(got_mae - ref_mae) <= REFERENCE_TOLERANCE and abs(got_rmse - ref_rmse) <= REFERENCE_TOLERANCE
-            ref_rows.append({"Model": name, "MAE": f"{got_mae:.2f}", "Reference MAE": ref_mae,
-                             "RMSE": f"{got_rmse:.2f}", "Reference RMSE": ref_rmse,
-                             f"Within ±{REFERENCE_TOLERANCE}": "yes" if ok else "NO"})
-        lines += ["- **Reference numbers** (2026-02-01 to 2026-08-29):", "", markdown_table(ref_rows), ""]
     lines += ["", "## Plots", ""] + [f"![{name}](plots/{name})" for name in plots] + [""]
 
-    stem = f"eval_{args.mode}_{date.today().isoformat()}"
+    stem = f"eval_{run_id}_{date.today().isoformat()}"
     (out_dir / f"{stem}.md").write_text("\n".join(lines))
     keep = ["time", "fold", "model", "model_version", "train_end", "seed", "horizon_h", "actual",
             "actual_winsorized", "pred", "p10", "p90", "is_spike"]
-    fc[keep].to_parquet(out_dir / f"forecasts_{args.mode}.parquet", index=False)
+    fc[keep].to_parquet(out_dir / f"forecasts_{run_id}.parquet", index=False)
 
     print("\n".join(lines[:lines.index("## By horizon (hour of day)")]))
-    print(f"Report: {out_dir / f'{stem}.md'}\nForecasts: {out_dir / f'forecasts_{args.mode}.parquet'}\n"
+    print(f"Report: {out_dir / f'{stem}.md'}\nForecasts: {out_dir / f'forecasts_{run_id}.parquet'}\n"
           f"Plots: {out_dir / 'plots'}")
 
 

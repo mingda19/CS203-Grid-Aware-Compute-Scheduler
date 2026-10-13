@@ -148,41 +148,6 @@ class CalendarFeatureTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# load_forecast_dam lookup - zone is ERCOT's weather-zone scheme
-# (north/south/west/houston/system_total), NOT the LZ_ settlement-point
-# naming used for electrical_price. Regression test for a real bug: this
-# function was once called with location="LZ_NORTH" (DEFAULT_LOCATION),
-# which matches zero rows against the zone column and silently produced an
-# all-NaN load_forecast_dam_north_mwh feature.
-# --------------------------------------------------------------------------- #
-
-class LoadLoadForecastTests(unittest.TestCase):
-    def setUp(self):
-        self.engine = make_engine()
-        with self.engine.begin() as conn:
-            conn.execute(sa.text(
-                "CREATE TABLE load_forecast_dam (interval_start_utc TEXT, zone TEXT, "
-                "load_forecast_mwh REAL, publish_time_utc TEXT, PRIMARY KEY (interval_start_utc, zone))"
-            ))
-            conn.execute(sa.text(
-                "INSERT INTO load_forecast_dam VALUES "
-                "('2026-03-02T05:00:00', 'north', 45000.0, '2026-03-01T14:30:00'), "
-                "('2026-03-02T05:00:00', 'south', 12000.0, '2026-03-01T14:30:00')"
-            ))
-
-    def test_lowercase_zone_name_matches_rows(self):
-        out = pred.load_load_forecast(self.engine, "north",
-                                      datetime(2026, 3, 2), datetime(2026, 3, 3))
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out["load_forecast_dam_north_mwh"].iloc[0], 45000.0)
-
-    def test_lz_north_settlement_point_name_matches_nothing(self):
-        out = pred.load_load_forecast(self.engine, "LZ_NORTH",
-                                      datetime(2026, 3, 2), datetime(2026, 3, 3))
-        self.assertEqual(len(out), 0)
-
-
-# --------------------------------------------------------------------------- #
 # Prediction output + write
 # --------------------------------------------------------------------------- #
 
@@ -217,22 +182,25 @@ class LoadExogenousTests(unittest.TestCase):
                                  "wind_speed_120m REAL, temperature_120m REAL)"))
             conn.execute(sa.text("CREATE TABLE solar (location_id INTEGER, time TEXT, "
                                  "shortwave_radiation REAL, temperature_2m REAL)"))
-            conn.execute(sa.text("CREATE TABLE load_forecast_dam (interval_start_utc TEXT, zone TEXT, "
-                                 "load_forecast_mwh REAL)"))
             # Thursday + Friday published; nothing over the weekend or after.
             conn.execute(sa.text("INSERT INTO fuel_price VALUES ('2026-02-26T00:00:00', 3.0), "
                                  "('2026-02-27T00:00:00', 3.5)"))
 
-    def test_gas_lag_is_carried_past_the_last_published_day(self):
-        # A day-ahead run always targets a day with no gas row yet - it must
-        # get the last published price, not NaN.
-        out = pred.load_exogenous(self.engine, datetime(2026, 2, 27), datetime(2026, 3, 2, 23))
-        by_day = out.groupby(out["time"].dt.date)["henry_hub_price_usd_mmbtu_lag1d"].first()
+    def test_gas_lag2d_is_carried_past_the_last_published_day(self):
+        # A y0/y1 run always targets days with no gas row yet - it must get
+        # the last published price, not NaN.
+        out = pred.load_exogenous(self.engine, datetime(2026, 2, 28), datetime(2026, 3, 3, 23))
+        by_day = out.groupby(out["time"].dt.date)["henry_hub_price_usd_mmbtu_lag2d"].first()
+        self.assertEqual(by_day.tolist(), [3.0, 3.5, 3.5, 3.5])
+
+    def test_gas_lag3d_is_carried_past_the_last_published_day(self):
+        out = pred.load_exogenous(self.engine, datetime(2026, 3, 1), datetime(2026, 3, 4, 23))
+        by_day = out.groupby(out["time"].dt.date)["henry_hub_price_usd_mmbtu_lag3d"].first()
         self.assertEqual(by_day.tolist(), [3.0, 3.5, 3.5, 3.5])
 
     def test_stale_gas_is_not_carried_forever(self):
-        out = pred.load_exogenous(self.engine, datetime(2026, 3, 4), datetime(2026, 3, 8, 23))
-        by_day = out.groupby(out["time"].dt.date)["henry_hub_price_usd_mmbtu_lag1d"].first()
+        out = pred.load_exogenous(self.engine, datetime(2026, 3, 4), datetime(2026, 3, 9, 23))
+        by_day = out.groupby(out["time"].dt.date)["henry_hub_price_usd_mmbtu_lag2d"].first()
         self.assertEqual(by_day.iloc[0], 3.5)
         self.assertTrue(np.isnan(by_day.iloc[-1]))
 

@@ -24,8 +24,8 @@ import torch  # noqa: E402
 TARGET_DAY = pd.Timestamp("2026-03-02")
 TARGET_TIMES = pd.date_range(TARGET_DAY, periods=24, freq="h")
 HISTORY_START = TARGET_DAY - pd.Timedelta(hours=lstm.PAST_WINDOW)
-EXOG_COLS = ["load_forecast_dam_north_mwh", "wind_power_output_proxy_total",
-             "solar_power_output_proxy_total", "henry_hub_price_usd_mmbtu_lag1d"]
+EXOG_COLS = ["wind_power_output_proxy_total", "solar_power_output_proxy_total",
+             "henry_hub_price_usd_mmbtu_lag2d", "henry_hub_price_usd_mmbtu_lag3d"]
 
 
 def make_artifact(seed: int = 0, quantiles=None) -> dict:
@@ -38,7 +38,6 @@ def make_artifact(seed: int = 0, quantiles=None) -> dict:
         "trained_on": "train", "train_end": "2026-01-31 23:00:00", "best_epoch": 1, "metrics": {},
     }
     cfg["scalers"] = {name: (0.0, 1.0) for name in lstm.past_feature_names(cfg)}
-    cfg["scalers"]["load_forecast_dam_north_mwh"] = (15000.0, 3000.0)
     cfg["arch"] = {"hidden": 8, "layers": 2, "dropout": 0.0, "n_past_feats": len(lstm.past_feature_names(cfg)),
                    "n_future_feats": len(lstm.future_feature_names(cfg)),
                    "quantiles": list(quantiles or lstm.DEFAULT_QUANTILES)}
@@ -48,11 +47,11 @@ def make_artifact(seed: int = 0, quantiles=None) -> dict:
     return cfg
 
 
-def make_db(price_after_cutoff: float | None = None, drop_load_hours: int = 0) -> sa.Engine:
+def make_db(price_after_cutoff: float | None = None, drop_wind_hours: int = 0) -> sa.Engine:
     """History window + target day for every source build_sequence reads.
     `price_after_cutoff` adds prices for the target day itself (which a
-    day-ahead run must never use); `drop_load_hours` removes that many hours
-    of the target day's load forecast."""
+    day-ahead run must never use); `drop_wind_hours` removes that many hours
+    of the target day's wind data (to exercise a missing-known-ahead-input)."""
     engine = sa.create_engine("sqlite:///:memory:")
     hours = pd.date_range(HISTORY_START, TARGET_TIMES.max(), freq="h")
     iso = [t.isoformat() for t in hours]
@@ -66,17 +65,14 @@ def make_db(price_after_cutoff: float | None = None, drop_load_hours: int = 0) -
 
     weather = pd.DataFrame({"location_id": 0, "time": iso})
     wind = weather.assign(wind_speed_80m=25.0, wind_speed_120m=30 + rng.random(len(hours)), temperature_120m=12.0)
+    if drop_wind_hours:
+        wind = wind.iloc[:-drop_wind_hours]
     solar = weather.assign(shortwave_radiation=400 * rng.random(len(hours)), temperature_2m=18.0)
-    load = pd.DataFrame({"interval_start_utc": iso, "zone": "north",
-                         "load_forecast_mwh": 14000 + 2000 * rng.random(len(hours))})
-    if drop_load_hours:
-        load = load.iloc[:-drop_load_hours]
     days = pd.date_range(HISTORY_START - pd.Timedelta(days=3), TARGET_DAY, freq="D")
     gas = pd.DataFrame({"period": [d.isoformat() for d in days], "henry_hub_price_usd_mmbtu": 3.0})
 
     with engine.begin() as conn:
-        for table, df in [("electrical_price", price), ("wind", wind), ("solar", solar),
-                          ("load_forecast_dam", load), ("fuel_price", gas)]:
+        for table, df in [("electrical_price", price), ("wind", wind), ("solar", solar), ("fuel_price", gas)]:
             df.to_sql(table, conn, index=False)
     return engine
 
@@ -118,8 +114,8 @@ class BuildSequenceTests(unittest.TestCase):
 
     def test_missing_input_raises_and_names_it(self):
         with self.assertRaises(lstm.MissingInputError) as ctx:
-            pred.build_sequence(make_db(drop_load_hours=5), TARGET_TIMES, "LZ_NORTH", make_artifact())
-        self.assertIn("load_forecast_dam_north_mwh (target day): 5h", str(ctx.exception))
+            pred.build_sequence(make_db(drop_wind_hours=5), TARGET_TIMES, "LZ_NORTH", make_artifact())
+        self.assertIn("wind_power_output_proxy_total (target day): 5h", str(ctx.exception))
 
     def test_unknown_exogenous_column_is_reported(self):
         artifact = make_artifact()
@@ -187,24 +183,30 @@ class TransformTests(unittest.TestCase):
 
 class RunPredictionsTests(unittest.TestCase):
     def test_lstm_run_writes_24_rows_under_its_own_model_version(self):
+        # make_artifact() has no explicit lead_hours (defaults to 0, i.e. the
+        # target day is the anchor day itself) - so anchor_date must be 48h
+        # before TARGET_DAY for the "y0" slot's LEAD_HOURS to land the
+        # written rows exactly on TARGET_TIMES, matching what make_db() built.
         engine = make_db()
         with engine.begin() as conn:
             conn.execute(sa.text(
                 "CREATE TABLE predicted_price ("
                 "interval_start_utc TEXT, location TEXT, predicted_price REAL, "
-                "model_version TEXT, generated_at TEXT, "
+                "model_version TEXT, generated_at TEXT, confidence_score REAL, "
                 "PRIMARY KEY (interval_start_utc, location, model_version, generated_at))"
             ))
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "lstm_train.pt"
+            path = Path(tmp) / "lstm_y0_train.pt"
             lstm.save_artifact(path, make_artifact())
-            result = pred.run_predictions(engine, model_path=path, target_date=TARGET_DAY.date())
+            anchor_date = (TARGET_DAY - pd.Timedelta(hours=pred.LEAD_HOURS["y0"])).date()
+            results = pred.run_predictions(engine, model_paths={"y0": path}, anchor_date=anchor_date)
 
-        self.assertEqual(result.rows_written, 24)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].rows_written, 24)
         with engine.begin() as conn:
             rows = pd.read_sql("SELECT * FROM predicted_price", conn)
         self.assertEqual(len(rows), 24)
-        self.assertEqual(set(rows["model_version"]), {"lstm_train"})
+        self.assertEqual(set(rows["model_version"]), {"lstm_y0_train"})
         self.assertTrue(np.isfinite(rows["predicted_price"]).all())
 
 
