@@ -43,6 +43,7 @@ import { DataStatusBadge, type DataStatusType } from "@/components/ui/data-statu
 import {
   authApi,
   freshnessApi,
+  getAccessToken,
   getStoredUser,
   removeStoredUser,
   type FreshnessNotification,
@@ -118,12 +119,15 @@ export function AppShell({ children }: AppShellProps) {
       setTourOpen(true)
     }
 
-    // Transparently hydrate / refresh in-memory JWT access token using HttpOnly cookie
-    authApi.refreshToken().catch(() => {
-      // If refresh fails (cookie expired or revoked), clear state and redirect
-      removeStoredUser()
-      router.push("/login")
-    })
+    // If access token is missing, attempt restoring it via refresh token
+    const token = getAccessToken()
+    if (!token) {
+      authApi.refreshToken().catch(() => {
+        // If refresh also fails, clear state and redirect
+        removeStoredUser()
+        router.push("/login")
+      })
+    }
   }, [router])
 
   React.useEffect(() => {

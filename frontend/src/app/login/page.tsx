@@ -191,15 +191,11 @@ export default function LoginPage() {
     setSuccessMessage(null)
 
     try {
-      const response = await authApi.verifyOtp({ email, otp: otpCode.trim() })
+      await authApi.verifyOtp({ email, otp: otpCode.trim() })
 
-      if (response.user) {
-        setStoredUser(response.user)
-      }
-      setSuccessMessage("Email verified! Redirecting to dashboard...")
-      setTimeout(() => {
-        router.push("/")
-      }, 500)
+      setSuccessMessage("Account verified successfully! Please sign in with your password.")
+      setMode("login")
+      setPassword("")
     } catch (err: any) {
       setErrorMessage(err.message || "Invalid or expired OTP code.")
     } finally {

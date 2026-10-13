@@ -17,6 +17,7 @@ public class DotenvLoader {
         File envFile = findDotenvFile();
         if (envFile == null || !envFile.exists()) {
             logger.info("No .env file found; using standard environment/property configuration.");
+            configureFromSystemEnv();
             return;
         }
 
@@ -72,11 +73,24 @@ public class DotenvLoader {
         return null;
     }
 
-    private static void configureJdbcFromDatabaseUrl(String dbUrl) {
+    private static void configureFromSystemEnv() {
+        String dbUrl = System.getenv("DATABASE_URL");
+        if (dbUrl != null && !dbUrl.isBlank() && System.getProperty("spring.datasource.url") == null) {
+            configureJdbcFromDatabaseUrl(dbUrl);
+        }
+    }
+
+    static void configureJdbcFromDatabaseUrl(String dbUrl) {
         try {
             if (dbUrl == null || dbUrl.isBlank()) {
                 return;
             }
+            dbUrl = dbUrl.trim();
+            if ((dbUrl.startsWith("\"") && dbUrl.endsWith("\"")) ||
+                (dbUrl.startsWith("'") && dbUrl.endsWith("'"))) {
+                dbUrl = dbUrl.substring(1, dbUrl.length() - 1).trim();
+            }
+
             if (dbUrl.startsWith("jdbc:")) {
                 System.setProperty("spring.datasource.url", dbUrl);
                 return;
@@ -127,14 +141,43 @@ public class DotenvLoader {
         }
     }
 
-    private static String decodeUserInfo(String value) {
+    static String decodeUserInfo(String value) {
         if (value == null) {
-            return "";
+            return null;
         }
         try {
             return URLDecoder.decode(value, StandardCharsets.UTF_8);
         } catch (IllegalArgumentException e) {
+            // Value contains raw characters like '%' that are not valid hex escape sequences (e.g. '%*').
+            return safeUrlDecode(value);
+        }
+    }
+
+    private static String safeUrlDecode(String value) {
+        StringBuilder sanitized = new StringBuilder();
+        int len = value.length();
+        for (int i = 0; i < len; i++) {
+            char c = value.charAt(i);
+            if (c == '%') {
+                if (i + 2 < len && isHexDigit(value.charAt(i + 1)) && isHexDigit(value.charAt(i + 2))) {
+                    sanitized.append('%');
+                } else {
+                    sanitized.append("%25");
+                }
+            } else {
+                sanitized.append(c);
+            }
+        }
+        try {
+            return URLDecoder.decode(sanitized.toString(), StandardCharsets.UTF_8);
+        } catch (Exception ignored) {
             return value;
         }
+    }
+
+    private static boolean isHexDigit(char c) {
+        return (c >= '0' && c <= '9') ||
+               (c >= 'a' && c <= 'f') ||
+               (c >= 'A' && c <= 'F');
     }
 }

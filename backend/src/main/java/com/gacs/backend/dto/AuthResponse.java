@@ -32,6 +32,9 @@ public class AuthResponse {
     @Schema(description = "Refresh token cookie time-to-live in seconds (86400s standard, 1209600s remember-me)", example = "86400")
     private Long refreshExpiresIn;
 
+    @Schema(description = "Refresh token string (for cross-domain clients where third-party cookies are partitioned or blocked)", example = "7b2c019d-192a-4467-8cf1-9b48f6c3eb1a")
+    private String refreshToken;
+
     public AuthResponse() {
     }
 
@@ -147,5 +150,13 @@ public class AuthResponse {
 
     public void setRefreshExpiresIn(Long refreshExpiresIn) {
         this.refreshExpiresIn = refreshExpiresIn;
+    }
+
+    public String getRefreshToken() {
+        return refreshToken;
+    }
+
+    public void setRefreshToken(String refreshToken) {
+        this.refreshToken = refreshToken;
     }
 }
