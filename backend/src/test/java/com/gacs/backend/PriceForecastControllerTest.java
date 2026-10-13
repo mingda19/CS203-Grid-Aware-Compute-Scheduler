@@ -38,8 +38,13 @@ class PriceForecastControllerTest {
     @Test
     @WithMockUser
     void returnsForecastPoints_WithoutConfidenceScore() throws Exception {
-        var row = new PredictedPrice(LocalDateTime.parse("2026-10-09T00:00:00"), "LZ_NORTH", "xgb_v1",
-            LocalDateTime.parse("2026-10-08T12:00:00"), 30.5);
+        var row = PredictedPrice.builder()
+            .intervalStartUtc(LocalDateTime.parse("2026-10-09T00:00:00"))
+            .location("LZ_NORTH")
+            .modelVersion("xgb_v1")
+            .generatedAt(LocalDateTime.parse("2026-10-08T12:00:00"))
+            .predictedPrice(30.5)
+            .build();
         when(predictions.findLatestForecast(eq("LZ_NORTH"), any(), any())).thenReturn(List.of(row));
 
         mockMvc.perform(get("/api/prices/forecast"))
