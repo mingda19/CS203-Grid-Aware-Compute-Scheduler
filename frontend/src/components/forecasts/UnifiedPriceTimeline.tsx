@@ -194,11 +194,8 @@ export function UnifiedPriceTimeline({
       })
     }
 
-    // Determine the boundary "Now" timestamp key
-    const transitionKey = data.length > 0 ? data[data.length - 1].rawUtc : ""
-    const latestHistoryTime = data.length > 0 ? new Date(data[data.length - 1].rawUtc).getTime() : 0
-
     // 2. Filter forecast points to only include strictly future intervals (> latestHistoryTime)
+    const latestHistoryTime = data.length > 0 ? new Date(data[data.length - 1].rawUtc).getTime() : 0
     // and sort them chronologically
     const futureForecasts = forecastPoints
       .filter((f) => {
@@ -270,9 +267,35 @@ export function UnifiedPriceTimeline({
       }
     }
 
+    // Determine the boundary "Now" timestamp key using actual current time (Date.now())
+    const nowMs = Date.now()
+    let resolvedNowKey = ""
+
+    // Find the interval currently active (start <= now < nextStart)
+    for (let i = 0; i < data.length; i++) {
+      const ptMs = new Date(data[i].rawUtc).getTime()
+      const nextMs = i < data.length - 1 ? new Date(data[i + 1].rawUtc).getTime() : Infinity
+      if (ptMs <= nowMs && nowMs < nextMs) {
+        resolvedNowKey = data[i].rawUtc
+        break
+      }
+    }
+
+    // Fallback if now is outside or between gaps: snap to the nearest available data point
+    if (!resolvedNowKey && data.length > 0) {
+      let minDiff = Infinity
+      for (const pt of data) {
+        const diff = Math.abs(new Date(pt.rawUtc).getTime() - nowMs)
+        if (diff < minDiff) {
+          minDiff = diff
+          resolvedNowKey = pt.rawUtc
+        }
+      }
+    }
+
     return {
       chartData: data,
-      nowPointKey: transitionKey,
+      nowPointKey: resolvedNowKey,
       summaryStats: {
         avgLmp: allPrices.length > 0 ? avg : 34.72,
         maxLmp: max > -Infinity ? max : 142.5,
