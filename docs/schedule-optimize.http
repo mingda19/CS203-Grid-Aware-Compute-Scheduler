@@ -1,0 +1,206 @@
+# Manual exercise of POST /api/schedules/optimize (GRID-124).
+# Open in VS Code with the REST Client extension, or JetBrains' HTTP client,
+# and click "Send Request" above each block in order.
+#
+# IMPORTANT - the timestamps below expire.
+# The optimizer prices a job against its baseline hour, so a job whose
+# originalStartTime falls outside the current 48-hour horizon is rejected with
+# 400 ("falls outside the optimization horizon"). The dates here were written
+# for 2026-10-18 UTC. Before sending, replace them with the current UTC day and
+# the next. Get today's UTC date with:
+#     date -u +%Y-%m-%d
+# Keep every originalStartTime between now and now + horizonHours.
+
+@baseUrl = http://localhost:8080
+
+### 1. Log in. Uses the auto-created, pre-verified admin account from
+### DataInitializer, which skips the email OTP step.
+# @name login
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+    "email": "admin@datacenter.io",
+    "password": "Admin@2026!"
+}
+
+###
+@token = {{login.response.body.accessToken}}
+
+### ---------------------------------------------------------------------------
+### 2. The main case: inline jobs, mixed outcomes.
+### Expect 200. The wide-flex job moves to the cheapest hour in its window
+### (RESCHEDULED), the pinned job stays put (UNCHANGED_EXEMPT), and the
+### zero-window job cannot move (UNCHANGED_ALREADY_OPTIMAL).
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {
+      "id": 101,
+      "name": "LLM fine-tuning, flexible",
+      "cpuHours": 2000.0,
+      "gpuHours": 200.0,
+      "originalStartTime": "2026-10-18T14:00:00",
+      "deadline": "2026-10-19T18:00:00",
+      "flexibilityWindowHours": 12,
+      "isExempt": false
+    },
+    {
+      "id": 102,
+      "name": "Regulatory batch, must not move",
+      "cpuHours": 100.0,
+      "gpuHours": 10.0,
+      "originalStartTime": "2026-10-18T17:00:00",
+      "deadline": "2026-10-19T18:00:00",
+      "flexibilityWindowHours": 12,
+      "isExempt": true
+    },
+    {
+      "id": 103,
+      "name": "Inflexible nightly job",
+      "cpuHours": 50.0,
+      "gpuHours": 5.0,
+      "originalStartTime": "2026-10-18T20:00:00",
+      "deadline": "2026-10-19T06:00:00",
+      "flexibilityWindowHours": 0,
+      "isExempt": false
+    }
+  ],
+  "clusterCapacity": {
+    "maxConcurrentCpuHours": 5000.0,
+    "maxConcurrentGpuHours": 1000.0
+  },
+  "forecastLocation": "LZ_NORTH",
+  "horizonHours": 48
+}
+
+### ---------------------------------------------------------------------------
+### 3. A job that cannot be placed (GRID-124 AC5).
+### Deadline is only 30 minutes out, but a job occupies a full hour, so no slot
+### fits. Expect 200 (NOT an error) with perJobStatus
+### UNCHANGED_NO_FEASIBLE_SLOT and the job still at its original time.
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {
+      "id": 201,
+      "name": "Impossible deadline",
+      "cpuHours": 100.0,
+      "gpuHours": 0.0,
+      "originalStartTime": "2026-10-18T14:00:00",
+      "deadline": "2026-10-18T14:30:00",
+      "flexibilityWindowHours": 6,
+      "isExempt": false
+    }
+  ],
+  "horizonHours": 48
+}
+
+### ---------------------------------------------------------------------------
+### 4. Capacity binding. Three jobs of 200 CPU-hours each want the same cheap
+### hour, but the ceiling is 250, so only one fits there and the others take
+### the next-cheapest hours they can reach. Expect 200.
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {"id": 301, "name": "Contender A", "cpuHours": 200.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-18T14:00:00", "deadline": "2026-10-19T18:00:00",
+     "flexibilityWindowHours": 14, "isExempt": false},
+    {"id": 302, "name": "Contender B", "cpuHours": 200.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-18T14:00:00", "deadline": "2026-10-19T18:00:00",
+     "flexibilityWindowHours": 14, "isExempt": false},
+    {"id": 303, "name": "Contender C", "cpuHours": 200.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-18T14:00:00", "deadline": "2026-10-19T18:00:00",
+     "flexibilityWindowHours": 14, "isExempt": false}
+  ],
+  "clusterCapacity": {"maxConcurrentCpuHours": 250.0, "maxConcurrentGpuHours": 64.0},
+  "horizonHours": 48
+}
+
+### ---------------------------------------------------------------------------
+### 5. The stored-jobs flow, which is what the end-to-end test uses.
+### First create a job through the job API...
+POST {{baseUrl}}/api/jobs
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "Stored flexible job",
+  "cpuHours": 1500.0,
+  "gpuHours": 150.0,
+  "originalStartTime": "2026-10-18T17:00:00",
+  "deadline": "2026-10-19T20:00:00",
+  "flexibilityWindowHours": 10,
+  "isExempt": false
+}
+
+### ...then optimize with no jobs field at all. The optimizer picks up every
+### eligible job this operator owns. Expect 200.
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{}
+
+### See what the optimizer is working from
+GET {{baseUrl}}/api/jobs
+Authorization: Bearer {{token}}
+
+### ---------------------------------------------------------------------------
+### 6. Error cases. Each should return 400 with a message naming the offending
+### field, and "data": null - never a partial schedule.
+
+### Expect 400: deadline before originalStartTime
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {"id": 1, "name": "bad", "cpuHours": 10.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-18T14:00:00", "deadline": "2026-10-18T09:00:00",
+     "flexibilityWindowHours": 0, "isExempt": false}
+  ]
+}
+
+### Expect 400: neither cpuHours nor gpuHours above zero
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {"id": 1, "name": "bad", "cpuHours": 0.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-18T14:00:00", "deadline": "2026-10-19T09:00:00",
+     "flexibilityWindowHours": 0, "isExempt": false}
+  ]
+}
+
+### Expect 400: horizonHours outside 1-168
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"horizonHours": 200}
+
+### Expect 400: explicitly empty job set
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"jobs": []}
+
+### Expect 403: no token
+POST {{baseUrl}}/api/schedules/optimize
+Content-Type: application/json
+
+{"jobs": []}
