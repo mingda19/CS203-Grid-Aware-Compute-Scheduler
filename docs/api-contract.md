@@ -707,63 +707,142 @@ Updates a saved schedule status. Supported statuses: `Scheduled`, `Running`, `Th
 #### `DELETE /api/workload-schedules/{id}`
 Deletes a saved schedule owned by the authenticated operator.
 
-#### `POST /api/workloads`
-Registers a flexible, deadline-tolerant compute job.
+#### `POST /api/jobs`
+Creates a structured compute job for the authenticated operator per GRID-9 / GRID-112.
 * **Request Body**:
   ```json
   {
     "name": "LLM Fine-Tuning Run #42",
-    "workloadType": "ML_TRAINING",
-    "requiredGpus": 32,
-    "requiredCpus": 128,
-    "powerDrawKw": 45.0,
-    "runtimeMinutes": 180,
-    "minimumRuntimeBlockMinutes": 60,
-    "deadline": "2026-09-25T18:00:00Z",
-    "earliestStart": "2026-09-24T12:00:00Z",
-    "preemptible": true,
-    "priority": "MEDIUM"
+    "cpuHours": 64.0,
+    "gpuHours": 16.0,
+    "originalStartTime": "2026-10-20T10:00:00Z",
+    "deadline": "2026-10-21T18:00:00Z",
+    "flexibilityWindowHours": 12,
+    "isExempt": false,
+    "rawConstraints": "Can wait up to 12 hours for low price valley, finish by tomorrow evening"
   }
   ```
-* **Success Response (201 Created)**: Returns the persisted workload entity with unique `id` and status `PENDING`.
+* **Success Response (201 Created)**: Returns the persisted Job entity with generated `id`, `ownerEmail`, `status: "PENDING"`, and audit timestamps.
 
-#### `GET /api/workloads`
-Lists registered workloads. Supports filtering by `status` (`PENDING`, `SCHEDULED`, `RUNNING`, `COMPLETED`, `CANCELLED`).
+#### `GET /api/jobs`
+Returns all compute jobs owned by the authenticated operator, ordered chronologically by `originalStartTime` ascending.
+
+#### `GET /api/jobs/{id}`
+Returns details for a specific compute job owned by the authenticated operator. Returns 404 if the job does not exist or belongs to another operator.
+
+#### `PUT /api/jobs/{id}`
+Updates an existing job. All fields (including `flexibilityWindowHours`, `deadline`, and `isExempt`) are editable.
+
+#### `DELETE /api/jobs/{id}`
+Deletes a compute job owned by the authenticated operator.
 
 ---
 
-### 6.3 Schedule Optimization & Approval Workflow
+### 6.3 Compute Job Schema & Validation Specification (GRID-112 / GRID-9)
+
+The **Job** entity represents a compute workload submitted for schedule optimization:
+
+| Field | Type | Required | Default | Description & Semantics |
+|---|---|---|---|---|
+| `id` | Long | Read-only | Generated | Unique primary identifier (PostgreSQL identity). |
+| `name` | String | Yes | - | Human-readable workload name (1–255 characters). |
+| `cpuHours` | Double | Yes | `0.0` | Total CPU core-hours required ($\ge 0.0$). |
+| `gpuHours` | Double | Yes | `0.0` | Total GPU hours required ($\ge 0.0$). |
+| `originalStartTime` | ISO-8601 UTC String | Yes | - | Baseline scheduled start time in UTC. |
+| `deadline` | ISO-8601 UTC String | Yes | - | Hard completion deadline in UTC. Must be $\ge$ `originalStartTime`. |
+| `flexibilityWindowHours` | Integer | Yes | `0` | Delay tolerance in hours ($\ge 0$). Start time may shift within $[\text{originalStartTime}, \text{originalStartTime} + \text{flexibilityWindowHours}]$. |
+| `isExempt` | Boolean | Yes | `false` | Exempt-from-rescheduling flag. If `true`, job is non-negotiable and pinned to `originalStartTime` (GRID-86 / GRID-24). |
+| `rawConstraints` | String | No | `null` | Optional natural-language constraint text (up to 1,000 characters). Auto-parsed by LLM into structured fields in Sprint 4 (GRID-39 / GRID-40). |
+| `status` | String | No | `"PENDING"` | Workflow status: `"PENDING"`, `"SCHEDULED"`, `"RUNNING"`, `"COMPLETED"`, `"CANCELLED"`. |
+| `ownerEmail` | String | Read-only | Auth user | Authenticated tenant operator email for tenancy isolation. |
+| `createdAt` | ISO-8601 UTC String | Read-only | Auto | Timestamp when record was created. |
+| `updatedAt` | ISO-8601 UTC String | Read-only | Auto | Timestamp when record was last updated. |
+
+#### Field Constraints & Validation Rules (GRID-9 AC4)
+1. **Resource Requirements**: At least one of `cpuHours > 0.0` or `gpuHours > 0.0` must be true. Both must be non-negative.
+2. **Temporal Validity**: `deadline` must be strictly greater than or equal to `originalStartTime`.
+3. **Flexibility Range**: `flexibilityWindowHours` must be an integer $\ge 0$. A value of `0` denotes an inflexible job that cannot be delayed.
+4. **Exemption Semantics**: When `isExempt` is `true`, the optimizer models the flexibility window as zero-width, keeping the job at `originalStartTime` regardless of price signals.
+
+---
+
+### 6.4 Schedule Optimization Engine Contract (GRID-124)
 
 #### `POST /api/schedules/optimize`
 Triggers an optimization run evaluating all eligible workloads against grid price forecasts and resource constraints.
-* **Success Response (200 OK)**: Returns the computed schedule plan:
+
+* **Optimizer Input Contract**:
+  ```json
+  {
+    "jobs": [
+      {
+        "id": 101,
+        "name": "LLM Fine-Tuning Run #42",
+        "cpuHours": 64.0,
+        "gpuHours": 16.0,
+        "originalStartTime": "2026-10-20T10:00:00Z",
+        "deadline": "2026-10-21T18:00:00Z",
+        "flexibilityWindowHours": 12,
+        "isExempt": false
+      }
+    ],
+    "clusterCapacity": {
+      "maxConcurrentCpuHours": 256.0,
+      "maxConcurrentGpuHours": 64.0
+    },
+    "forecastLocation": "LZ_NORTH",
+    "horizonHours": 48
+  }
+  ```
+
+* **Cost Basis & Energy Conversion (GRID-124 AC2)**:
+  - **CPU Conversion Factor**: $1 \text{ CPU-hour} = 0.05 \text{ kWh}$
+  - **GPU Conversion Factor**: $1 \text{ GPU-hour} = 0.40 \text{ kWh}$ (standard 400W enterprise GPU baseline)
+  - **Total Energy**: $\text{Energy}_{\text{job}} (\text{kWh}) = (\text{cpuHours} \times 0.05) + (\text{gpuHours} \times 0.40)$
+  - **Slot Pricing**: Forecast price $P_t$ is given in $\$ / \text{MWh}$ ($\$0.001 / \text{kWh}$).
+  - **Job Cost**: $\text{Cost}(job, t) = \text{Energy}_{\text{job}} \times \frac{P_t}{1000}$
+
+* **Capacity Input & Default Seeds (GRID-124 AC3)**:
+  - `maxConcurrentCpuHours`: Default $256.0 \text{ core-hours / slot}$
+  - `maxConcurrentGpuHours`: Default $64.0 \text{ GPU-hours / slot}$
+
+* **Optimizer Output Contract (GRID-124 AC4, AC5)**:
   ```json
   {
     "success": true,
     "message": "Optimized schedule generated",
     "data": {
-      "scheduleId": "sched-20260924-001",
-      "status": "PROPOSED",
-      "objectiveValue": 3140.25,
+      "runId": "run-a1b2c3d4-e5f6-7890-abcd-1234567890ab",
+      "status": "OPTIMAL",
       "baselineCostUsd": 4120.00,
       "optimizedCostUsd": 3140.25,
       "projectedSavingsUsd": 979.75,
       "projectedSavingsPercent": 23.78,
-      "plainEnglishExplanation": "By shifting GPU cluster training from the 14:00 peak ($112/MWh) to 01:00 off-peak ($24/MWh) wind-rich hours, projected energy costs are reduced by 23.8% while completing all jobs 4 hours prior to deadline.",
+      "plainEnglishExplanation": "By shifting GPU cluster training from the 14:00 peak ($112/MWh) to 01:00 off-peak ($24/MWh) wind-rich hours, projected energy costs are reduced by 23.8% while completing all jobs prior to deadline.",
       "items": [
         {
-          "workloadId": 101,
-          "workloadName": "LLM Fine-Tuning Run #42",
-          "baselineStart": "2026-09-24T13:00:00Z",
-          "scheduledStart": "2026-09-25T01:00:00Z",
-          "scheduledEnd": "2026-09-25T04:00:00Z",
-          "allocatedGpus": 32,
-          "allocatedPowerKw": 45.0
+          "jobId": 101,
+          "jobName": "LLM Fine-Tuning Run #42",
+          "baselineStart": "2026-10-20T10:00:00Z",
+          "scheduledStart": "2026-10-21T01:00:00Z",
+          "scheduledEnd": "2026-10-21T02:00:00Z",
+          "allocatedCpuHours": 64.0,
+          "allocatedGpuHours": 16.0,
+          "perJobStatus": "RESCHEDULED",
+          "baselineCostUsd": 4.12,
+          "optimizedCostUsd": 3.14,
+          "savingsUsd": 0.98
         }
       ]
     }
   }
   ```
+
+* **Per-Job Status Values**:
+  - `RESCHEDULED`: Shifted into a lower-cost slot within its flexibility window.
+  - `UNCHANGED_EXEMPT`: Kept at `originalStartTime` because `isExempt` is `true`.
+  - `UNCHANGED_NO_FEASIBLE_SLOT`: Kept at `originalStartTime` because no feasible slot meets deadline or capacity constraints (GRID-124 AC5: the endpoint returns this status gracefully without failing or returning an invalid schedule).
+
 
 #### `POST /api/schedules/{id}/approve`
 **Mandatory Human Gate**: Explicit approval by an authorized operator prior to schedule dispatch.
