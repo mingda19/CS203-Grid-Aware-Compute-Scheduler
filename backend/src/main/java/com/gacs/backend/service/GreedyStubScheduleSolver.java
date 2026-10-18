@@ -88,6 +88,13 @@ public class GreedyStubScheduleSolver implements ScheduleSolver {
         LocalDateTime best = null;
         double bestPrice = Double.MAX_VALUE;
 
+        // Never move a job into an hour dearer than the one it already sits in. Without this
+        // guard a pinned exempt job can displace a flexible job out of its own baseline slot
+        // and into a more expensive one, making the whole plan cost more than doing nothing.
+        // Where the baseline hour has no price there is nothing to compare against, so the
+        // ceiling is left open.
+        double baselineCeiling = input.prices().priceAt(baseline).orElse(Double.MAX_VALUE);
+
         for (int offset = 0; offset <= job.flexibilityWindowHours(); offset++) {
             LocalDateTime slot = baseline.plusHours(offset);
 
@@ -101,6 +108,9 @@ public class GreedyStubScheduleSolver implements ScheduleSolver {
             }
             Optional<Double> price = input.prices().priceAt(slot);
             if (price.isEmpty()) {
+                continue;
+            }
+            if (price.get() > baselineCeiling) {
                 continue;
             }
             if (!fits(usedPerSlot, slot, job, input.capacity())) {

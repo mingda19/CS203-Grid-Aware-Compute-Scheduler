@@ -875,10 +875,12 @@ solver (GRID-125) agree. Items marked **team decision** were agreed before imple
    this is the flow the end-to-end acceptance test uses. Supplying `jobs` optimizes exactly
    that array. An explicitly empty `jobs: []`, or an omitted `jobs` field when the operator
    has no eligible stored jobs, is a `400`.
-6. **Timestamp format.** Request and response timestamps are UTC ISO local date-times with
-   **no offset suffix** (`2026-10-20T10:00:00`), consistent with every other endpoint in
-   this service. The trailing `Z` in the examples above is illustrative only and is not
-   accepted by the deserializer.
+6. **Timestamp format.** Timestamps are UTC ISO local date-times. Responses always omit the
+   offset suffix (`2026-10-20T10:00:00`), consistent with every other endpoint in this
+   service. Requests accept **either** form: a trailing `Z` is parsed and, since these
+   values are UTC by definition, resolves to the same instant (`2026-10-20T12:00:00Z` is
+   read as `12:00`). A non-zero offset such as `+08:00` is **not** supported and must be
+   converted to UTC by the caller.
 7. **Monetary precision.** Every dollar figure is rounded to cent precision, half-up, and
    the summary totals are derived from the already-rounded per-job figures, so
    `baselineCostUsd`, `optimizedCostUsd` and `projectedSavingsUsd` always reconcile with the
@@ -890,6 +892,20 @@ solver (GRID-125) agree. Items marked **team decision** were agreed before imple
 9. **`status`.** The stub solver reports `OPTIMAL` on any completed run, the only value this
    contract documents. It is a greedy heuristic and does not prove optimality; GRID-125
    should introduce honest status values and document them here.
+10. **A run never costs more than the baseline.** No job is moved into an hour priced above
+   the hour it already occupies. This guard is load-bearing rather than cosmetic: without
+   it, a pinned exempt job can consume its slot's capacity and displace a flexible job into
+   a *dearer* hour, so that `optimizedCostUsd` exceeds `baselineCostUsd` and the optimizer
+   recommends a plan worse than doing nothing. A job whose only feasible alternatives are
+   dearer is therefore reported `UNCHANGED_NO_FEASIBLE_SLOT` at its original time. It
+   follows that `optimizedCostUsd <= baselineCostUsd` always holds; a *strict* reduction
+   additionally requires that at least one job had a cheaper feasible slot to move into.
+11. **Capacity can be exceeded by exempt work alone.** Because exempt jobs are pinned
+   before anything flexible is placed (point 4) and are never refused, a slot whose exempt
+   jobs alone exceed a ceiling is reported as-is. Flexible jobs are always checked against
+   remaining capacity, so they can never push a slot over a ceiling. Consequently the
+   invariant "no slot exceeds cluster capacity" holds for every slot containing no pinned
+   exempt work, and holds universally only for inputs whose exempt jobs fit on their own.
 
 * **Price Source & Seeded Fallback (GRID-124 AC5.2)**:
   Prices come from the latest stored model forecast for `forecastLocation` over the horizon.

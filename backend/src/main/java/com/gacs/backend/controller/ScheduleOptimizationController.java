@@ -55,8 +55,8 @@ public class ScheduleOptimizationController {
                 + "1-168 hours, non-positive capacity, or a job whose baseline cannot be priced."
         ),
         @io.swagger.v3.oas.annotations.responses.ApiResponse(
-            responseCode = "401",
-            description = "Unauthorized: invalid or missing JWT access token."
+            responseCode = "403",
+            description = "Forbidden: invalid or missing JWT access token."
         )
     })
     @PostMapping("/optimize")
