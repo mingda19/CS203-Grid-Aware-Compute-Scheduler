@@ -748,7 +748,6 @@ The **Job** entity represents a compute workload submitted for schedule optimiza
 | `name` | String | Yes | - | Human-readable workload name (1–255 characters). |
 | `cpuHours` | Double | Yes | `0.0` | Total CPU core-hours required ($\ge 0.0$). |
 | `gpuHours` | Double | Yes | `0.0` | Total GPU hours required ($\ge 0.0$). |
-| `durationHours` | Integer | No | `1` | **Proposed addition (Sprint 3 optimiser contract, §6.4); not yet in `Job.java`.** Operator-entered runtime in whole hours ($\ge 1$). The job occupies this many consecutive hourly slots; `cpuHours` / `gpuHours` are spread evenly across them. |
 | `originalStartTime` | ISO-8601 UTC String | Yes | - | Baseline scheduled start time in UTC. |
 | `deadline` | ISO-8601 UTC String | Yes | - | Hard completion deadline in UTC. Must be $\ge$ `originalStartTime`. |
 | `flexibilityWindowHours` | Integer | Yes | `0` | Delay tolerance in hours ($\ge 0$). Start time may shift within $[\text{originalStartTime}, \text{originalStartTime} + \text{flexibilityWindowHours}]$. |
@@ -774,7 +773,7 @@ The **Job** entity represents a compute workload submitted for schedule optimiza
 #### `POST /api/schedules/optimize`
 Evaluates jobs against forecast prices and cluster capacity and proposes a start time per job. Pure function of its input: nothing is persisted this sprint (persistence is Sprint 4). Same envelope as §2.5A.
 
-**Slots.** One slot = 1 hour, identified by its UTC start (`intervalStartUtc`, same as `GET /api/prices/forecast`). A job occupies `durationHours` **consecutive** slots starting at its start time, and its `cpuHours` / `gpuHours` are spread evenly across them. `durationHours` is entered by the operator (default `1`); the system does not estimate it.
+**Slots.** One slot = 1 hour, identified by its UTC start (`intervalStartUtc`, same as `GET /api/prices/forecast`). A job is a single block: it occupies the one slot that starts at its start time and consumes all of its `cpuHours` / `gpuHours` in that slot.
 
 **Request**
 ```json
@@ -785,7 +784,6 @@ Evaluates jobs against forecast prices and cluster capacity and proposes a start
       "name": "LLM Fine-Tuning Run #42",
       "cpuHours": 64.0,
       "gpuHours": 16.0,
-      "durationHours": 3,
       "originalStartTime": "2026-10-20T10:00:00Z",
       "deadline": "2026-10-21T18:00:00Z",
       "flexibilityWindowHours": 12,
@@ -811,10 +809,9 @@ Evaluates jobs against forecast prices and cluster capacity and proposes a start
 |---|---|---|---|
 | `jobs[].id` | integer | Yes | Job `id`; unique within request |
 | `jobs[].name` | string | No | Echoed in the response for readability |
-| `jobs[].cpuHours` / `gpuHours` | number ≥ 0 | Yes | Total for the job, spread evenly over `durationHours` |
-| `jobs[].durationHours` | integer ≥ 1 | No (`1`) | Consecutive hourly slots the job occupies |
+| `jobs[].cpuHours` / `gpuHours` | number ≥ 0 | Yes | Total for the job, consumed in its single slot |
 | `jobs[].originalStartTime` | ISO 8601 UTC, on the hour | Yes | Baseline start |
-| `jobs[].deadline` | ISO 8601 UTC | Yes | Job must **end** (start + `durationHours`) at or before this |
+| `jobs[].deadline` | ISO 8601 UTC | Yes | Job must **end** (start + 1 h) at or before this |
 | `jobs[].flexibilityWindowHours` | integer ≥ 0 | Yes | Start may be in `[originalStartTime, originalStartTime + flexibilityWindowHours]`. Jobs never start earlier than `originalStartTime`. |
 | `jobs[].isExempt` | boolean | Yes | `true` = never moved |
 | `forecast[]` | array | One of `forecast` / `forecastLocation` | Explicit price per slot (`predictedPrice` in $/MWh). Makes the run fully reproducible. |
@@ -833,14 +830,13 @@ If both `forecast` and `forecastLocation` are sent, `forecast` wins. If neither 
 
 ```
 jobKwh(job)        = cpuHours * cpuKwhPerHour + gpuHours * gpuKwhPerHour
-slotKwh(job)       = jobKwh / durationHours
-jobCostUsd         = Σ over the durationHours slots s the job occupies of  slotKwh / 1000 * predictedPrice(s)   // price is $/MWh
+jobCostUsd         = jobKwh / 1000 * predictedPrice(slot of start)      // price is $/MWh
 optimizedCostUsd   = Σ jobCostUsd over all jobs at their proposed start   // the run's total cost
 baselineCostUsd    = Σ jobCostUsd over all jobs at originalStartTime
 ```
-Costs are rounded to 4 decimal places. A start is infeasible if any slot it would occupy has no forecast price.
+Costs are rounded to 4 decimal places. A start whose slot has no forecast price is infeasible.
 
-**Capacity (AC3).** Per slot, the sum of `cpuHours / durationHours` (and of `gpuHours / durationHours`) of jobs occupying that slot must be ≤ the slot's CPU (GPU) limit. The limit for a slot is, in order: its `capacityOverrides[]` entry, else `clusterCapacity`, else the configurable seeded defaults `gacs.optimiser.default-max-cpu-hours-per-slot=256.0` and `default-max-gpu-hours-per-slot=64.0`. Exempt and no-feasible-slot jobs are fixed at their original time and consume capacity there; the optimiser places the remaining jobs around them.
+**Capacity (AC3).** Per slot, the sum of `cpuHours` (and of `gpuHours`) of jobs in that slot must be ≤ the slot's CPU (GPU) limit. The limit for a slot is, in order: its `capacityOverrides[]` entry, else `clusterCapacity`, else the configurable seeded defaults `gacs.optimiser.default-max-cpu-hours-per-slot=256.0` and `default-max-gpu-hours-per-slot=64.0`. Exempt and no-feasible-slot jobs are fixed at their original time and consume capacity there; the optimiser places the remaining jobs around them.
 
 **Response (200 OK)**
 ```json
@@ -861,7 +857,7 @@ Costs are rounded to 4 decimal places. A start is infeasible if any slot it woul
         "jobName": "LLM Fine-Tuning Run #42",
         "baselineStart": "2026-10-20T10:00:00Z",
         "scheduledStart": "2026-10-21T01:00:00Z",
-        "scheduledEnd": "2026-10-21T04:00:00Z",
+        "scheduledEnd": "2026-10-21T02:00:00Z",
         "allocatedCpuHours": 64.0,
         "allocatedGpuHours": 16.0,
         "perJobStatus": "RESCHEDULED",
@@ -875,23 +871,23 @@ Costs are rounded to 4 decimal places. A start is infeasible if any slot it woul
 ```
 * `runId`: UUID v4 generated per request, not stored yet. Later features (approval, audit log, overrides, savings tracking) reference a decision by this ID.
 * `status` (run level): `OPTIMAL` when every job was either placed at its cheapest feasible slot or is exempt; `PARTIAL` when at least one job is `UNCHANGED_NO_FEASIBLE_SLOT`.
-* `optimizedCostUsd` (run level) is the total cost of the proposed schedule. `scheduledStart` is the proposed start time per job; `scheduledEnd` = `scheduledStart` + `durationHours`.
+* `optimizedCostUsd` (run level) is the total cost of the proposed schedule. `scheduledStart` is the proposed start time per job; `scheduledEnd` = `scheduledStart` + 1 h.
 * `plainEnglishExplanation`: optional, may be `null` this sprint.
 * `items[]` lists every input job exactly once.
 * `perJobStatus`:
   - `RESCHEDULED`: start moved to a cheaper slot within its flexibility window.
   - `UNCHANGED_EXEMPT`: kept at `originalStartTime` because `isExempt` is `true`.
   - `UNCHANGED_NO_FEASIBLE_SLOT`: kept at `originalStartTime` because no start satisfies window, deadline, forecast coverage and capacity.
-  - `UNCHANGED_OPTIMAL`: not exempt and feasible, but the original start is already the cheapest feasible slot. (Added beyond the three statuses in the ticket so that an already-optimal job is not mislabelled.)
+  - `UNCHANGED_OPTIMAL`: not exempt and feasible, but the original start is already the cheapest feasible slot. *(Open for team: the ticket lists only the first three; confirm this fourth, or the already-optimal case has no home.)*
 
 **No feasible schedule (AC5).** A job with no feasible start (including one that cannot finish by `deadline` even at its original start) keeps `scheduledStart = baselineStart`, gets `perJobStatus = UNCHANGED_NO_FEASIBLE_SLOT`, and is listed in `items`. The response is still `200`, the run `status` is `PARTIAL`, and there is no error and no schedule that moves other jobs to hide it.
 
-**Errors.** `400` only for malformed JSON, missing fields, neither `forecast` nor `forecastLocation`, duplicate job `id`, negative values, `durationHours` < 1, or a start time not on the hour. Lack of capacity or forecast coverage is **not** an error.
+**Errors.** `400` only for malformed JSON, missing fields, neither `forecast` nor `forecastLocation`, duplicate job `id`, negative values, or a start time not on the hour. Lack of capacity or forecast coverage is **not** an error.
 
 **Contract change notes**
 | Date | Change | By |
 |---|---|---|
-| - | Initial draft (merges the GRID-112 and Sprint 3 drafts); jobs have an operator-entered `durationHours` (default 1), which needs adding to the Job entity (§6.3) | - |
+| - | Initial draft (merges the GRID-112 and Sprint 3 drafts) | - |
 
 #### `POST /api/schedules/{id}/approve`
 **Mandatory Human Gate**: Explicit approval by an authorized operator prior to schedule dispatch.
