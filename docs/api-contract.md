@@ -878,7 +878,7 @@ Costs are rounded to 4 decimal places. A start whose slot has no forecast price 
   - `RESCHEDULED`: start moved to a cheaper slot within its flexibility window.
   - `UNCHANGED_EXEMPT`: kept at `originalStartTime` because `isExempt` is `true`.
   - `UNCHANGED_NO_FEASIBLE_SLOT`: kept at `originalStartTime` because no start satisfies window, deadline, forecast coverage and capacity.
-  - `UNCHANGED_OPTIMAL`: not exempt and feasible, but the original start is already the cheapest feasible slot. *(Open for team: the ticket lists only the first three; confirm this fourth, or the already-optimal case has no home.)*
+  - `UNCHANGED_OPTIMAL`: not exempt and feasible, but the original start is already the cheapest feasible slot. (Added beyond the three statuses in the ticket so that an already-optimal job is not mislabelled.)
 
 **No feasible schedule (AC5).** A job with no feasible start (including one that cannot finish by `deadline` even at its original start) keeps `scheduledStart = baselineStart`, gets `perJobStatus = UNCHANGED_NO_FEASIBLE_SLOT`, and is listed in `items`. The response is still `200`, the run `status` is `PARTIAL`, and there is no error and no schedule that moves other jobs to hide it.
 
