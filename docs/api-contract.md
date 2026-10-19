@@ -735,35 +735,7 @@ Lists registered workloads. Supports filtering by `status` (`PENDING`, `SCHEDULE
 ### 6.3 Schedule Optimization & Approval Workflow
 
 #### `POST /api/schedules/optimize`
-Triggers an optimization run evaluating all eligible workloads against grid price forecasts and resource constraints.
-* **Success Response (200 OK)**: Returns the computed schedule plan:
-  ```json
-  {
-    "success": true,
-    "message": "Optimized schedule generated",
-    "data": {
-      "scheduleId": "sched-20260924-001",
-      "status": "PROPOSED",
-      "objectiveValue": 3140.25,
-      "baselineCostUsd": 4120.00,
-      "optimizedCostUsd": 3140.25,
-      "projectedSavingsUsd": 979.75,
-      "projectedSavingsPercent": 23.78,
-      "plainEnglishExplanation": "By shifting GPU cluster training from the 14:00 peak ($112/MWh) to 01:00 off-peak ($24/MWh) wind-rich hours, projected energy costs are reduced by 23.8% while completing all jobs 4 hours prior to deadline.",
-      "items": [
-        {
-          "workloadId": 101,
-          "workloadName": "LLM Fine-Tuning Run #42",
-          "baselineStart": "2026-09-24T13:00:00Z",
-          "scheduledStart": "2026-09-25T01:00:00Z",
-          "scheduledEnd": "2026-09-25T04:00:00Z",
-          "allocatedGpus": 32,
-          "allocatedPowerKw": 45.0
-        }
-      ]
-    }
-  }
-  ```
+Triggers an optimization run evaluating jobs against grid price forecasts and cluster capacity. Request and response are defined in §6.4.
 
 #### `POST /api/schedules/{id}/approve`
 **Mandatory Human Gate**: Explicit approval by an authorized operator prior to schedule dispatch.
@@ -777,6 +749,106 @@ Triggers an optimization run evaluating all eligible workloads against grid pric
 
 #### `POST /api/schedules/{id}/reject`
 Rejects the proposed plan. Status transitions to `REJECTED`, leaving the facility on the fixed-schedule baseline.
+
+---
+
+### 6.4 Optimiser Input/Output Contract (Sprint 3)
+
+**Status:** DRAFT: to be agreed by the team by end of day 1 of the sprint, then frozen. After that, changes are only recorded in the *Contract change notes* below. Job fields use the exact names of the Job schema (GRID-112, `backend/.../model/Job.java`).
+
+#### `POST /api/schedules/optimize`
+Pure function of its input: no persistence this sprint (persistence is Sprint 4). Same envelope as §2.5A.
+
+**Slots.** One slot = 1 hour, identified by its UTC start (`intervalStartUtc`, same as `GET /api/prices/forecast`). A job is a single block: it occupies the one slot that starts at its start time and consumes all of its `cpuHours` / `gpuHours` in that slot.
+
+**Request**
+```json
+{
+  "jobs": [
+    {
+      "id": 101,
+      "name": "LLM Fine-Tuning Run #42",
+      "cpuHours": 64.0,
+      "gpuHours": 16.0,
+      "originalStartTime": "2026-10-20T10:00:00Z",
+      "deadline": "2026-10-21T18:00:00Z",
+      "flexibilityWindowHours": 12,
+      "isExempt": false
+    }
+  ],
+  "forecast": [
+    { "intervalStartUtc": "2026-10-20T10:00:00Z", "predictedPrice": 112.0 }
+  ],
+  "capacity": [
+    { "intervalStartUtc": "2026-10-20T10:00:00Z", "maxCpuHours": 256.0, "maxGpuHours": 64.0 }
+  ]
+}
+```
+
+| Field | Type | Required | Rule |
+|---|---|---|---|
+| `jobs[].id` | integer | Yes | Job `id`; unique within request |
+| `jobs[].name` | string | No | Echoed for readability only |
+| `jobs[].cpuHours` / `gpuHours` | number ≥ 0 | Yes | Total for the job, consumed in its single slot |
+| `jobs[].originalStartTime` | ISO 8601 UTC, on the hour | Yes | Baseline start |
+| `jobs[].deadline` | ISO 8601 UTC | Yes | Job must **end** (start + 1 h) at or before this |
+| `jobs[].flexibilityWindowHours` | integer ≥ 0 | Yes | Start may be in `[originalStartTime, originalStartTime + flexibilityWindowHours]`. Jobs never start earlier than `originalStartTime`. |
+| `jobs[].isExempt` | boolean | Yes | `true` = never moved |
+| `forecast[].predictedPrice` | number, $/MWh | Yes | Price for that slot |
+| `capacity[]` | array | No | Per-slot override of the default capacity below |
+
+Other Job fields (`rawConstraints`, `status`, `ownerEmail`, timestamps) are not optimiser inputs and are ignored if sent.
+
+**Cost basis (AC2).** Constants, configurable (`gacs.optimiser.*`), defaults seeded:
+
+| Property | Default | Meaning |
+|---|---|---|
+| `cpu-kwh-per-hour` | `0.05` | kWh per CPU-hour |
+| `gpu-kwh-per-hour` | `0.40` | kWh per GPU-hour (400 W GPU baseline) |
+
+```
+jobKwh(job)     = cpuHours * cpuKwhPerHour + gpuHours * gpuKwhPerHour
+jobCostUsd      = jobKwh / 1000 * predictedPrice(slot of start)      // price is $/MWh
+totalCostUsd    = Σ jobCostUsd over all jobs at their proposed start
+baselineCostUsd = Σ jobCostUsd over all jobs at originalStartTime
+```
+Costs are rounded to 4 decimal places. A start whose slot has no forecast price is infeasible.
+
+**Capacity (AC3).** Per slot, the sum of `cpuHours` (and of `gpuHours`) of jobs in that slot must be ≤ `maxCpuHours` (`maxGpuHours`). Slots without a `capacity[]` entry use configurable defaults `gacs.optimiser.default-max-cpu-hours-per-slot=256.0` and `default-max-gpu-hours-per-slot=64.0`. Exempt and no-feasible-slot jobs are fixed at their original time and consume capacity there; the optimiser places the remaining jobs around them.
+
+**Response (200 OK)**
+```json
+{
+  "success": true,
+  "message": "Optimiser run complete",
+  "data": {
+    "runId": "7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44",
+    "totalCostUsd": 0.2304,
+    "baselineCostUsd": 1.0752,
+    "jobs": [
+      {
+        "jobId": 101,
+        "originalStartTime": "2026-10-20T10:00:00Z",
+        "proposedStart": "2026-10-21T01:00:00Z",
+        "costUsd": 0.2304,
+        "status": "RESCHEDULED"
+      }
+    ]
+  }
+}
+```
+* `runId`: UUID v4 generated per request, not stored yet. Later features (approval, audit log, overrides, savings tracking) reference a decision by this ID.
+* `status` per job: `RESCHEDULED` (start moved), `UNCHANGED_EXEMPT` (`isExempt=true`), `UNCHANGED_NO_FEASIBLE_SLOT`, plus `UNCHANGED_OPTIMAL` (original start is already the cheapest feasible slot). *(Open for team: the ticket lists only the first three; confirm the fourth, or the already-optimal case has no home.)*
+* Every input job appears exactly once in `jobs`.
+
+**No feasible schedule (AC5).** A job with no start satisfying its window, deadline, forecast coverage and capacity (including a job that cannot finish by `deadline` even at its original start) keeps `proposedStart = originalStartTime`, `status = UNCHANGED_NO_FEASIBLE_SLOT`, and is listed in `jobs`. The response is still `200`: no error, and no schedule that moves other jobs to hide it.
+
+**Errors.** `400` only for malformed JSON, missing fields, duplicate job `id`, negative values, or a start time not on the hour. Lack of capacity or forecast is **not** an error.
+
+**Contract change notes**
+| Date | Change | By |
+|---|---|---|
+| - | Initial draft | - |
 
 ---
 
