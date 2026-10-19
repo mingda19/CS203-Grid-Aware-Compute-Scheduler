@@ -1,7 +1,5 @@
 package com.gacs.backend.service;
 
-import org.springframework.stereotype.Service;
-
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -30,7 +28,6 @@ import java.util.Optional;
  *       which is both the better heuristic and a stable ordering.</li>
  * </ol>
  */
-@Service
 public class GreedyStubScheduleSolver implements ScheduleSolver {
 
     @Override
@@ -73,13 +70,13 @@ public class GreedyStubScheduleSolver implements ScheduleSolver {
         for (JobSpec job : input.jobs()) {
             assignments.stream().filter(a -> a.job() == job).findFirst().ifPresent(ordered::add);
         }
-        return new SolverResult(List.copyOf(ordered));
+        return new SolverResult(List.copyOf(ordered), false);
     }
 
     /**
-     * Cheapest slot in {@code [baseline, baseline + flexibilityWindowHours]} that is priced,
-     * inside the horizon, finishes by the deadline, and still has room. Ties break to the
-     * earliest slot so the result does not depend on map iteration order.
+     * Cheapest slot among {@link CandidateSlots#forJob} that still has room. Ties break to
+     * the earliest slot, since {@code CandidateSlots.forJob} returns slots in ascending time
+     * order and this only replaces {@code best} on a strict improvement.
      */
     private static Optional<LocalDateTime> cheapestFeasibleSlot(
         JobSpec job, SolverInput input, Map<LocalDateTime, double[]> usedPerSlot
@@ -95,29 +92,16 @@ public class GreedyStubScheduleSolver implements ScheduleSolver {
         // ceiling is left open.
         double baselineCeiling = input.prices().priceAt(baseline).orElse(Double.MAX_VALUE);
 
-        for (int offset = 0; offset <= job.flexibilityWindowHours(); offset++) {
-            LocalDateTime slot = baseline.plusHours(offset);
-
-            if (slot.isBefore(input.horizonStart()) || !slot.isBefore(input.horizonEnd())) {
-                continue;
-            }
-            // A one-hour job starting at `slot` ends at slot+1h; finishing exactly on the
-            // deadline is allowed, finishing after it is not.
-            if (slot.plusHours(1).isAfter(job.deadline())) {
-                continue;
-            }
-            Optional<Double> price = input.prices().priceAt(slot);
-            if (price.isEmpty()) {
-                continue;
-            }
-            if (price.get() > baselineCeiling) {
+        for (LocalDateTime slot : CandidateSlots.forJob(job, input)) {
+            double price = input.prices().priceAt(slot).orElseThrow();
+            if (price > baselineCeiling) {
                 continue;
             }
             if (!fits(usedPerSlot, slot, job, input.capacity())) {
                 continue;
             }
-            if (price.get() < bestPrice) {
-                bestPrice = price.get();
+            if (price < bestPrice) {
+                bestPrice = price;
                 best = slot;
             }
         }
