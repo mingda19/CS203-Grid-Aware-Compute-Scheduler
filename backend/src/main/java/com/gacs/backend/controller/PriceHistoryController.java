@@ -6,6 +6,7 @@ import com.gacs.backend.dto.PriceForecastResponse;
 import com.gacs.backend.model.ElectricalPrice;
 import com.gacs.backend.repository.ElectricalPriceRepository;
 import com.gacs.backend.repository.PredictedPriceRepository;
+import com.gacs.backend.service.ForecastConfidenceScore;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -46,7 +47,7 @@ public class PriceHistoryController {
         var points = predictions.findLatestForecast(location, start, start.plusHours(hours)).stream()
             .map(record -> new PriceForecastResponse.ForecastPoint(record.getIntervalStartUtc(),
                 record.getPredictedPrice(), record.getModelVersion(), record.getGeneratedAt(),
-                record.getConfidenceScore()))
+                ForecastConfidenceScore.fromUncertaintyRatio(record.getConfidenceScore())))
             .toList();
         return ResponseEntity.ok(ApiResponse.ok("Price forecast retrieved",
             new PriceForecastResponse(points, hours)));
