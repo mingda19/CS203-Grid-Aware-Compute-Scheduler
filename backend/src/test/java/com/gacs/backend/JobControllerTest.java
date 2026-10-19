@@ -95,6 +95,45 @@ class JobControllerTest {
 
     @Test
     @WithMockUser(username = "operator@datacenter.io")
+    @DisplayName("POST /api/jobs when isExempt is omitted defaults to false")
+    void createJob_WhenExemptOmitted_DefaultsToFalse() throws Exception {
+        String payload = """
+                {
+                    "name": "Standard Job",
+                    "cpuHours": 16.0,
+                    "gpuHours": 0.0,
+                    "originalStartTime": "2026-10-20T10:00:00",
+                    "deadline": "2026-10-21T18:00:00",
+                    "flexibilityWindowHours": 4
+                }
+                """;
+
+        JobResponseDto response = JobResponseDto.builder()
+                .id(102L)
+                .ownerEmail("operator@datacenter.io")
+                .name("Standard Job")
+                .cpuHours(16.0)
+                .gpuHours(0.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .flexibilityWindowHours(4)
+                .isExempt(false)
+                .status("PENDING")
+                .build();
+
+        when(jobService.createJob(any(JobRequestDto.class), eq("operator@datacenter.io"))).thenReturn(response);
+
+        mockMvc.perform(post("/api/jobs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.id").value(102))
+                .andExpect(jsonPath("$.data.isExempt").value(false));
+    }
+
+    @Test
+    @WithMockUser(username = "operator@datacenter.io")
     @DisplayName("POST /api/jobs returns 400 when validation fails")
     void createJob_ValidationError() throws Exception {
         when(jobService.createJob(any(JobRequestDto.class), eq("operator@datacenter.io")))
@@ -243,6 +282,46 @@ class JobControllerTest {
                 .andExpect(jsonPath("$.data.isExempt").value(true))
                 .andExpect(jsonPath("$.data.flexibilityWindowHours").value(8))
                 .andExpect(jsonPath("$.data.status").value("SCHEDULED"));
+    }
+
+    @Test
+    @WithMockUser(username = "operator@datacenter.io")
+    @DisplayName("PUT /api/jobs/{id} returns 200 and toggles isExempt from true to false")
+    void updateJob_ToggleExemptToFalse() throws Exception {
+        JobRequestDto updateRequest = JobRequestDto.builder()
+                .name("Unmark Exemption")
+                .cpuHours(16.0)
+                .gpuHours(4.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .flexibilityWindowHours(12)
+                .isExempt(false)
+                .status("PENDING")
+                .build();
+
+        JobResponseDto updatedResponse = JobResponseDto.builder()
+                .id(101L)
+                .ownerEmail("operator@datacenter.io")
+                .name("Unmark Exemption")
+                .cpuHours(16.0)
+                .gpuHours(4.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .flexibilityWindowHours(12)
+                .isExempt(false)
+                .status("PENDING")
+                .build();
+
+        when(jobService.updateJob(eq(101L), any(JobRequestDto.class), eq("operator@datacenter.io")))
+                .thenReturn(updatedResponse);
+
+        mockMvc.perform(put("/api/jobs/101")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(updateRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.isExempt").value(false))
+                .andExpect(jsonPath("$.data.flexibilityWindowHours").value(12));
     }
 
     @Test
