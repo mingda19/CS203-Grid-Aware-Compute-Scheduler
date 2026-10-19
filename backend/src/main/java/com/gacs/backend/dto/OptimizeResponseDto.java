@@ -42,12 +42,22 @@ public record OptimizeResponseDto(
         + "fallback price curve was used for both baseline and optimized costs")
     boolean usedSeededFallbackPrices,
 
+    @Schema(description = "True when the exact solver could not certify a global optimum in "
+        + "its time budget and a heuristic (simulated-annealing) fallback plan is reported "
+        + "instead - a feasible, deadline-safe and capacity-safe schedule, but not a proven "
+        + "minimum. False whenever `status` is OPTIMAL.")
+    boolean usedHeuristicFallback,
+
     @Schema(description = "Per-job placement decisions")
     List<ScheduleItem> items
 ) {
 
-    /** The stub solver reports a completed run as OPTIMAL, the only value the contract documents. */
+    /** A proven global minimum: the exact solver certified optimality within its time budget. */
     public static final String STATUS_OPTIMAL = "OPTIMAL";
+
+    /** A feasible, deadline-safe and capacity-safe schedule that is not proven optimal -
+     *  reported by the greedy stub, or by the simulated-annealing fallback (GRID-125). */
+    public static final String STATUS_FEASIBLE = "FEASIBLE";
 
     @Schema(description = "Placement decision for one job")
     public record ScheduleItem(
@@ -65,6 +75,8 @@ public record OptimizeResponseDto(
         String perJobStatus,
         @Schema(description = "Cost of this job at its baseline slot", example = "4.12") double baselineCostUsd,
         @Schema(description = "Cost of this job at its scheduled slot", example = "3.14") double optimizedCostUsd,
-        @Schema(description = "Baseline cost minus optimized cost for this job", example = "0.98") double savingsUsd
+        @Schema(description = "Baseline cost minus optimized cost for this job - can be "
+            + "negative under the real solver (GRID-125) when raising this job's own cost "
+            + "lowers the run's total cost by more", example = "0.98") double savingsUsd
     ) {}
 }
