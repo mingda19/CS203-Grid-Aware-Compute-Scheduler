@@ -819,6 +819,8 @@ Triggers an optimization run evaluating all eligible workloads against grid pric
       "projectedSavingsUsd": 979.75,
       "projectedSavingsPercent": 23.78,
       "plainEnglishExplanation": "By shifting GPU cluster training from the 14:00 peak ($112/MWh) to 01:00 off-peak ($24/MWh) wind-rich hours, projected energy costs are reduced by 23.8% while completing all jobs prior to deadline.",
+      "usedSeededFallbackPrices": false,
+      "usedHeuristicFallback": false,
       "items": [
         {
           "jobId": 101,
@@ -843,6 +845,10 @@ Triggers an optimization run evaluating all eligible workloads against grid pric
   - `UNCHANGED_ALREADY_OPTIMAL`: Kept at `originalStartTime` because that slot was already the cheapest feasible one available to the job. Distinguished from `RESCHEDULED` so a plan that moves nothing is not reported as though it had moved every job; a job with `flexibilityWindowHours: 0` always lands here or in `UNCHANGED_NO_FEASIBLE_SLOT`.
   - `UNCHANGED_EXEMPT`: Kept at `originalStartTime` because `isExempt` is `true`.
   - `UNCHANGED_NO_FEASIBLE_SLOT`: Kept at `originalStartTime` because no feasible slot meets deadline or capacity constraints (GRID-124 AC5: the endpoint returns this status gracefully without failing or returning an invalid schedule).
+
+  Under the real solver (GRID-125, point 10 below), a single item's `savingsUsd` can be
+  negative - the aggregate guarantee is that the run's *total* `optimizedCostUsd` never
+  exceeds `baselineCostUsd`, not that every individual job's cost is non-increasing.
 
 ---
 
@@ -889,23 +895,46 @@ solver (GRID-125) agree. Items marked **team decision** were agreed before imple
 8. **Clock.** The optimization horizon starts at the current UTC hour, truncated. The
    service takes an injected `java.time.Clock`, so tests pin time rather than depending on
    the wall clock.
-9. **`status`.** The stub solver reports `OPTIMAL` on any completed run, the only value this
-   contract documents. It is a greedy heuristic and does not prove optimality; GRID-125
-   should introduce honest status values and document them here.
-10. **A run never costs more than the baseline.** No job is moved into an hour priced above
-   the hour it already occupies. This guard is load-bearing rather than cosmetic: without
-   it, a pinned exempt job can consume its slot's capacity and displace a flexible job into
-   a *dearer* hour, so that `optimizedCostUsd` exceeds `baselineCostUsd` and the optimizer
-   recommends a plan worse than doing nothing. A job whose only feasible alternatives are
-   dearer is therefore reported `UNCHANGED_NO_FEASIBLE_SLOT` at its original time. It
-   follows that `optimizedCostUsd <= baselineCostUsd` always holds; a *strict* reduction
-   additionally requires that at least one job had a cheaper feasible slot to move into.
+9. **`status` and `usedHeuristicFallback` (GRID-125).** The real solver is a hybrid of an
+   exact MILP solver (ojAlgo) and a deterministic simulated-annealing fallback. `status` is
+   `OPTIMAL` when the exact solver certified a proven global minimum within its time budget,
+   and `FEASIBLE` when it did not - either because the simulated-annealing fallback produced
+   the plan instead, or (rarely) because the exact solver was attempted but only returned a
+   time-boxed, unproven incumbent. `FEASIBLE` still means every AC2/AC3/AC6 constraint holds
+   (flexibility windows, deadlines, capacity); it only means optimality is not proven. The
+   companion boolean `usedHeuristicFallback` is `true` exactly when `status` is `FEASIBLE`
+   and `false` whenever it is `OPTIMAL` - a convenience flag so a caller doesn't have to
+   string-compare `status` to know which path produced the plan.
+
+   | Field | Type | Description |
+   |---|---|---|
+   | `usedHeuristicFallback` | Boolean | `true` when the simulated-annealing fallback (or an unproven time-boxed incumbent) produced this plan instead of a certified-optimal one. |
+
+10. **The real solver's minimum is a true *aggregate* minimum, not a per-job ceiling (GRID-125).**
+   The stub's own mechanism - never moving a job into an hour priced above the hour it already
+   occupies - was a heuristic's self-protection, not a property of the underlying optimization
+   problem, and the real solver does not carry it forward. It is mathematically possible for
+   the true minimum-cost schedule to raise one job's own cost above its baseline if doing so
+   frees capacity that lets a different job drop into a much cheaper slot, with the net total
+   strictly improving; `savingsUsd` on an individual item can therefore legitimately be
+   negative under the real solver, even though it never was under the stub. What still holds,
+   provably, is the *aggregate* invariant: `optimizedCostUsd <= baselineCostUsd` always holds,
+   because "every flexible job stays at its own baseline cost" is always one feasible point in
+   the solver's search space (a job that cannot find a jointly-feasible real slot is reported
+   `UNCHANGED_NO_FEASIBLE_SLOT` at exactly its baseline cost, never worse), and the solver finds
+   the true minimum over that space. A *strict* reduction in the aggregate still requires that
+   at least one job had a cheaper feasible slot to move into.
 11. **Capacity can be exceeded by exempt work alone.** Because exempt jobs are pinned
    before anything flexible is placed (point 4) and are never refused, a slot whose exempt
    jobs alone exceed a ceiling is reported as-is. Flexible jobs are always checked against
    remaining capacity, so they can never push a slot over a ceiling. Consequently the
    invariant "no slot exceeds cluster capacity" holds for every slot containing no pinned
    exempt work, and holds universally only for inputs whose exempt jobs fit on their own.
+   In the real solver (GRID-125) this is enforced by clamping each slot's capacity
+   expression to `max(0, ceiling - exemptReservedAtSlot)` rather than the stub's running
+   `used[] <= ceiling` check - the clamp matters because a *negative* bound (exempt demand
+   already over the ceiling) would otherwise make even the all-zero placement infeasible,
+   breaking the whole optimization run instead of just that one slot.
 
 * **Price Source & Seeded Fallback (GRID-124 AC5.2)**:
   Prices come from the latest stored model forecast for `forecastLocation` over the horizon.
@@ -918,6 +947,7 @@ solver (GRID-125) agree. Items marked **team decision** were agreed before imple
   | Field | Type | Description |
   |---|---|---|
   | `usedSeededFallbackPrices` | Boolean | `true` when the seeded fallback curve was used for this run instead of stored forecasts. |
+  | `usedHeuristicFallback` | Boolean | `true` when the simulated-annealing fallback (or an unproven time-boxed incumbent) produced this plan instead of a certified-optimal one (point 9 above). Independent of `usedSeededFallbackPrices` - either, both, or neither can be true on the same run. |
 
 * **Error Responses (GRID-124 AC5.4)**:
   Invalid input returns `400` in the standard envelope — `{"success": false, "message": "<field-specific reason>", "data": null}` — and **never** a partial or placeholder schedule.
