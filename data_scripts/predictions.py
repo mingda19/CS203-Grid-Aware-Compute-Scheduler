@@ -339,16 +339,26 @@ def decayed_abs_residuals_by_hour(df: pd.DataFrame, min_samples: int = MIN_CONFI
     return out
 
 
-def confidence_fractions(kind: str, horizon: str, decayed_by_hour: dict[int, float]) -> dict[int, float]:
-    """{hour: decayed_abs_residual / REFERENCE_RMSE[(kind, horizon)][hour]}
-    for all 24 hours. NaN (never 0, never 1) wherever decayed_by_hour has no
-    entry for that hour (no live history yet for this slot)."""
+def confidence_scores(kind: str, horizon: str, decayed_by_hour: dict[int, float]) -> dict[int, float]:
+    """{hour: confidence percentage} for all 24 hours, from the raw ratio
+    `decayed_abs_residual / REFERENCE_RMSE[(kind, horizon)][hour]` mapped
+    through `100 / (1 + ratio)`: bounded (0, 100], parameter-free, and with a
+    deliberately legible midpoint - exactly 50 means recent errors are
+    sitting right at the reference RMSE (the "expected" error level);
+    above 50 is better than the reference, below is worse. The mapping is
+    invertible (ratio = 100/score - 1), so nothing about the original
+    measurement is lost by presenting it this way. NaN (never 0, never 100)
+    wherever decayed_by_hour has no entry for that hour (no live history yet
+    for this slot)."""
     ref = REFERENCE_RMSE.get((kind, horizon))
     out: dict[int, float] = {}
     for hour in range(24):
         residual = decayed_by_hour.get(hour)
         ref_value = ref[hour] if ref is not None else None
-        out[hour] = (residual / ref_value) if (residual is not None and ref_value) else np.nan
+        if residual is not None and ref_value:
+            out[hour] = 100.0 / (1.0 + residual / ref_value)
+        else:
+            out[hour] = np.nan
     return out
 
 
@@ -635,8 +645,8 @@ def run_predictions(engine: sa.Engine, model_paths: dict[str, Path],
         since = gen_at_naive - timedelta(days=CONFIDENCE_LOOKBACK_DAYS)
         residuals = load_recent_residuals(engine, location, model_path.stem, since)
         decayed_by_hour = decayed_abs_residuals_by_hour(residuals)
-        fractions = confidence_fractions(kind, horizon, decayed_by_hour)
-        predictions["confidence_score"] = predictions["interval_start_utc"].dt.hour.map(fractions)
+        scores = confidence_scores(kind, horizon, decayed_by_hour)
+        predictions["confidence_score"] = predictions["interval_start_utc"].dt.hour.map(scores)
 
         added = write_predictions(engine, predictions)
         logger.info("[%s] Wrote %d predictions for %s (model_version=%s)",
