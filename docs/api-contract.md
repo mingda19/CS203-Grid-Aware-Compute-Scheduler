@@ -840,8 +840,106 @@ Triggers an optimization run evaluating all eligible workloads against grid pric
 
 * **Per-Job Status Values**:
   - `RESCHEDULED`: Shifted into a lower-cost slot within its flexibility window.
+  - `UNCHANGED_ALREADY_OPTIMAL`: Kept at `originalStartTime` because that slot was already the cheapest feasible one available to the job. Distinguished from `RESCHEDULED` so a plan that moves nothing is not reported as though it had moved every job; a job with `flexibilityWindowHours: 0` always lands here or in `UNCHANGED_NO_FEASIBLE_SLOT`.
   - `UNCHANGED_EXEMPT`: Kept at `originalStartTime` because `isExempt` is `true`.
   - `UNCHANGED_NO_FEASIBLE_SLOT`: Kept at `originalStartTime` because no feasible slot meets deadline or capacity constraints (GRID-124 AC5: the endpoint returns this status gracefully without failing or returning an invalid schedule).
+
+---
+
+#### Optimizer Semantics & Resolved Ambiguities (GRID-124)
+
+The contract above fixes the wire shape. The following points were undefined by it and are
+settled here so the solver, the test suites (GRID-123, GRID-124) and the eventual real
+solver (GRID-125) agree. Items marked **team decision** were agreed before implementation.
+
+1. **Slot granularity — team decision.** A job occupies exactly **one one-hour slot**.
+   The `Job` schema carries no duration field, and the worked example above runs a
+   64-CPU-hour job from `01:00` to `02:00`. `scheduledEnd` is therefore always
+   `scheduledStart + 1h`.
+2. **Capacity dimension.** Because a job fills a single one-hour slot, its `cpuHours` and
+   `gpuHours` are also its load *within* that slot. `maxConcurrentCpuHours` and
+   `maxConcurrentGpuHours` are compared against the sum of the hours of all jobs placed in
+   the same slot. A job whose own `cpuHours` exceeds the ceiling can never be placed and
+   returns `UNCHANGED_NO_FEASIBLE_SLOT`.
+3. **Deadline semantics.** A job finishing *exactly* on its deadline is feasible; finishing
+   after it is not. Formally, a slot is deadline-feasible when
+   `scheduledStart + 1h <= deadline`.
+4. **Exemption outranks the deadline — team decision.** An exempt job is pinned to
+   `originalStartTime` even when that slot already breaches its own deadline or the capacity
+   ceiling, and it reserves that capacity ahead of all flexible work. Consequently the
+   invariant "no job finishes after its deadline" holds for **non-exempt, placed** jobs:
+   a job returned as `UNCHANGED_EXEMPT` or `UNCHANGED_NO_FEASIBLE_SLOT` sits at its
+   original time by definition and may be late if the caller's own input was already late.
+5. **Job source.** Omitting the `jobs` field entirely optimizes the authenticated
+   operator's own stored jobs, excluding those with status `COMPLETED` or `CANCELLED`;
+   this is the flow the end-to-end acceptance test uses. Supplying `jobs` optimizes exactly
+   that array. An explicitly empty `jobs: []`, or an omitted `jobs` field when the operator
+   has no eligible stored jobs, is a `400`.
+6. **Timestamp format.** Timestamps are UTC ISO local date-times. Responses always omit the
+   offset suffix (`2026-10-20T10:00:00`), consistent with every other endpoint in this
+   service. Requests accept **either** form: a trailing `Z` is parsed and, since these
+   values are UTC by definition, resolves to the same instant (`2026-10-20T12:00:00Z` is
+   read as `12:00`). A non-zero offset such as `+08:00` is **not** supported and must be
+   converted to UTC by the caller.
+7. **Monetary precision.** Every dollar figure is rounded to cent precision, half-up, and
+   the summary totals are derived from the already-rounded per-job figures, so
+   `baselineCostUsd`, `optimizedCostUsd` and `projectedSavingsUsd` always reconcile with the
+   `items` array. Note that with the conversion factors above a 64-CPU-hour job draws only
+   3.2 kWh, so realistic job sizes produce sub-dollar costs where cent rounding is coarse.
+8. **Clock.** The optimization horizon starts at the current UTC hour, truncated. The
+   service takes an injected `java.time.Clock`, so tests pin time rather than depending on
+   the wall clock.
+9. **`status`.** The stub solver reports `OPTIMAL` on any completed run, the only value this
+   contract documents. It is a greedy heuristic and does not prove optimality; GRID-125
+   should introduce honest status values and document them here.
+10. **A run never costs more than the baseline.** No job is moved into an hour priced above
+   the hour it already occupies. This guard is load-bearing rather than cosmetic: without
+   it, a pinned exempt job can consume its slot's capacity and displace a flexible job into
+   a *dearer* hour, so that `optimizedCostUsd` exceeds `baselineCostUsd` and the optimizer
+   recommends a plan worse than doing nothing. A job whose only feasible alternatives are
+   dearer is therefore reported `UNCHANGED_NO_FEASIBLE_SLOT` at its original time. It
+   follows that `optimizedCostUsd <= baselineCostUsd` always holds; a *strict* reduction
+   additionally requires that at least one job had a cheaper feasible slot to move into.
+11. **Capacity can be exceeded by exempt work alone.** Because exempt jobs are pinned
+   before anything flexible is placed (point 4) and are never refused, a slot whose exempt
+   jobs alone exceed a ceiling is reported as-is. Flexible jobs are always checked against
+   remaining capacity, so they can never push a slot over a ceiling. Consequently the
+   invariant "no slot exceeds cluster capacity" holds for every slot containing no pinned
+   exempt work, and holds universally only for inputs whose exempt jobs fit on their own.
+
+* **Price Source & Seeded Fallback (GRID-124 AC5.2)**:
+  Prices come from the latest stored model forecast for `forecastLocation` over the horizon.
+  When **no** forecast row covers the window, the run falls back to a seeded diurnal curve
+  rather than failing, and sets `usedSeededFallbackPrices: true` on the response. Partial
+  coverage is not treated as absence: hours with no forecast price are simply not candidate
+  slots. The baseline cost and the optimized cost are always computed from the *same* price
+  series, seeded or not (AC5.3), which is what makes `projectedSavingsUsd` meaningful.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `usedSeededFallbackPrices` | Boolean | `true` when the seeded fallback curve was used for this run instead of stored forecasts. |
+
+* **Error Responses (GRID-124 AC5.4)**:
+  Invalid input returns `400` in the standard envelope — `{"success": false, "message": "<field-specific reason>", "data": null}` — and **never** a partial or placeholder schedule.
+  Inline job problems name the offending element, e.g. `jobs[2].deadline must be greater than or equal to originalStartTime`. The validated conditions are:
+
+  | Condition | Message names |
+  |---|---|
+  | `jobs: []` explicitly empty | `jobs` |
+  | Omitted `jobs` with no eligible stored jobs | operator job set |
+  | `name` blank | `jobs[i].name` |
+  | `cpuHours` or `gpuHours` negative or non-finite | that field |
+  | Both `cpuHours` and `gpuHours` zero | `jobs[i]` |
+  | `originalStartTime` or `deadline` absent | that field |
+  | `deadline` earlier than `originalStartTime` | `jobs[i].deadline` |
+  | `flexibilityWindowHours` negative | `jobs[i].flexibilityWindowHours` |
+  | `horizonHours` outside 1–168 | `horizonHours` |
+  | `forecastLocation` blank or over 100 characters | `forecastLocation` |
+  | `clusterCapacity` value non-positive or non-finite | that field |
+  | A job's baseline slot falls outside the horizon, or has no forecast price | that job's identity |
+
+  That last condition exists because a job whose original slot cannot be priced has no
+  baseline to compare against; reporting savings for it would mean inventing a number.
 
 
 #### `POST /api/schedules/{id}/approve`
