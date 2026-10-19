@@ -773,7 +773,7 @@ The **Job** entity represents a compute workload submitted for schedule optimiza
 #### `POST /api/schedules/optimize`
 Evaluates jobs against forecast prices and cluster capacity and proposes a start time per job. Pure function of its input: nothing is persisted this sprint (persistence is Sprint 4). Same envelope as §2.5A.
 
-**Slots.** One slot = 1 hour, identified by its UTC start (`intervalStartUtc`, same as `GET /api/prices/forecast`). A job is a single block: it occupies the one slot that starts at its start time and consumes all of its `cpuHours` / `gpuHours` in that slot.
+**Slots.** One slot = 1 hour, identified by its UTC start (`intervalStartUtc`, same as `GET /api/prices/forecast`). A job is a single block: it occupies the one slot that starts at its start time and consumes all of its `cpuHours` / `gpuHours` in that slot. This is a deliberate Sprint 3 simplification: the Job schema has no duration field, and capacity is expressed as concurrent CPU/GPU hours per slot. A multi-hour duration can be added later as an optional, backward-compatible field.
 
 **Request**
 ```json
