@@ -101,6 +101,11 @@ public interface ScheduleSolver {
         }
     }
 
-    record SolverResult(List<SolverAssignment> assignments) {
+    /**
+     * @param certifiedOptimal true when {@code assignments} is a proven global minimum
+     *     (an exact solver reported {@code OPTIMAL}); false for a heuristic result that is
+     *     feasible but not proven optimal (the greedy stub, or a time-boxed fallback).
+     */
+    record SolverResult(List<SolverAssignment> assignments, boolean certifiedOptimal) {
     }
 }

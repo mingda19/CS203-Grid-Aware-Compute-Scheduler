@@ -258,12 +258,14 @@ public class ScheduleOptimizationService {
             ? 0.0
             : CostModel.round((savingsUsd / baselineCostUsd) * 100.0);
 
+        String status = result.certifiedOptimal() ? OptimizeResponseDto.STATUS_OPTIMAL : OptimizeResponseDto.STATUS_FEASIBLE;
         return new OptimizeResponseDto(
             "run-" + UUID.randomUUID(),
-            OptimizeResponseDto.STATUS_OPTIMAL,
+            status,
             baselineCostUsd, optimizedCostUsd, savingsUsd, savingsPercent,
             explain(result, prices, savingsUsd, savingsPercent),
             prices.isSeeded(),
+            !result.certifiedOptimal(),
             List.copyOf(items)
         );
     }
