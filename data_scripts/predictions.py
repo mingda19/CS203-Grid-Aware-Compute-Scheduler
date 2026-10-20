@@ -349,7 +349,10 @@ def uncertainty_ratios(kind: str, horizon: str, decayed_by_hour: dict[int, float
     for hour in range(24):
         residual = decayed_by_hour.get(hour)
         ref_value = ref[hour] if ref is not None else None
-        out[hour] = (residual / ref_value) if (residual is not None and ref_value) else np.nan
+        if residual is not None and ref_value:
+            out[hour] = 100.0 / (1.0 + residual / ref_value)
+        else:
+            out[hour] = np.nan
     return out
 
 

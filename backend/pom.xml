@@ -136,6 +136,15 @@
 			<artifactId>lombok</artifactId>
 			<optional>true</optional>
 		</dependency>
+
+		<!-- ojAlgo: pure-JVM MILP solver for the schedule optimizer (GRID-125).
+		     No native binaries (unlike OR-Tools) and no license server (unlike
+		     Gurobi), so it carries no deployment risk on Render or in CI. -->
+		<dependency>
+			<groupId>org.ojalgo</groupId>
+			<artifactId>ojalgo</artifactId>
+			<version>57.5.0</version>
+		</dependency>
 	</dependencies>
 
 	<build>
