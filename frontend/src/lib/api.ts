@@ -63,6 +63,26 @@ export interface WorkloadSchedule {
   notes: string | null
 }
 
+export interface ComputeJob {
+  id: number
+  ownerEmail?: string
+  name: string
+  cpuHours: number
+  gpuHours: number
+  originalStartTime: string
+  deadline: string
+  flexibilityWindowHours: number
+  isExempt: boolean
+  rawConstraints?: string | null
+  status: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+export type ComputeJobPayload = Pick<ComputeJob,
+  "name" | "cpuHours" | "gpuHours" | "originalStartTime" | "deadline" | "flexibilityWindowHours" | "isExempt"
+> & { rawConstraints?: string | null }
+
 export interface CreateWorkloadSchedule {
   title: string
   type: string
@@ -269,6 +289,24 @@ export const workloadScheduleApi = {
 
   remove(id: number): Promise<ApiResponse<void>> {
     return fetchJson<ApiResponse<void>>(`/api/workload-schedules/${id}`, { method: "DELETE" })
+  },
+}
+
+export const jobsApi = {
+  list(): Promise<ApiResponse<ComputeJob[]>> {
+    return fetchJson<ApiResponse<ComputeJob[]>>("/api/jobs", { cache: "no-store" })
+  },
+  get(id: number): Promise<ApiResponse<ComputeJob>> {
+    return fetchJson<ApiResponse<ComputeJob>>(`/api/jobs/${id}`, { cache: "no-store" })
+  },
+  create(payload: ComputeJobPayload): Promise<ApiResponse<ComputeJob>> {
+    return fetchJson<ApiResponse<ComputeJob>>("/api/jobs", { method: "POST", body: JSON.stringify(payload) })
+  },
+  update(id: number, payload: ComputeJobPayload): Promise<ApiResponse<ComputeJob>> {
+    return fetchJson<ApiResponse<ComputeJob>>(`/api/jobs/${id}`, { method: "PUT", body: JSON.stringify(payload) })
+  },
+  remove(id: number): Promise<ApiResponse<void>> {
+    return fetchJson<ApiResponse<void>>(`/api/jobs/${id}`, { method: "DELETE" })
   },
 }
 
