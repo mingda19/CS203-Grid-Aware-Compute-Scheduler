@@ -50,7 +50,14 @@ export default function JobsPage() {
     catch (e) { setError(e instanceof Error ? e.message : "Could not load jobs") }
     finally { setLoading(false) }
   }, [])
-  React.useEffect(() => { void loadJobs() }, [loadJobs])
+  React.useEffect(() => {
+    let active = true
+    jobsApi.list()
+      .then(response => { if (active) setJobs(response.data ?? []) })
+      .catch(e => { if (active) setError(e instanceof Error ? e.message : "Could not load jobs") })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [])
 
   const openCreate = () => { setEditing(null); setForm(blankForm()); setError(""); setFormOpen(true) }
   const openEdit = (job: ComputeJob) => {
@@ -101,7 +108,13 @@ export default function JobsPage() {
         <Field label="Original start time (SGT)"><Input type="datetime-local" required value={form.originalStartTime} onChange={e => setForm({ ...form, originalStartTime: e.target.value })}/></Field>
         <Field label="Deadline (SGT)"><Input type="datetime-local" required value={form.deadline} onChange={e => setForm({ ...form, deadline: e.target.value })}/></Field>
         <Field label="Flexibility window (hours)"><Input type="number" min="0" step="1" required value={form.flexibilityWindowHours} onChange={e => setForm({ ...form, flexibilityWindowHours: e.target.value })}/></Field>
-        <label className="flex items-center gap-3 self-end rounded-md border p-3 text-sm"><Checkbox checked={form.isExempt} onCheckedChange={isExempt => setForm({ ...form, isExempt })}/><span><span className="block font-medium">Exempt from rescheduling</span><span className="text-xs text-muted-foreground">Keep this job at its original start time.</span></span></label>
+        <div className="flex items-center gap-3 self-end rounded-md border p-3 text-sm">
+          <Checkbox id="job-is-exempt" checked={form.isExempt} onCheckedChange={isExempt => setForm({ ...form, isExempt: Boolean(isExempt) })}/>
+          <label htmlFor="job-is-exempt" className="cursor-pointer">
+            <span className="block font-medium">Exempt from rescheduling</span>
+            <span className="text-xs text-muted-foreground">Keep this job at its original start time.</span>
+          </label>
+        </div>
       </div>
       {error && <p role="alert" className="mb-3 text-sm text-destructive">{error}</p>}
       <DialogFooter><Button type="button" variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button><Button type="submit" disabled={saving} className="bg-emerald-600 text-white hover:bg-emerald-700">{saving ? "Saving…" : editing ? "Save changes" : "Create job"}</Button></DialogFooter>
