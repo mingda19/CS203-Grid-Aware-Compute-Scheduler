@@ -821,6 +821,15 @@ Evaluates jobs against forecast prices and cluster capacity and proposes a start
 
 If both `forecast` and `forecastLocation` are sent, `forecast` wins. If neither is sent the request is a `400`. Either way the optimiser works on the same resolved list of per-slot prices. Other Job fields (`rawConstraints`, `status`, `ownerEmail`, timestamps) are not optimiser inputs and are ignored if sent.
 
+**Price fallback (forecast missing).** When `forecastLocation` is used and no stored forecast row covers the window, the server builds an hour-of-day price curve from stored `electrical_price` history instead of failing, and sets `usedSeededFallbackPrices: true` in the response (the explanation text also says "seeded fallback"):
+
+- **Seasonal curve:** the average price per UTC hour of day over the same calendar month one year earlier.
+- **Recent curve:** the same average over the 30 days before the horizon start. Used only if the location's latest row is within 7 days of the horizon start; otherwise skipped.
+- **Blend:** `w * recent + (1 - w) * seasonal`, with `w = gacs.optimiser.fallback-recent-weight` (default `0.5`). If only one curve has data for an hour, that curve is used as is.
+- **Last resort:** an hour with no history uses a built-in diurnal curve (`PriceSeriesProvider.SEEDED_CURVE_USD_PER_MWH`, $15–$95/MWh).
+
+The curve is repeated across every slot in the horizon, so every slot is priced. Partial forecast coverage does not trigger the fallback: uncovered hours are not candidate slots.
+
 **Cost basis (AC2).** Constants, configurable (`gacs.optimiser.*`), defaults seeded:
 
 | Property | Default | Meaning |
