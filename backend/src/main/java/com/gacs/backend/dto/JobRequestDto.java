@@ -54,11 +54,11 @@ public class JobRequestDto {
     @Builder.Default
     private Integer flexibilityWindowHours = 0;
 
-    @Schema(description = "Flag indicating exemption from automatic rescheduling", example = "false", requiredMode = Schema.RequiredMode.REQUIRED)
+    @Schema(description = "Flag indicating exemption from automatic rescheduling", example = "false")
     @JsonProperty("isExempt")
     @JsonAlias({"exempt", "is_exempt"})
     @Builder.Default
-    private boolean isExempt = false;
+    private Boolean isExempt = false;
 
     @Schema(description = "Optional natural language constraints or notes", example = "Can wait up to 12 hours for low price valley, finish by tomorrow evening")
     @Size(max = 1000, message = "rawConstraints must not exceed 1000 characters")
@@ -71,11 +71,11 @@ public class JobRequestDto {
 
     @JsonProperty("isExempt")
     public boolean isExempt() {
-        return isExempt;
+        return Boolean.TRUE.equals(isExempt);
     }
 
     @JsonProperty("isExempt")
-    public void setExempt(boolean exempt) {
-        this.isExempt = exempt;
+    public void setExempt(Boolean exempt) {
+        this.isExempt = (exempt != null) ? exempt : false;
     }
 }
