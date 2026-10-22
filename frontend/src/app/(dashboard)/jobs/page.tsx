@@ -37,6 +37,7 @@ export default function JobsPage() {
   const [jobs, setJobs] = React.useState<ComputeJob[]>([])
   const [loading, setLoading] = React.useState(true)
   const [saving, setSaving] = React.useState(false)
+  const [updatingExemptionId, setUpdatingExemptionId] = React.useState<number | null>(null)
   const [error, setError] = React.useState("")
   const [formOpen, setFormOpen] = React.useState(false)
   const [viewOpen, setViewOpen] = React.useState(false)
@@ -84,6 +85,28 @@ export default function JobsPage() {
     } catch (e) { setError(e instanceof Error ? e.message : "Could not save job") }
     finally { setSaving(false) }
   }
+  const setJobExempt = async (job: ComputeJob, isExempt: boolean) => {
+    setError("")
+    setUpdatingExemptionId(job.id)
+    const payload: ComputeJobPayload = {
+      name: job.name,
+      cpuHours: job.cpuHours,
+      gpuHours: job.gpuHours,
+      originalStartTime: job.originalStartTime,
+      deadline: job.deadline,
+      flexibilityWindowHours: job.flexibilityWindowHours,
+      isExempt,
+    }
+    try {
+      const response = await jobsApi.update(job.id, payload)
+      const updated = response.data
+      setJobs(current => current.map(item => item.id === job.id ? (updated ?? { ...item, isExempt }) : item))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : `Could not update exemption for ${job.name}`)
+    } finally {
+      setUpdatingExemptionId(null)
+    }
+  }
   const remove = async (job: ComputeJob) => {
     if (!window.confirm(`Delete “${job.name}”? This cannot be undone.`)) return
     setError("")
@@ -98,7 +121,7 @@ export default function JobsPage() {
     </div>
     {error && <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>}
     <Card><CardHeader><CardTitle className="text-lg">Your jobs</CardTitle></CardHeader><CardContent>
-      {loading ? <p className="py-8 text-center text-sm text-muted-foreground">Loading jobs…</p> : jobs.length === 0 ? <div className="py-10 text-center"><p className="font-medium">No compute jobs yet</p><p className="mt-1 text-sm text-muted-foreground">Create a job to see it here.</p></div> : <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead><tr className="border-b text-xs text-muted-foreground"><th className="px-3 py-3">Name</th><th className="px-3 py-3">CPU / GPU hours</th><th className="px-3 py-3">Original start (SGT)</th><th className="px-3 py-3">Deadline (SGT)</th><th className="px-3 py-3">Flexibility</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Actions</th></tr></thead><tbody>{jobs.map(job => <tr key={job.id} className="border-b last:border-0"><td className="px-3 py-3 font-medium">{job.name}</td><td className="px-3 py-3">{job.cpuHours} CPU · {job.gpuHours} GPU</td><td className="px-3 py-3">{displayDate(job.originalStartTime)}</td><td className="px-3 py-3">{displayDate(job.deadline)}</td><td className="px-3 py-3">{job.isExempt ? "Exempt" : `${job.flexibilityWindowHours}h`}</td><td className="px-3 py-3"><span className="rounded-full bg-muted px-2 py-1 text-xs">{job.status}</span></td><td className="px-3 py-3"><div className="flex gap-1"><Button size="icon" variant="ghost" aria-label={`View ${job.name}`} onClick={() => void openView(job)}><Eye className="h-4 w-4"/></Button><Button size="icon" variant="ghost" aria-label={`Edit ${job.name}`} onClick={() => openEdit(job)}><Pencil className="h-4 w-4"/></Button><Button size="icon" variant="ghost" aria-label={`Delete ${job.name}`} onClick={() => void remove(job)}><Trash2 className="h-4 w-4 text-destructive"/></Button></div></td></tr>)}</tbody></table></div>}
+      {loading ? <p className="py-8 text-center text-sm text-muted-foreground">Loading jobs…</p> : jobs.length === 0 ? <div className="py-10 text-center"><p className="font-medium">No compute jobs yet</p><p className="mt-1 text-sm text-muted-foreground">Create a job to see it here.</p></div> : <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-left text-sm"><thead><tr className="border-b text-xs text-muted-foreground"><th className="px-3 py-3">Name</th><th className="px-3 py-3">CPU / GPU hours</th><th className="px-3 py-3">Original start (SGT)</th><th className="px-3 py-3">Deadline (SGT)</th><th className="px-3 py-3">Flexibility</th><th className="px-3 py-3">Exemption</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Actions</th></tr></thead><tbody>{jobs.map(job => <tr key={job.id} className="border-b last:border-0"><td className="px-3 py-3 font-medium">{job.name}</td><td className="px-3 py-3">{job.cpuHours} CPU · {job.gpuHours} GPU</td><td className="px-3 py-3">{displayDate(job.originalStartTime)}</td><td className="px-3 py-3">{displayDate(job.deadline)}</td><td className="px-3 py-3">{`${job.flexibilityWindowHours}h`}</td><td className="px-3 py-3"><div className="flex items-center gap-2"><Checkbox id={`job-exempt-${job.id}`} checked={job.isExempt} disabled={updatingExemptionId === job.id} onCheckedChange={checked => void setJobExempt(job, Boolean(checked))} aria-label={`${job.isExempt ? "Remove exemption from" : "Mark"} ${job.name} ${job.isExempt ? "as reschedulable" : "as exempt"}`}/>{job.isExempt ? <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300">Exempt</span> : <span className="text-xs text-muted-foreground">Flexible</span>}</div></td><td className="px-3 py-3"><span className="rounded-full bg-muted px-2 py-1 text-xs">{job.status}</span></td><td className="px-3 py-3"><div className="flex gap-1"><Button size="icon" variant="ghost" aria-label={`View ${job.name}`} onClick={() => void openView(job)}><Eye className="h-4 w-4"/></Button><Button size="icon" variant="ghost" aria-label={`Edit ${job.name}`} onClick={() => openEdit(job)}><Pencil className="h-4 w-4"/></Button><Button size="icon" variant="ghost" aria-label={`Delete ${job.name}`} onClick={() => void remove(job)}><Trash2 className="h-4 w-4 text-destructive"/></Button></div></td></tr>)}</tbody></table></div>}
     </CardContent></Card>
 
     <Dialog open={formOpen} onOpenChange={setFormOpen}><DialogContent className="sm:max-w-xl"><form onSubmit={submit}><DialogHeader><DialogTitle>{editing ? "Edit compute job" : "Create compute job"}</DialogTitle><DialogDescription>Enter resource requirements and the allowed scheduling window. Times are shown in Singapore time (SGT).</DialogDescription></DialogHeader>
