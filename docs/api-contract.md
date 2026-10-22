@@ -869,7 +869,7 @@ The **baseline** of a job is its cost if it started at `originalStartTime` and, 
         "allocations": [
           { "intervalStartUtc": "2026-10-21T01:00:00Z", "cpuHours": 64.0, "gpuHours": 16.0 }
         ],
-        "perJobStatus": "RESCHEDULED",
+        "perJobStatus": "OPTIMISED",
         "reason": null,
         "baselineCostUsd": 1.0752,
         "optimizedCostUsd": 0.2304,
@@ -888,8 +888,7 @@ The **baseline** of a job is its cost if it started at `originalStartTime` and, 
 * `plainEnglishExplanation`: optional text summarising the run; may be `null`.
 * `items[]` lists every input job exactly once.
 * `perJobStatus`:
-  - `RESCHEDULED`: moved to a cheaper plan within its flexibility window.
-  - `UNCHANGED_OPTIMAL`: not exempt and feasible, but its original plan is already the cheapest feasible one.
+  - `OPTIMISED`: not exempt and feasible; placed on its cheapest feasible plan. The plan may or may not start at `originalStartTime`; compare the two fields if that matters.
   - `UNCHANGED_EXEMPT`: kept at `originalStartTime` because `isExempt` is `true`.
   - `NO_FEASIBLE_SLOT`: no plan satisfies window, deadline, forecast coverage and capacity; the job is not scheduled (see below).
 
