@@ -15,6 +15,8 @@ bring the optimiser in line, in the order they should be done.
 | 4a | Capacity used by the baseline | The baseline uses the same per-slot limit as the optimiser (the Capacity (AC3) rule: `capacityOverrides[]`, else `clusterCapacity`, else defaults). |
 | 4b | Exempt jobs over the limit | Exempt jobs always run at `originalStartTime`, as in their baseline, even if they exceed a slot's limit. That slot then has no room for other jobs. |
 | - | Per-job status | `OPTIMISED`, `UNCHANGED_EXEMPT`, `NO_FEASIBLE_SLOT`. `RESCHEDULED` and `UNCHANGED_ALREADY_OPTIMAL` are removed. |
+| 3 | `400` / `422` vs `NO_FEASIBLE_SLOT` | Follow the contract as written (decided 2026-10-23): `400` if a job cannot finish by its deadline even alone on the cluster; `422` if any hour of its baseline has no price; `NO_FEASIBLE_SLOT` only when other jobs took the room. |
+| 6 | Stored-jobs mode | Removed (decided 2026-10-23): `jobs` is required, as in the contract. Leaving it out is a `400`. |
 | 5 | Seeded fallback prices | Kept. Staging's contract (PR #47) documents the history-based fallback and the `usedSeededFallbackPrices` field. The `422` still applies when a `forecast[]` or a partly covered forecast misses a baseline slot. |
 
 Why decision 1 needs both parts: a `NO_FEASIBLE_SLOT` job is left out of the cost totals, so it costs $0.
@@ -25,9 +27,7 @@ beat leaving it out.
 
 | # | Topic | Recommendation | Blocks |
 |---|---|---|---|
-| 3 | `400` / `422` vs `NO_FEASIBLE_SLOT` | `400` if a job cannot finish by its deadline even alone on the cluster. `422` if any baseline slot has no price. `NO_FEASIBLE_SLOT` only when the job does not fit around the other jobs. (A teammate's note proposed `NO_FEASIBLE_SLOT` for the first two cases.) | Phase 2 |
 | 2 | Negative savings | Allow `projectedSavingsUsd`, `savingsUsd` and the percentage to go below 0, and explain it in the summary text and dashboard. This can happen because each job's baseline ignores the other jobs. | Phase 4 |
-| 6 | Stored-jobs mode | When `jobs` is omitted, the current endpoint optimises the operator's stored jobs. The contract makes `jobs` required. Either remove the mode or add it to the contract. | Phase 2 |
 | 7 | Rounding details | Costs at 4 dp (agreed). Still to state: percentage at 2 dp, and whether totals are summed before or after rounding. | Phase 4 |
 
 ### Contract wording to add
@@ -84,7 +84,7 @@ contract:
 ### Phase 0: contract and branch (before code)
 
 - [x] Merge the contract PR into `staging` (#45).
-- [ ] Settle open points 3 and 6 (they shape validation). 2 and 7 can wait until Phase 4. Point 5 is settled.
+- [x] Settle open points 3, 5 and 6. Points 2 and 7 wait until Phase 4.
 - [ ] Contract owner adds the wording in "Contract wording to add".
 - [x] Branch `feat/optimiser-allocation` off `staging`.
 
@@ -115,79 +115,73 @@ deletes the old one-hour types (`ScheduleSolver.JobSpec`, `SolverAssignment`, `C
 - [x] Unit tests (33, all passing): baseline (single slot, spill into a second slot because of a smaller override,
       exempt over the limit), slot capacity order, and the checker on hand-computed cases.
 
-### Phase 2: request validation
+### Phase 2: request validation (done)
 
-- [ ] Request DTO: add `forecast[]` (`intervalStartUtc`, `predictedPrice`) and `capacityOverrides[]`
-      (`intervalStartUtc`, `maxCpuHours`, `maxGpuHours`).
-- [ ] Prices: if `forecast[]` is present use it, else load for `forecastLocation` from the **earliest
-      `originalStartTime`** (not "now") for `horizonHours`. Neither present: `400`.
-- [ ] `400` for duplicate job `id`, `originalStartTime` not on the hour (reject; don't round down), and a job
-      that cannot finish by its deadline even with its baseline (open point 3).
-- [ ] `422` when any baseline slot of any job has no price, naming the job and the slot (open point 3). Map
-      to `422` in the global exception handler, using a dedicated exception type.
-- [ ] Apply decisions 5 (seeded fallback) and 6 (stored-jobs mode).
-- [ ] Past `originalStartTime` needs no special rule: with `forecast[]` it is allowed, and with
-      `forecastLocation` it has no stored price, so it is a `422`.
-- [ ] Remove `validateJobsAgainstWindow`'s horizon check tied to "now".
+Built as `OptimizationProblemFactory`, which turns a request into a validated `OptimizationProblem` (jobs,
+prices, capacity and every job's baseline). The live endpoint keeps using the old service until Phase 4
+switches it over, so it is never half-migrated.
 
-### Phase 3: the solvers
+- [x] Request DTO: added `forecast[]` (`intervalStartUtc`, `predictedPrice`) and `capacityOverrides[]`
+      (`intervalStartUtc`, `maxCpuHours`, `maxGpuHours`). The old 4-argument constructor is kept until Phase 4.
+- [x] Prices: `forecast[]` wins; otherwise load for `forecastLocation` from the **earliest
+      `originalStartTime`** for `horizonHours` (1–168, default 48, ignored with `forecast[]`). Neither: `400`.
+- [x] `400`: missing body or `jobs` (decision 6), missing fields, blank or over-long name, negative or
+      both-zero work, duplicate `id`, a time not on the hour (rejected, not rounded), deadline before start,
+      negative flexibility, bad forecast or capacity entries, and a job that cannot finish by its deadline
+      even alone on the cluster (decision 3).
+- [x] `422` (`UnprocessableDataException`, mapped in `GlobalExceptionHandler`): any hour of a job's baseline
+      has no price; the message names the job and the hour. Input errors are always reported first.
+- [x] Past `originalStartTime`: allowed with `forecast[]`. With `forecastLocation` the provider's history
+      fallback (decision 5) usually prices it; otherwise it is a `422`.
+- [ ] Moved to Phase 4: remove the old service's horizon check tied to "now", along with the old service.
 
-**Exact solver (`ExactScheduleSolver`, ojAlgo MILP).** For each flexible job `j` and slot `t` in its window:
+### Phase 3: the solvers (done)
 
-| Variable | Type | Meaning |
+All in `service/allocation/`, behind the new `AllocationSolver` interface. Results are `AllocationResult`
+(a `JobOutcome` per job: plan, `perJobStatus`, `reason`) plus `provenOptimal`.
+
+- [x] **Exact solver (`ExactAllocationSolver`, ojAlgo).** Variables per flexible job and hour: placed `p`,
+      start `s`, end `e`, running `a` (binary), share `x` in [0, 1]. Constraints as designed: one start and one
+      end if placed, shares add up to `p`, `a[t] = a[t-1] + s[t] - e[t-1]` for one consecutive block,
+      `MIN_SHARE * a <= x <= a` (`MIN_SHARE = 1e-4`), starts only in the window, no unpriced hours, capacity
+      after exempt jobs. Instead of one objective with a big `M`, it runs **two passes**: (1) maximise jobs
+      placed; (2) with that count fixed, minimise cost plus tiny tie-break terms. A big `M` next to cent-sized
+      costs could let the solver's gap tolerance hide real cost differences. The old "unplaced at baseline
+      cost" variable is gone. `provenOptimal` = both passes finish optimal.
+- [x] **Heuristic (`AnnealingAllocationSolver` + `GreedyAllocator`).** Simulated annealing over the order
+      jobs are placed in. Each job takes its cheapest valid run in the capacity left (cheapest hours filled
+      first, which is optimal for one job), so every result meets all the rules. Starts from the tie-break
+      order; after a swap only the jobs from the swapped position on are re-placed. Deterministic: seeded
+      from the problem, iterations depend only on the job count.
+- [x] **Hybrid routing (`HybridAllocationSolver`, the Spring bean).** Exact first for runs up to 300
+      (job, hour) pairs with a 2 s budget; returns it when proven, otherwise the better of exact and heuristic.
+- [x] **Reasons for `NO_FEASIBLE_SLOT`**: "Cluster full between <start> and <deadline> UTC: other jobs use the
+      capacity this job needs to finish by its deadline."
+- [x] Tests: hand-checked cases for the exact solver; 120 random small runs checking exact against the
+      brute-force checker and the heuristic against exact, plus every contract rule (14 of the runs leave a
+      job out, 54 spread a job over several hours); routing; determinism; 16 validation tests.
+- [ ] Moved to Phase 4: delete the old one-hour solvers (`ScheduleSolver`, `ExactScheduleSolver`,
+      `HybridScheduleSolver`, `SimulatedAnnealingScheduleSolver`, `GreedyStubScheduleSolver`, `CandidateSlots`,
+      `CostModel`, `BruteForceScheduleOracle` and their tests) when the service switches over.
+
+Measured on 2026-10-23 (`-Xmx384m`, random runs over 24–72 hours):
+
+| Run | Time | Proven optimal |
 |---|---|---|
-| `p[j]` | binary | job is placed |
-| `s[j,t]` | binary | job starts at `t` (only within the flexibility window) |
-| `a[j,t]` | binary | job is running in `t` |
-| `x[j,t]` | continuous `[0,1]` | share of the job's work in `t` |
+| 5 jobs / 24 h | 0.13 s | yes |
+| 10 jobs / 48 h | 0.19 s | yes |
+| 20 jobs / 48 h | 2.4 s (exact uses its budget, then heuristic) | no; heuristic within 0.3% of exact's best |
+| 40 jobs / 48 h | 0.4 s (heuristic only) | no |
+| 60 jobs / 72 h | 0.6 s (heuristic only) | no |
 
-Constraints:
-- `Σ_t s[j,t] = p[j]` (one start if placed) and `Σ_t x[j,t] = p[j]` (all work done if placed).
-- `x[j,t] ≤ a[j,t]`, and `x[j,t] ≥ δ * a[j,t]` with a small `δ` (e.g. `1e-4`), so a running slot always
-  has a non-zero share and there are no hidden gaps.
-- Consecutive slots: add an end binary `e[j,t]` (job's last slot is `t`) with `Σ_t e[j,t] = p[j]` and
-  `a[j,t] = a[j,t-1] + s[j,t] - e[j,t-1]` (with `a[j,-1] = 0`). A job is then running from its start slot
-  to its end slot with no gaps, and not at all if it is unplaced.
-- No slot before the job's first allowed start, and no slot ending after `deadline`.
-- Capacity per slot: `Σ_j x[j,t] * cpuHours[j] ≤ max(0, cpuLimit(t) - exemptCpu(t))`, and the same for GPU.
-  Exempt jobs are fixed in advance by the baseline calculator (decision 4b).
+### Phase 4: response and switch-over
 
-Objective (minimise):
-
-```
-  - M * Σ_j p[j]                                     // place as many jobs as possible (decision 1)
-  + Σ_j Σ_t x[j,t] * jobKwh[j] / 1000 * price(t)     // then cost
-  + tie-break terms                                   // earliest originalStartTime / lowest id kept first; earliest start
-```
-
-`M` must be larger than the largest possible total cost, e.g. `1 + Σ_j jobKwh[j] / 1000 * maxPrice`.
-Remove the old "unplaced" variable priced at the baseline cost: it caused jobs to be marked infeasible while
-a slot was free. In Sprint 4, `M * p[j]` becomes `M * priority[j] * p[j]`.
-
-`provenOptimal` = ojAlgo reports `OPTIMAL` within the time budget.
-
-**Heuristic fallback (`SimulatedAnnealingScheduleSolver`).** Search over each job's start slot and the
-order jobs are given capacity. Turn a state into a plan by going through jobs in that order and filling
-consecutive slots from the start, like the baseline but with the room left after earlier jobs. A job that
-can't finish before its deadline is unplaced. Score by (jobs placed, cost). Every plan built this way is
-feasible, so `provenOptimal = false` plans still meet every rule. Seed from the greedy order (earliest
-`originalStartTime` first).
-
-**Hybrid routing (`HybridScheduleSolver`).** Keep the size check, but count variables per job (window length)
-instead of one-hour candidate slots. Re-tune the threshold, since the new model has about 4 variables per
-(job, slot) instead of 1.
-
-**Greedy stub.** Rewrite it as the decoder above with the default order, or delete it and update the
-tests that use it.
-
-**Reasons for `NO_FEASIBLE_SLOT`.** Built after solving: find the first hours in the job's window where the
-slot is full, e.g. "cluster full between 10:00 and 18:00".
-
-### Phase 4: response
+- [ ] `ScheduleOptimizationService` uses `OptimizationProblemFactory` + `HybridAllocationSolver`; delete the
+      old solvers and the stored-jobs mode (decision 6).
 
 - [ ] `runId`: plain UUID v4 (drop the `run-` prefix).
 - [ ] Run `status`: `SCHEDULED` / `NEEDS_ATTENTION`. Add `provenOptimal`. Remove `usedHeuristicFallback`
-      (replaced by `provenOptimal`). Remove `usedSeededFallbackPrices` unless decision 5 keeps the fallback.
+      (replaced by `provenOptimal`). Keep `usedSeededFallbackPrices` (decision 5).
 - [ ] Items: add `allocations[]` (`intervalStartUtc`, `cpuHours`, `gpuHours`) and `reason`. A
       `NO_FEASIBLE_SLOT` item has null `scheduledStart` / `scheduledEnd`, no allocations, and is left out of
       both totals.

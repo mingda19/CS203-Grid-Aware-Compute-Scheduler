@@ -16,7 +16,8 @@ import java.util.Optional;
  */
 final class ContractRules {
 
-    private static final double TOLERANCE = 1e-9;
+    /** Relative slack for capacity checks: solver results carry floating-point dust. */
+    private static final double TOLERANCE = 1e-7;
 
     private ContractRules() {
     }
@@ -53,11 +54,16 @@ final class ContractRules {
         flexibleUse.forEach((slot, used) -> {
             double[] reserved = exemptUse.getOrDefault(slot, new double[2]);
             CapacityLimit free = capacity.limitAt(slot).minus(reserved[0], reserved[1]);
-            if (used[0] > free.cpuHours() + TOLERANCE || used[1] > free.gpuHours() + TOLERANCE) {
+            if (used[0] > free.cpuHours() + TOLERANCE * Math.max(1.0, free.cpuHours())
+                    || used[1] > free.gpuHours() + TOLERANCE * Math.max(1.0, free.gpuHours())) {
                 problems.add("slot " + slot + " is over capacity");
             }
         });
         return problems;
+    }
+
+    static List<String> violations(OptimizationProblem problem, AllocationResult result) {
+        return violations(problem.jobs(), result.plans(), problem.prices(), problem.capacity());
     }
 
     static Map<OptimizerJob, JobPlan> plansOf(BruteForceAllocator.Result result) {

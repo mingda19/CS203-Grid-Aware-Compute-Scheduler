@@ -27,8 +27,21 @@ public record OptimizeRequestDto(
     String forecastLocation,
 
     @Schema(description = "Length of the optimization window in hours, 1-168", example = "48")
-    Integer horizonHours
+    Integer horizonHours,
+
+    @Schema(description = "Explicit price per hourly slot. When sent it wins over forecastLocation and "
+        + "makes the run fully reproducible.")
+    List<ForecastPointInput> forecast,
+
+    @Schema(description = "Per-slot capacity; takes precedence over clusterCapacity for that slot")
+    List<CapacityOverrideInput> capacityOverrides
 ) {
+
+    /** The request without explicit prices or per-slot capacity (the shape used before the work-based contract). */
+    public OptimizeRequestDto(List<JobInput> jobs, ClusterCapacityInput clusterCapacity, String forecastLocation,
+                              Integer horizonHours) {
+        this(jobs, clusterCapacity, forecastLocation, horizonHours, null, null);
+    }
 
     public static final String DEFAULT_FORECAST_LOCATION = "LZ_NORTH";
     public static final int DEFAULT_HORIZON_HOURS = 48;
@@ -73,6 +86,19 @@ public record OptimizeRequestDto(
             return Boolean.TRUE.equals(isExempt);
         }
     }
+
+    @Schema(description = "Price for one hourly slot")
+    public record ForecastPointInput(
+        @Schema(description = "Slot start, UTC, on the hour", example = "2026-10-20T10:00:00") LocalDateTime intervalStartUtc,
+        @Schema(description = "Price in $/MWh", example = "112.0") Double predictedPrice
+    ) {}
+
+    @Schema(description = "Capacity for one hourly slot")
+    public record CapacityOverrideInput(
+        @Schema(description = "Slot start, UTC, on the hour", example = "2026-10-20T10:00:00") LocalDateTime intervalStartUtc,
+        @Schema(description = "CPU-hours available in that slot", example = "128.0") Double maxCpuHours,
+        @Schema(description = "GPU-hours available in that slot", example = "32.0") Double maxGpuHours
+    ) {}
 
     @Schema(description = "Per-slot cluster capacity ceilings")
     public record ClusterCapacityInput(

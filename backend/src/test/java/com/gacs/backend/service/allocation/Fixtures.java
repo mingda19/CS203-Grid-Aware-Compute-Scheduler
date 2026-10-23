@@ -3,7 +3,9 @@ package com.gacs.backend.service.allocation;
 import com.gacs.backend.service.PriceSeries;
 
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /** Shared test data for the allocation model. Slot {@code h} starts at {@code T0 + h hours}. */
@@ -41,6 +43,16 @@ final class Fixtures {
 
     static SlotCapacity cpuCapacity(double cpuHoursPerSlot) {
         return SlotCapacity.uniform(new CapacityLimit(cpuHoursPerSlot, 64.0));
+    }
+
+    /** A problem built the way the factory builds one: every job's baseline must finish by its deadline. */
+    static OptimizationProblem problem(List<OptimizerJob> jobs, PriceSeries prices, SlotCapacity capacity) {
+        BaselineCalculator baselines = new BaselineCalculator(capacity);
+        Map<OptimizerJob, JobPlan> plans = new HashMap<>();
+        for (OptimizerJob job : jobs) {
+            plans.put(job, baselines.baseline(job).plan().orElseThrow());
+        }
+        return new OptimizationProblem(jobs, prices, capacity, plans);
     }
 
     /** {@code 20 CPU-hours = 1 kWh} under the default 0.05 kWh per CPU-hour. */
