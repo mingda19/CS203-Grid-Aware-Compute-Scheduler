@@ -16,6 +16,8 @@ bring the optimiser in line, in the order they should be done.
 | 4b | Exempt jobs over the limit | Exempt jobs always run at `originalStartTime`, as in their baseline, even if they exceed a slot's limit. That slot then has no room for other jobs. |
 | - | Per-job status | `OPTIMISED`, `UNCHANGED_EXEMPT`, `NO_FEASIBLE_SLOT`. `RESCHEDULED` and `UNCHANGED_ALREADY_OPTIMAL` are removed. |
 | 3 | `400` / `422` vs `NO_FEASIBLE_SLOT` | Follow the contract as written (decided 2026-10-23): `400` if a job cannot finish by its deadline even alone on the cluster; `422` if any hour of its baseline has no price; `NO_FEASIBLE_SLOT` only when other jobs took the room. |
+| 2 | Negative savings | Allowed (applied 2026-10-24 as recommended; not confirmed by the team yet). Totals, item savings and the percentage can go below 0; the explanation says why. |
+| 7 | Rounding | Applied 2026-10-24 as recommended; not confirmed by the team yet: item costs rounded to 4 dp, totals are sums of the rounded items, savings = rounded baseline − rounded optimised, percentage to 2 dp (0 when the baseline is 0). |
 | 6 | Stored-jobs mode | Removed (decided 2026-10-23): `jobs` is required, as in the contract. Leaving it out is a `400`. |
 | 5 | Seeded fallback prices | Kept. Staging's contract (PR #47) documents the history-based fallback and the `usedSeededFallbackPrices` field. The `422` still applies when a `forecast[]` or a partly covered forecast misses a baseline slot. |
 
@@ -25,10 +27,7 @@ beat leaving it out.
 
 ### Still open
 
-| # | Topic | Recommendation | Blocks |
-|---|---|---|---|
-| 2 | Negative savings | Allow `projectedSavingsUsd`, `savingsUsd` and the percentage to go below 0, and explain it in the summary text and dashboard. This can happen because each job's baseline ignores the other jobs. | Phase 4 |
-| 7 | Rounding details | Costs at 4 dp (agreed). Still to state: percentage at 2 dp, and whether totals are summed before or after rounding. | Phase 4 |
+None. Points 2 and 7 above were applied as recommended and are worth confirming with the team.
 
 ### Contract wording to add
 
@@ -43,6 +42,9 @@ Not yet in the contract. For the contract owner to add, with a change-note row:
 - For a `NO_FEASIBLE_SLOT` item: `allocatedCpuHours` / `allocatedGpuHours` = 0, and the cost fields are `null`.
 
 ## 2. Where the code is
+
+*This section describes the code before the rebuild. All of the one-hour solver files below were deleted in
+Phase 4; the new code is in `service/allocation/`.*
 
 Branch off `staging`, which has the optimiser and, once the contract PR is merged, the new contract.
 
@@ -133,7 +135,7 @@ switches it over, so it is never half-migrated.
       has no price; the message names the job and the hour. Input errors are always reported first.
 - [x] Past `originalStartTime`: allowed with `forecast[]`. With `forecastLocation` the provider's history
       fallback (decision 5) usually prices it; otherwise it is a `422`.
-- [ ] Moved to Phase 4: remove the old service's horizon check tied to "now", along with the old service.
+- [x] Moved to Phase 4 and done: the old service's horizon check tied to "now" is gone with the old service.
 
 ### Phase 3: the solvers (done)
 
@@ -160,7 +162,7 @@ All in `service/allocation/`, behind the new `AllocationSolver` interface. Resul
 - [x] Tests: hand-checked cases for the exact solver; 120 random small runs checking exact against the
       brute-force checker and the heuristic against exact, plus every contract rule (14 of the runs leave a
       job out, 54 spread a job over several hours); routing; determinism; 16 validation tests.
-- [ ] Moved to Phase 4: delete the old one-hour solvers (`ScheduleSolver`, `ExactScheduleSolver`,
+- [x] Moved to Phase 4 and done: delete the old one-hour solvers (`ScheduleSolver`, `ExactScheduleSolver`,
       `HybridScheduleSolver`, `SimulatedAnnealingScheduleSolver`, `GreedyStubScheduleSolver`, `CandidateSlots`,
       `CostModel`, `BruteForceScheduleOracle` and their tests) when the service switches over.
 
@@ -174,35 +176,43 @@ Measured on 2026-10-23 (`-Xmx384m`, random runs over 24–72 hours):
 | 40 jobs / 48 h | 0.4 s (heuristic only) | no |
 | 60 jobs / 72 h | 0.6 s (heuristic only) | no |
 
-### Phase 4: response and switch-over
+### Phase 4: response and switch-over (done)
 
-- [ ] `ScheduleOptimizationService` uses `OptimizationProblemFactory` + `HybridAllocationSolver`; delete the
-      old solvers and the stored-jobs mode (decision 6).
+- [x] `ScheduleOptimizationService` uses `OptimizationProblemFactory` + `HybridAllocationSolver`. The controller
+      no longer needs the caller's identity (stored-jobs mode removed, decision 6); the endpoint still requires a token.
+- [x] Deleted the old one-hour code: `ScheduleSolver`, `ExactScheduleSolver`, `HybridScheduleSolver`,
+      `SimulatedAnnealingScheduleSolver`, `GreedyStubScheduleSolver`, `CandidateSlots`, `CostModel`,
+      `BruteForceScheduleOracle` and their tests. `ClockConfig` is now unused by the optimiser but left in place.
+- [x] `runId`: plain UUID v4.
+- [x] Run `status`: `SCHEDULED` / `NEEDS_ATTENTION`; `provenOptimal` added; `usedHeuristicFallback` removed;
+      `usedSeededFallbackPrices` kept (decision 5).
+- [x] Items: `allocations[]` (`intervalStartUtc`, `cpuHours`, `gpuHours`) and `reason`. A `NO_FEASIBLE_SLOT`
+      item has null `scheduledStart` / `scheduledEnd`, no allocations, `allocatedCpuHours` / `allocatedGpuHours`
+      of 0, null cost fields, and is left out of both totals. (The 0 / null values are not in the contract
+      yet; they are listed under "Contract wording to add".)
+- [x] Costs and rounding per decision 7; negative savings per decision 2.
+- [x] Timestamps in the response carry a `Z` suffix (section 2.4 and the section 6.4 examples); requests are
+      accepted with or without it. Other endpoints still send times without `Z`.
+- [x] Explanation text: scheduled / exempt / not-placed counts, savings or extra cost (with the reason for
+      negative savings), a note when the plan is heuristic, and the fallback-price note.
 
-- [ ] `runId`: plain UUID v4 (drop the `run-` prefix).
-- [ ] Run `status`: `SCHEDULED` / `NEEDS_ATTENTION`. Add `provenOptimal`. Remove `usedHeuristicFallback`
-      (replaced by `provenOptimal`). Keep `usedSeededFallbackPrices` (decision 5).
-- [ ] Items: add `allocations[]` (`intervalStartUtc`, `cpuHours`, `gpuHours`) and `reason`. A
-      `NO_FEASIBLE_SLOT` item has null `scheduledStart` / `scheduledEnd`, no allocations, and is left out of
-      both totals.
-- [ ] Costs: per-slot `share * jobKwh / 1000 * price`, rounded to 4 dp. Percentage per decision 7.
-- [ ] Negative savings per decision 2: no clamping at 0.
-- [ ] Timestamps: serialise with a `Z` suffix (§2.4). Accept input with a `Z` as well.
-- [ ] Explanation text: drop wording about "moved" jobs and the "one hour" assumption. Cover placed,
-      exempt and not-placed jobs, and negative savings.
+### Phase 5: tests and docs (done)
 
-### Phase 5: tests and docs
-
-- [ ] Checker comparison: exact solver equals the brute-force checker on every small case (jobs placed and
-      cost within 1e-9).
-- [ ] Property tests over random small inputs: shares add up to 1, slots are consecutive, capacity holds
-      every slot, nothing ends after a deadline or starts outside the window, exempt jobs match their
-      baseline.
-- [ ] Heuristic: always feasible, never places fewer jobs than the greedy decoder.
-- [ ] Cases from this plan: job competing for one slot (tie-break picks the earlier job), override forcing a
-      second slot, exempt jobs over the limit, negative savings, `400` / `422` / `NO_FEASIBLE_SLOT` split.
-- [ ] Update `ScheduleOptimizationServiceTest`, the acceptance and integration tests, and
-      `docs/schedule-optimize.http` (use `forecast[]` so the examples no longer expire).
+- [x] Exact solver against the brute-force checker on 120 random runs; heuristic against exact; every
+      contract rule checked on every run; determinism (Phase 3).
+- [x] Cases from this plan: jobs competing for one hour (tie-break), override forcing a second hour, exempt
+      jobs over the limit, negative savings, `400` / `422` / `NO_FEASIBLE_SLOT` split.
+- [x] `ScheduleOptimizationServiceTest` rewritten for the response: the contract's worked example
+      (1.0752 → 0.2304, 78.57%), totals reconciling with items, allocations adding up over consecutive hours,
+      `NO_FEASIBLE_SLOT` fields, negative savings, exempt jobs, fallback prices, heuristic flag, item order.
+- [x] `ScheduleOptimizationIntegrationTest` rewritten (full app with H2): the contract example with `Z`
+      timestamps both ways, the latest-forecast query, the fallback curve, `400`s, `422`, `NO_FEASIBLE_SLOT`
+      as `200`, `403` without a token.
+- [x] `ScheduleOptimizationAcceptanceTest` rewritten for decision 6: create jobs with `/api/jobs`, read them
+      back with `GET /api/jobs`, send them as `jobs[]`; checks capacity per hour from the allocations,
+      consecutive hours, deadlines, exempt jobs unchanged and totals.
+- [x] `docs/schedule-optimize.http` rewritten to use `forecast[]`, so the examples no longer expire.
+- [ ] Not done: running the app against the real database (`run-dashboard`); covered by the H2 tests above.
 
 ## 5. Out of scope (Sprint 4)
 
