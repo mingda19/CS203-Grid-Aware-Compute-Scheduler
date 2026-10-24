@@ -219,13 +219,21 @@ export function AppShell({ children }: AppShellProps) {
     }
   }
 
-  const navItems = [
+  interface NavItem {
+    label: string
+    icon: React.ComponentType<{ className?: string }>
+    href: string
+    active?: boolean
+    badge?: string
+    highlight?: boolean
+  }
+
+  const navItems: NavItem[] = [
     { label: "Live Grid & Overview", icon: LayoutDashboard, href: "/overview", active: pathname === "/overview" || pathname === "/" },
-    { label: "Workload Scheduler", icon: CalendarClock, href: "/workloads", badge: "4 Active", active: pathname?.startsWith("/workloads") },
+    { label: "Workload Scheduler", icon: CalendarClock, href: "/workloads", active: pathname?.startsWith("/workloads") },
     { label: "Compute Jobs", icon: BriefcaseBusiness, href: "/jobs", active: pathname?.startsWith("/jobs") },
     { label: "Price & Wind Forecast", icon: TrendingDown, href: "/forecasts", active: pathname?.startsWith("/forecasts") },
-    { label: "Battery & Energy Mix", icon: BatteryCharging, href: "/energy", active: pathname?.startsWith("/energy") },
-    { label: "Pending Approvals", icon: CheckCircle2, href: "/approvals", badge: "1 New", highlight: true, active: pathname?.startsWith("/approvals") },
+    { label: "Pending Approvals", icon: CheckCircle2, href: "/approvals", active: pathname?.startsWith("/approvals") },
     { label: "Historical Audit Logs", icon: FileText, href: "/audit", active: pathname?.startsWith("/audit") },
   ]
 
