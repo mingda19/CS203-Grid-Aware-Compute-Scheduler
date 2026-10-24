@@ -30,38 +30,9 @@ interface DecisionAuditEntry {
   status: "Completed" | "Logged"
 }
 
-const mockDecisionHistory: DecisionAuditEntry[] = [
-  {
-    id: "DEC-2026-10-09-01",
-    timestamp: "2026-10-09 18:30 UTC",
-    action: "DISPATCH_APPROVED",
-    operator: "admin@gacs.internal",
-    details: "Dispatched 2 workloads (WL-409, WL-108) shifted to 01:30 UTC cheap wind interval.",
-    savings: "$3,290 saved",
-    status: "Completed",
-  },
-  {
-    id: "DEC-2026-10-09-02",
-    timestamp: "2026-10-09 12:15 UTC",
-    action: "PLAN_REJECTED",
-    operator: "operator@gacs.internal",
-    details: "Rejected plan: Priority deadline requested for Monte Carlo risk analysis batch.",
-    savings: "$0 (Plan Aborted)",
-    status: "Logged",
-  },
-  {
-    id: "DEC-2026-10-08-04",
-    timestamp: "2026-10-08 22:00 UTC",
-    action: "DISPATCH_APPROVED",
-    operator: "admin@gacs.internal",
-    details: "Automated overnight dispatch of Slurm HPC batch and chiller pre-cooling.",
-    savings: "$830 saved",
-    status: "Completed",
-  },
-]
+const mockDecisionHistory: DecisionAuditEntry[] = []
 
 export default function ApprovalsPage() {
-  const [workloads, setWorkloads] = React.useState<Workload[]>(initialWorkloads)
   const [planApproved, setPlanApproved] = React.useState(false)
   const [history, setHistory] = React.useState<DecisionAuditEntry[]>(mockDecisionHistory)
 
@@ -152,7 +123,14 @@ export default function ApprovalsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
-                {history.map((item) => (
+                {history.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-8 text-center text-xs text-muted-foreground">
+                      No operator decisions logged yet. Approved schedule plans will appear here.
+                    </td>
+                  </tr>
+                ) : (
+                  history.map((item) => (
                   <tr key={item.id} className="hover:bg-muted/40 transition-colors">
                     <td className="py-3 pl-2 font-mono text-xs font-semibold text-foreground">
                       {item.id}
@@ -193,7 +171,7 @@ export default function ApprovalsPage() {
                       </span>
                     </td>
                   </tr>
-                ))}
+                )))}
               </tbody>
             </table>
           </div>

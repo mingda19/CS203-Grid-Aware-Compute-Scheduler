@@ -5,61 +5,38 @@ import Link from "next/link"
 import {
   TrendingDown,
   TrendingUp,
-  RotateCcw,
   Cpu,
   Server,
   ArrowRight,
-  BatteryCharging,
-  LineChart as LineChartIcon,
-  CheckCircle2,
-  SlidersHorizontal,
+  BriefcaseBusiness,
+  Activity,
+  Plus,
+  Sparkles,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import {
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  ResponsiveContainer,
-  LineChart,
-} from "recharts"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { DataStatusBadge } from "@/components/ui/data-status-badge"
-import { priceApi, type PricePoint } from "@/lib/api"
+import { priceApi, jobsApi, freshnessApi, type PricePoint, type ComputeJob, type DataFreshnessResponse } from "@/lib/api"
 import { EndpointPipelineStatus } from "@/components/ui/efferd-dashboard-2-utils/endpoint-pipeline-status"
-import { DecisionPanel } from "@/components/ui/efferd-dashboard-2-utils/decision-panel"
-import { initialWorkloads, type Workload } from "@/lib/workload-data"
-import type { OptimizationWorkloadItem } from "@/lib/decision-utils"
 import { UnifiedPriceTimeline } from "@/components/forecasts/UnifiedPriceTimeline"
 import { formatSgtTime, formatSgtDateTime } from "@/lib/date-utils"
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
-} from "@/components/ui/chart"
-
-const chartConfig = {
-  price: {
-    label: "Actual Price ($/MWh)",
-    color: "#10b981",
-  },
-} satisfies ChartConfig
 
 export default function OverviewPage() {
-  const [workloads, setWorkloads] = React.useState<Workload[]>(initialWorkloads)
-  const [planApproved, setPlanApproved] = React.useState(false)
+  const [jobs, setJobs] = React.useState<ComputeJob[]>([])
+  const [jobsLoading, setJobsLoading] = React.useState(true)
   const [pricePoints, setPricePoints] = React.useState<PricePoint[]>([])
   const [pricesLoading, setPricesLoading] = React.useState(true)
   const [pricesError, setPricesError] = React.useState<string | null>(null)
+  const [freshness, setFreshness] = React.useState<DataFreshnessResponse | null>(null)
 
   React.useEffect(() => {
     let cancelled = false
+
+    // Fetch price history
     setPricesLoading(true)
     setPricesError(null)
-
     const end = new Date()
     const start = new Date(end)
     start.setUTCDate(start.getUTCDate() - 2)
@@ -82,39 +59,43 @@ export default function OverviewPage() {
         if (!cancelled) setPricesLoading(false)
       })
 
+    // Fetch compute jobs
+    setJobsLoading(true)
+    jobsApi
+      .list()
+      .then((res) => {
+        if (!cancelled) setJobs(res.data ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) setJobs([])
+      })
+      .finally(() => {
+        if (!cancelled) setJobsLoading(false)
+      })
+
+    // Fetch freshness
+    freshnessApi
+      .getStatus()
+      .then((res) => {
+        if (!cancelled && res.data) setFreshness(res.data)
+      })
+      .catch(() => {})
+
     return () => {
       cancelled = true
     }
   }, [])
 
-  const chartPricePoints = React.useMemo(() => {
-    // Show last 24 intervals for quick overview preview
-    const recentPoints = pricePoints.slice(-24)
-    return recentPoints.map((point) => {
-      const utcDate = new Date(`${point.intervalStartUtc}Z`)
-      return {
-        ...point,
-        price: point.sppUsdMwh,
-        time: utcDate.toLocaleString("en-US", {
-          timeZone: "UTC",
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: false,
-        }),
-      }
-    })
-  }, [pricePoints])
-
   const lmpMetrics = React.useMemo(() => {
     if (pricePoints.length === 0) {
       return {
         currentLmp: null,
-        formattedCurrent: "$28.40",
-        diffPercent: 18.2,
+        formattedCurrent: "—",
+        diffPercent: 0,
         isDrop: true,
-        rollingAvgFormatted: "$34.72",
-        peakPriceFormatted: "$142.50",
-        peakWindow: "Peak Window: 01:00 – 04:00 SGT",
+        rollingAvgFormatted: "—",
+        peakPriceFormatted: "—",
+        peakWindow: "Peak window: —",
       }
     }
     const latest = pricePoints[pricePoints.length - 1]
@@ -125,7 +106,7 @@ export default function OverviewPage() {
     const diff = avg !== 0 ? ((current - avg) / avg) * 100 : 0
 
     let maxPrice = -Infinity
-    let maxTimeStr = "01:00 – 04:00 SGT"
+    let maxTimeStr = "—"
     for (const p of pricePoints) {
       if (p.sppUsdMwh != null && p.sppUsdMwh > maxPrice) {
         maxPrice = p.sppUsdMwh
@@ -139,37 +120,14 @@ export default function OverviewPage() {
       diffPercent: Math.abs(diff),
       isDrop: diff <= 0,
       rollingAvgFormatted: `$${avg.toFixed(2)}`,
-      peakPriceFormatted: maxPrice > -Infinity ? `$${maxPrice.toFixed(2)}` : "$142.50",
-      peakWindow: `Peak Window: ${maxTimeStr}`,
+      peakPriceFormatted: `$${maxPrice.toFixed(2)}`,
+      peakWindow: `Peak at ${maxTimeStr}`,
     }
   }, [pricePoints])
 
-  const handleApprovePlan = (dispatchedItems: OptimizationWorkloadItem[]) => {
-    setPlanApproved(true)
-    setWorkloads((prev) =>
-      prev.map((w) => {
-        const item = dispatchedItems.find((d) => d.id === w.id)
-        if (item) {
-          return {
-            ...w,
-            scheduledWindow: item.proposedWindow,
-            status: item.type === "Crypto Mining" ? "Throttled" : "Running",
-          }
-        }
-        return w
-      })
-    )
-  }
-
-  const handleRejectPlan = (_reason: string, _notes: string) => {
-    setPlanApproved(false)
-    setWorkloads(initialWorkloads)
-  }
-
-  const handleResetPlan = () => {
-    setPlanApproved(false)
-    setWorkloads(initialWorkloads)
-  }
+  const totalCpuHours = React.useMemo(() => jobs.reduce((acc, j) => acc + (j.cpuHours || 0), 0), [jobs])
+  const totalGpuHours = React.useMemo(() => jobs.reduce((acc, j) => acc + (j.gpuHours || 0), 0), [jobs])
+  const flexibleJobsCount = React.useMemo(() => jobs.filter((j) => !j.isExempt).length, [jobs])
 
   return (
     <div id="overview-root" className="space-y-6">
@@ -188,37 +146,24 @@ export default function OverviewPage() {
             </span>
           </div>
           <p className="text-sm text-muted-foreground">
-            Probabilistic wholesale price dispatching with automated workload constraint preservation.
+            Wholesale electricity price dispatching with automated compute workload constraint preservation.
           </p>
         </div>
 
         <div className="flex items-center gap-3">
           <div className="text-right hidden sm:block">
-            <p className="text-xs text-muted-foreground">Planning Horizon</p>
-            <p className="text-sm font-semibold font-mono text-foreground">24 Hours (ERCOT North)</p>
+            <p className="text-xs text-muted-foreground">Market Hub</p>
+            <p className="text-sm font-semibold font-mono text-foreground">ERCOT North (LZ_NORTH)</p>
           </div>
           <Separator orientation="vertical" className="h-9 hidden sm:block" />
-          <Button
-            variant="outline"
-            className="text-xs gap-2"
-            onClick={() => {
-              handleResetPlan()
-              alert("Optimization engine re-evaluated models with latest EIA & ERCOT telemetry!")
-            }}
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            Re-run Solver
+          <Button asChild className="text-xs gap-2 bg-teal-600 hover:bg-teal-700 text-white font-medium">
+            <Link href="/jobs">
+              <Sparkles className="h-3.5 w-3.5" />
+              Run Optimizer
+            </Link>
           </Button>
         </div>
       </div>
-
-      {/* Human-in-the-Loop Primary Decision Panel */}
-      <DecisionPanel
-        planApproved={planApproved}
-        onApprove={handleApprovePlan}
-        onReject={handleRejectPlan}
-        onReset={handleResetPlan}
-      />
 
       {/* 4 Core KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -230,8 +175,8 @@ export default function OverviewPage() {
             </CardTitle>
             <DataStatusBadge
               size="sm"
-              status={pricesLoading ? "cached" : pricesError ? "unavailable" : pricePoints.length > 0 ? "live" : "demo"}
-              source="ERCOT Settlement Point Price (LZ_NORTH via Spring Boot backend)"
+              status={pricesLoading ? "cached" : pricesError ? "unavailable" : pricePoints.length > 0 ? "live" : "unavailable"}
+              source="ERCOT SPP (LZ_NORTH)"
               updatedAt={pricePoints[pricePoints.length - 1]?.intervalStartUtc ? `${pricePoints[pricePoints.length - 1].intervalStartUtc}Z` : null}
             />
           </CardHeader>
@@ -270,86 +215,89 @@ export default function OverviewPage() {
           </CardFooter>
         </Card>
 
-        {/* Card 2: Renewable Grid Mix */}
-        <Card className="hover:border-teal-500/50 transition-colors">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Clean Energy Mix
-            </CardTitle>
-            <DataStatusBadge
-              size="sm"
-              status="demo"
-              source="ERCOT Clean Fuel Mix Telemetry (Simulated Scenario)"
-            />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold font-mono text-foreground">58.6% <span className="text-xs font-normal text-muted-foreground">Green</span></div>
-            <div className="flex items-center gap-1.5 mt-2 text-xs text-teal-600 dark:text-teal-400">
-              <span className="font-semibold">Wind 41.2%</span>
-              <span className="text-muted-foreground">| Solar 17.4%</span>
-            </div>
-          </CardContent>
-          <CardFooter className="pt-0 text-[11px] text-muted-foreground border-t border-border/40 mt-3 flex justify-between">
-            <span>Carbon Intensity</span>
-            <span className="font-semibold text-foreground">298 gCO2/kWh</span>
-          </CardFooter>
-        </Card>
-
-        {/* Card 3: Active Load & BESS */}
+        {/* Card 2: Compute Workloads */}
         <Card className="hover:border-blue-500/50 transition-colors">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Compute Load & BESS
+              Registered Jobs
             </CardTitle>
-            <DataStatusBadge
-              size="sm"
-              status="demo"
-              source="Facility Adapter (BESS & Slurm/K8s Compute Telemetry)"
-            />
+            <span className="text-[11px] font-mono text-muted-foreground">
+              {flexibleJobsCount} flexible
+            </span>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono text-foreground">3.45 MW <span className="text-xs font-normal text-muted-foreground">/ 5.0 MW</span></div>
+            <div className="text-2xl font-bold font-mono text-foreground">
+              {jobs.length} <span className="text-xs font-normal text-muted-foreground">jobs total</span>
+            </div>
             <div className="flex items-center gap-1.5 mt-2 text-xs text-blue-600 dark:text-blue-400">
               <Cpu className="h-3.5 w-3.5" />
-              <span className="font-semibold">4 Tasks</span>
-              <span className="text-muted-foreground">(2 deferred to cheap hour)</span>
+              <span className="font-semibold">{totalCpuHours.toFixed(0)} CPU-hrs</span>
+              <span className="text-muted-foreground">· {totalGpuHours.toFixed(0)} GPU-hrs</span>
             </div>
           </CardContent>
           <CardFooter className="pt-0 text-[11px] text-muted-foreground border-t border-border/40 mt-3 flex justify-between">
-            <span>Battery State of Charge</span>
-            <span className="font-semibold text-emerald-600 dark:text-emerald-400">78% (Ready)</span>
+            <span>Rescheduling Status</span>
+            <span className="font-semibold text-foreground">
+              {jobs.length > 0 ? `${flexibleJobsCount}/${jobs.length} reschedulable` : "No jobs queued"}
+            </span>
           </CardFooter>
         </Card>
 
-        {/* Card 4: Cost Savings */}
-        <Card className="hover:border-amber-500/50 transition-colors bg-gradient-to-br from-card to-emerald-500/5">
+        {/* Card 3: Data Freshness */}
+        <Card className="hover:border-teal-500/50 transition-colors">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Projected Savings
+              Data Ingestion
             </CardTitle>
             <DataStatusBadge
               size="sm"
-              status="demo"
-              source="Cost Optimization Solver (XGBoost-LSTM v2.4)"
+              status={freshness?.datasets?.some((d) => d.status === "HEALTHY") ? "live" : "cached"}
+              source="ERCOT Telemetry Pipeline"
             />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
-              $4,120 <span className="text-xs font-normal text-muted-foreground">today</span>
+            <div className="text-2xl font-bold font-mono text-foreground flex items-center gap-2">
+              <Activity className="h-5 w-5 text-emerald-500" />
+              <span>Healthy</span>
             </div>
-            <div className="flex items-center gap-1.5 mt-2 text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
-              <TrendingUp className="h-3.5 w-3.5" />
-              <span>+22.4% net efficiency</span>
+            <div className="flex items-center gap-1.5 mt-2 text-xs text-teal-600 dark:text-teal-400">
+              <span>5-minute settlement intervals ingested</span>
             </div>
           </CardContent>
           <CardFooter className="pt-0 text-[11px] text-muted-foreground border-t border-border/40 mt-3 flex justify-between">
-            <span>SLA & Deadline Adherence</span>
-            <span className="font-semibold text-foreground">100% (0 SLA Risk)</span>
+            <span>Checked At</span>
+            <span className="font-mono text-foreground">
+              {freshness?.checkedAt ? formatSgtTime(freshness.checkedAt, true) : "Active"}
+            </span>
+          </CardFooter>
+        </Card>
+
+        {/* Card 4: Optimizer Action */}
+        <Card className="hover:border-amber-500/50 transition-colors bg-gradient-to-br from-card to-teal-500/5">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              Schedule Optimizer
+            </CardTitle>
+            <span className="rounded-full bg-teal-500/15 px-2 py-0.5 text-[10px] font-semibold text-teal-600 dark:text-teal-400 border border-teal-500/30">
+              v1.0 Ready
+            </span>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold font-mono text-teal-600 dark:text-teal-400">
+              {jobs.length > 0 ? "Ready" : "Waiting for Jobs"}
+            </div>
+            <div className="flex items-center gap-1.5 mt-2 text-xs text-muted-foreground">
+              <span>Places flexible jobs into low-cost LMP price valleys</span>
+            </div>
+          </CardContent>
+          <CardFooter className="pt-0 text-[11px] text-muted-foreground border-t border-border/40 mt-3 flex justify-between">
+            <span>Target Market</span>
+            <span className="font-semibold text-foreground">LZ_NORTH (48h)</span>
           </CardFooter>
         </Card>
       </div>
 
-      {/* Snapshot Modules: Quick Access into Detailed Workflows */}
+      {/* Snapshot Modules */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Continuous Price Timeline Preview */}
         <div className="flex flex-col">
@@ -367,54 +315,66 @@ export default function OverviewPage() {
             <div>
               <CardTitle className="text-base font-semibold flex items-center gap-2">
                 <Server className="h-4 w-4 text-emerald-500" />
-                Active Workload Queue
+                Submitted Compute Jobs
               </CardTitle>
               <CardDescription className="text-xs mt-0.5">
-                Top scheduled compute tasks registered with grid constraints.
+                Workloads registered by operators for grid-aware dispatching.
               </CardDescription>
             </div>
             <Button asChild variant="ghost" size="sm" className="text-xs gap-1.5 text-emerald-600 dark:text-emerald-400">
-              <Link href="/workloads">
-                Manage Queue <ArrowRight className="h-3.5 w-3.5" />
+              <Link href="/jobs">
+                Manage Jobs <ArrowRight className="h-3.5 w-3.5" />
               </Link>
             </Button>
           </CardHeader>
           <CardContent className="space-y-3">
-            {workloads.slice(0, 3).map((w) => (
-              <div
-                key={w.id}
-                className="flex items-center justify-between p-3 rounded-xl border border-border/70 bg-card hover:bg-muted/30 transition-colors"
-              >
-                <div className="space-y-0.5">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-foreground">{w.name}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-muted text-muted-foreground font-mono">
-                      {w.powerKw} kW
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    Window: <span className="font-mono text-foreground">{w.scheduledWindow}</span> · Deadline: {w.deadline}
-                  </p>
-                </div>
-                <div className="text-right">
-                  <span
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                      w.status === "Running"
-                        ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30"
-                        : w.status === "Throttled"
-                        ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
-                        : "bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30"
-                    }`}
-                  >
-                    <span className={`h-1 w-1 rounded-full ${w.status === "Running" ? "bg-emerald-500 animate-pulse" : w.status === "Throttled" ? "bg-amber-500" : "bg-blue-500"}`} />
-                    {w.status}
-                  </span>
-                  <p className="text-[11px] font-mono font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5">
-                    {w.savings}
-                  </p>
-                </div>
+            {jobsLoading ? (
+              <p className="py-8 text-center text-xs text-muted-foreground">Loading compute jobs…</p>
+            ) : jobs.length === 0 ? (
+              <div className="py-8 text-center space-y-2">
+                <BriefcaseBusiness className="h-8 w-8 mx-auto text-muted-foreground/30" />
+                <p className="text-xs font-medium text-foreground">No compute jobs submitted yet</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Create a compute job to start optimizing execution against wholesale power prices.
+                </p>
+                <Button asChild size="sm" className="mt-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs">
+                  <Link href="/jobs">
+                    <Plus className="h-3.5 w-3.5 mr-1.5" /> Create Job
+                  </Link>
+                </Button>
               </div>
-            ))}
+            ) : (
+              jobs.slice(0, 4).map((j) => (
+                <div
+                  key={j.id}
+                  className="flex items-center justify-between p-3 rounded-xl border border-border/70 bg-card hover:bg-muted/30 transition-colors"
+                >
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-foreground">{j.name}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-muted text-muted-foreground font-mono">
+                        {j.cpuHours} CPU · {j.gpuHours} GPU
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Start: <span className="font-mono text-foreground">{formatSgtDateTime(j.originalStartTime)}</span> · Deadline: {formatSgtDateTime(j.deadline)}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <span
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                        j.isExempt
+                          ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
+                          : "bg-teal-500/15 text-teal-600 dark:text-teal-400 border border-teal-500/30"
+                      }`}
+                    >
+                      {j.isExempt ? "Exempt" : `+${j.flexibilityWindowHours}h window`}
+                    </span>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">{j.status}</p>
+                  </div>
+                </div>
+              ))
+            )}
           </CardContent>
         </Card>
       </div>

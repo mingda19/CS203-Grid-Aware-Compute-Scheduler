@@ -35,7 +35,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
-import { UnifiedPriceTimeline } from "@/components/forecasts/UnifiedPriceTimeline"
+import { UnifiedPriceTimeline, type ForecastTelemetry } from "@/components/forecasts/UnifiedPriceTimeline"
 import {
   formatSgtDateTime,
   formatSgtChartTick,
@@ -54,6 +54,7 @@ const chartConfig = {
 export default function ForecastsPage() {
   const [hubLocation, setHubLocation] = React.useState("LZ_NORTH")
   const [showAdvancedHistory, setShowAdvancedHistory] = React.useState(false)
+  const [telemetry, setTelemetry] = React.useState<ForecastTelemetry | null>(null)
 
   // Custom historical date query state in SGT
   const [dateRange, setDateRange] = React.useState(() => {
@@ -69,14 +70,12 @@ export default function ForecastsPage() {
   const [pricePoints, setPricePoints] = React.useState<PricePoint[]>([])
   const [pricesLoading, setPricesLoading] = React.useState(false)
   const [pricesError, setPricesError] = React.useState<string | null>(null)
-  const [totalPriceRecords, setTotalPriceRecords] = React.useState(0)
 
   // Fetch custom historical range if advanced drawer is opened
   React.useEffect(() => {
     if (!showAdvancedHistory) return
     if (dateRange.startDate > dateRange.endDate) {
       setPricePoints([])
-      setTotalPriceRecords(0)
       setPricesError(null)
       return
     }
@@ -99,7 +98,6 @@ export default function ForecastsPage() {
         if (cancelled) return
         if (!response.success || !response.data) throw new Error(response.message || "Unable to load price history")
         setPricePoints(response.data.points.filter((point) => point.sppUsdMwh != null))
-        setTotalPriceRecords(response.data.totalRecords)
       })
       .catch((error: unknown) => {
         if (!cancelled) setPricesError(error instanceof Error ? error.message : "Unable to load price history")
@@ -133,11 +131,11 @@ export default function ForecastsPage() {
         <div>
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-2xl font-bold tracking-tight text-foreground">
-              Price & Clean Energy Forecast
+              Electricity Price & LMP Forecast
             </h1>
             <DataStatusBadge
               size="sm"
-              status="live"
+              status={telemetry?.isLoading ? "cached" : telemetry?.avgLmp != null ? "live" : "unavailable"}
               source={`ERCOT Settlement Point Price & XGBoost ML Predictions (${hubLocation})`}
             />
           </div>
@@ -164,69 +162,86 @@ export default function ForecastsPage() {
         </div>
       </div>
 
-      {/* 4 Forecast Telemetry Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* 3 Forecast Telemetry Metric Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Card 1: Interval LMP Mean */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">
+        <Card className="hover:border-emerald-500/40 transition-colors">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Average Interval LMP
             </CardTitle>
+            <DataStatusBadge
+              size="sm"
+              status={telemetry?.isLoading ? "cached" : telemetry?.avgLmp != null ? "live" : "unavailable"}
+              source={`ERCOT SPP (${hubLocation})`}
+            />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono text-foreground">
-              $34.72 <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">Rolling 24h operational window mean</p>
+            {telemetry?.isLoading && telemetry.avgLmp == null ? (
+              <div className="h-8 w-28 bg-muted/60 animate-pulse rounded my-1" />
+            ) : (
+              <div className="text-2xl font-bold font-mono text-foreground">
+                {telemetry?.avgLmp != null ? `$${telemetry.avgLmp.toFixed(2)}` : "—"}{" "}
+                <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground mt-1">
+              {telemetry?.currentLmp != null
+                ? `Latest interval: $${telemetry.currentLmp.toFixed(2)}/MWh (${telemetry.totalIntervals} intervals)`
+                : "Rolling operational window mean"}
+            </p>
           </CardContent>
         </Card>
 
         {/* Card 2: Peak Spike in SGT */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">
+        <Card className="hover:border-amber-500/40 transition-colors">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Impending Peak Spike
             </CardTitle>
+            <TrendingUp className="h-4 w-4 text-amber-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono text-amber-500">
-              $142.50 <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
-            </div>
+            {telemetry?.isLoading && telemetry.peakForecastPrice == null ? (
+              <div className="h-8 w-28 bg-muted/60 animate-pulse rounded my-1" />
+            ) : (
+              <div className="text-2xl font-bold font-mono text-amber-500">
+                {telemetry?.peakForecastPrice != null ? `$${telemetry.peakForecastPrice.toFixed(2)}` : "—"}{" "}
+                <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
+              </div>
+            )}
             <p className="text-xs text-muted-foreground mt-1">
-              Peak window: <strong className="text-foreground">01:00 – 04:00 SGT</strong>
+              Peak window:{" "}
+              <strong className="text-foreground">
+                {telemetry?.peakForecastWindow || "—"}
+              </strong>
             </p>
           </CardContent>
         </Card>
 
         {/* Card 3: Opportunity Valley in SGT */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">
+        <Card className="hover:border-emerald-500/40 transition-colors">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Lowest Opportunity Price
             </CardTitle>
+            <TrendingDown className="h-4 w-4 text-emerald-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
-              $14.80 <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
-            </div>
+            {telemetry?.isLoading && telemetry.lowestOpportunityPrice == null ? (
+              <div className="h-8 w-28 bg-muted/60 animate-pulse rounded my-1" />
+            ) : (
+              <div className="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                {telemetry?.lowestOpportunityPrice != null ? `$${telemetry.lowestOpportunityPrice.toFixed(2)}` : "—"}{" "}
+                <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
+              </div>
+            )}
             <p className="text-xs text-muted-foreground mt-1">
-              Wind corridor: <strong className="text-foreground">09:30 – 13:30 SGT</strong>
+              Opportunity window:{" "}
+              <strong className="text-foreground">
+                {telemetry?.lowestOpportunityWindow || "—"}
+              </strong>
             </p>
-          </CardContent>
-        </Card>
-
-        {/* Card 4: Renewable Grid Generation */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">
-              Renewable Output
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold font-mono text-teal-600 dark:text-teal-400">
-              58.6% <span className="text-xs font-normal text-muted-foreground">Clean</span>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">Wind 41.2% · Solar 17.4%</p>
           </CardContent>
         </Card>
       </div>
@@ -235,6 +250,7 @@ export default function ForecastsPage() {
       <UnifiedPriceTimeline
         hubLocation={hubLocation}
         onLocationChange={setHubLocation}
+        onTelemetryChange={setTelemetry}
         variant="full"
         height={380}
       />

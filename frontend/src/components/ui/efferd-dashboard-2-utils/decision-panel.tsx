@@ -44,72 +44,7 @@ export interface DecisionPanelProps {
   onReset: () => void
 }
 
-const initialOptimizationWorkloads: OptimizationWorkloadItem[] = [
-  {
-    id: "WL-409",
-    name: "Llama-3-70B Fine-Tuning Run #4",
-    type: "ML Training",
-    cluster: "64x NVIDIA H100 SXM5",
-    powerKw: 1200,
-    originalWindow: "01:00 – 05:00 SGT",
-    proposedWindow: "09:30 – 13:30 SGT",
-    deadline: "18:00 SGT (Today)",
-    baselineCostUsd: 5640,
-    optimizedCostUsd: 3800,
-    savingsUsd: 1840,
-    slackHours: 4.5,
-    rationale: "Shifted forward to take advantage of sustained West Texas wind valley ($14.80/MWh).",
-    included: true,
-  },
-  {
-    id: "WL-108",
-    name: "ASIC Pod Alpha - Dynamic Mining",
-    type: "Crypto Mining",
-    cluster: "Antminer S19 Pro+ Pod 2",
-    powerKw: 1800,
-    originalWindow: "01:00 – 04:00 SGT (Full)",
-    proposedWindow: "01:00 – 04:00 SGT (Throttled)",
-    deadline: "Flexible Throughput",
-    baselineCostUsd: 4680,
-    optimizedCostUsd: 3230,
-    savingsUsd: 1450,
-    slackHours: 12.0,
-    rationale: "Throttled to 200 kW baseline to shed load during ERCOT thermal spike ($142.50/MWh).",
-    included: true,
-  },
-  {
-    id: "WL-812",
-    name: "Monte Carlo Risk Analysis Batch",
-    type: "HPC Batch",
-    cluster: "Slurm HPC Cluster (96 Nodes)",
-    powerKw: 450,
-    originalWindow: "14:00 – 16:30 SGT",
-    proposedWindow: "10:00 – 12:30 SGT",
-    deadline: "16:00 SGT (Today)",
-    baselineCostUsd: 1390,
-    optimizedCostUsd: 870,
-    savingsUsd: 520,
-    slackHours: 3.5,
-    rationale: "Moved into morning low-cost LMP block before peak industrial ramp.",
-    included: true,
-  },
-  {
-    id: "WL-022",
-    name: "Facility Thermal Chiller Pre-Cool",
-    type: "HVAC Pre-Cool",
-    cluster: "Trane Centrifugal Chiller Bank",
-    powerKw: 320,
-    originalWindow: "01:00 – 03:30 SGT",
-    proposedWindow: "21:30 – 00:00 SGT",
-    deadline: "Peak Window (01:00 SGT)",
-    baselineCostUsd: 1280,
-    optimizedCostUsd: 970,
-    savingsUsd: 310,
-    slackHours: 2.5,
-    rationale: "Pre-chill thermal storage tanks so mechanical chillers can idle through peak LMP window.",
-    included: true,
-  },
-]
+const initialOptimizationWorkloads: OptimizationWorkloadItem[] = []
 
 export function DecisionPanel({
   planApproved,
@@ -127,8 +62,21 @@ export function DecisionPanel({
   const [rejectionReason, setRejectionReason] = React.useState<string | null>(null)
   const [dispatchedAt, setDispatchedAt] = React.useState<string | null>(null)
 
-  const currentUser = getStoredUser()
   const impact = React.useMemo(() => calculateDecisionImpact(workloads), [workloads])
+
+  if (workloads.length === 0) {
+    return (
+      <Card className="border-border">
+        <CardContent className="py-12 text-center space-y-3">
+          <Sparkles className="h-8 w-8 mx-auto text-muted-foreground/40" />
+          <h3 className="font-semibold text-base text-foreground">No Optimization Approvals Pending</h3>
+          <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+            Submit compute workloads and trigger schedule optimization to evaluate price shifts and review approvals here.
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
 
   const toggleWorkloadInclusion = (id: string) => {
     if (planApproved || planRejected) return
