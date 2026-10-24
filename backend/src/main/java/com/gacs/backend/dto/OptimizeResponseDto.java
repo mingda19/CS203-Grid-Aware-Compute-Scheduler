@@ -1,82 +1,97 @@
 package com.gacs.backend.dto;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * Response payload for {@code POST /api/schedules/optimize}, per the Optimizer Output
- * Contract in {@code docs/api-contract.md} (GRID-124 AC4, AC5). Delivered inside the
- * standard {@link ApiResponse} envelope.
+ * Response payload for {@code POST /api/schedules/optimize} (docs/api-contract.md section 6.4), inside the
+ * standard {@link ApiResponse} envelope. Timestamps are UTC with a {@code Z} suffix (section 2.4).
  *
- * <p>All dollar figures are rounded to cent precision, and the summary totals are
- * derived from the already-rounded per-job figures so the reported baseline, optimized
- * and savings values always reconcile.
+ * <p>Costs are rounded to 4 decimal places. Per-job costs are rounded first, and the run totals are sums of
+ * those rounded figures, so every number shown adds up exactly. Savings may be negative: each job's baseline
+ * prices it alone on the cluster, so jobs that cannot all run at their original times can cost more.
  */
 @Schema(description = "Optimized schedule plan")
 public record OptimizeResponseDto(
 
-    @Schema(description = "Identifier for this optimization run", example = "run-a1b2c3d4-e5f6-7890-abcd-1234567890ab")
+    @Schema(description = "UUID v4 generated per run, not stored yet", example = "7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44")
     String runId,
 
-    @Schema(description = "Outcome of the run", example = "OPTIMAL")
+    @Schema(description = "SCHEDULED when every job is scheduled or exempt; NEEDS_ATTENTION when at least one "
+        + "job is NO_FEASIBLE_SLOT", example = "SCHEDULED")
     String status,
 
-    @Schema(description = "Total cost of leaving every job at its original time", example = "4120.00")
+    @Schema(description = "True when the solver proved no cheaper schedule exists; false when a heuristic "
+        + "produced the plan, which still meets every rule", example = "true")
+    boolean provenOptimal,
+
+    @Schema(description = "Baseline cost of the scheduled jobs (NO_FEASIBLE_SLOT jobs excluded)", example = "1.0752")
     double baselineCostUsd,
 
-    @Schema(description = "Total cost of the proposed schedule", example = "3140.25")
+    @Schema(description = "Cost of the proposed schedule (NO_FEASIBLE_SLOT jobs excluded)", example = "0.2304")
     double optimizedCostUsd,
 
-    @Schema(description = "Baseline cost minus optimized cost", example = "979.75")
+    @Schema(description = "baselineCostUsd minus optimizedCostUsd; may be negative", example = "0.8448")
     double projectedSavingsUsd,
 
-    @Schema(description = "Savings as a percentage of baseline cost", example = "23.78")
+    @Schema(description = "Savings as a percentage of baselineCostUsd, 2 decimal places; 0 when the baseline "
+        + "is 0", example = "78.57")
     double projectedSavingsPercent,
 
-    @Schema(description = "Operator-facing summary of what the run changed and why")
+    @Schema(description = "Plain-English summary of the run")
     String plainEnglishExplanation,
 
-    @Schema(description = "True when stored forecasts were unavailable and the seeded "
-        + "fallback price curve was used for both baseline and optimized costs")
+    @Schema(description = "True when no stored forecast covered the window and the history-based fallback "
+        + "price curve was used")
     boolean usedSeededFallbackPrices,
 
-    @Schema(description = "True when the exact solver could not certify a global optimum in "
-        + "its time budget and a heuristic (simulated-annealing) fallback plan is reported "
-        + "instead - a feasible, deadline-safe and capacity-safe schedule, but not a proven "
-        + "minimum. False whenever `status` is OPTIMAL.")
-    boolean usedHeuristicFallback,
-
-    @Schema(description = "Per-job placement decisions")
+    @Schema(description = "Every input job exactly once, in request order")
     List<ScheduleItem> items
 ) {
 
-    /** A proven global minimum: the exact solver certified optimality within its time budget. */
-    public static final String STATUS_OPTIMAL = "OPTIMAL";
+    public static final String STATUS_SCHEDULED = "SCHEDULED";
+    public static final String STATUS_NEEDS_ATTENTION = "NEEDS_ATTENTION";
 
-    /** A feasible, deadline-safe and capacity-safe schedule that is not proven optimal -
-     *  reported by the greedy stub, or by the simulated-annealing fallback (GRID-125). */
-    public static final String STATUS_FEASIBLE = "FEASIBLE";
+    /** Response timestamps: UTC, with the {@code Z} suffix the contract uses. */
+    static final String UTC_PATTERN = "yyyy-MM-dd'T'HH:mm:ss'Z'";
 
-    @Schema(description = "Placement decision for one job")
+    @Schema(description = "Result for one job")
     public record ScheduleItem(
-        @Schema(description = "Job identifier", example = "101") Long jobId,
-        @Schema(description = "Job name", example = "LLM Fine-Tuning Run #42") String jobName,
-        @Schema(description = "Slot the job would have run in unchanged", example = "2026-10-20T10:00:00")
-        LocalDateTime baselineStart,
-        @Schema(description = "Slot the job is scheduled into", example = "2026-10-21T01:00:00")
-        LocalDateTime scheduledStart,
-        @Schema(description = "End of the scheduled slot, always one hour after the start", example = "2026-10-21T02:00:00")
-        LocalDateTime scheduledEnd,
-        @Schema(description = "CPU core-hours allocated", example = "64.0") double allocatedCpuHours,
-        @Schema(description = "GPU hours allocated", example = "16.0") double allocatedGpuHours,
-        @Schema(description = "Why this job ended up where it did", example = "RESCHEDULED")
+        @Schema(description = "Job id from the request", example = "101") Long jobId,
+        @Schema(description = "Job name from the request", example = "LLM Fine-Tuning Run #42") String jobName,
+        @Schema(description = "The job's originalStartTime", example = "2026-10-20T10:00:00Z")
+        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = UTC_PATTERN) LocalDateTime baselineStart,
+        @Schema(description = "Start of the first slot used; null for NO_FEASIBLE_SLOT", example = "2026-10-21T01:00:00Z")
+        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = UTC_PATTERN) LocalDateTime scheduledStart,
+        @Schema(description = "End of the last slot used; null for NO_FEASIBLE_SLOT", example = "2026-10-21T02:00:00Z")
+        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = UTC_PATTERN) LocalDateTime scheduledEnd,
+        @Schema(description = "CPU-hours allocated over all slots; 0 for NO_FEASIBLE_SLOT", example = "64.0")
+        double allocatedCpuHours,
+        @Schema(description = "GPU-hours allocated over all slots; 0 for NO_FEASIBLE_SLOT", example = "16.0")
+        double allocatedGpuHours,
+        @Schema(description = "Slots used and the hours taken in each; empty for NO_FEASIBLE_SLOT")
+        List<Allocation> allocations,
+        @Schema(description = "OPTIMISED, UNCHANGED_EXEMPT or NO_FEASIBLE_SLOT", example = "OPTIMISED")
         String perJobStatus,
-        @Schema(description = "Cost of this job at its baseline slot", example = "4.12") double baselineCostUsd,
-        @Schema(description = "Cost of this job at its scheduled slot", example = "3.14") double optimizedCostUsd,
-        @Schema(description = "Baseline cost minus optimized cost for this job - can be "
-            + "negative under the real solver (GRID-125) when raising this job's own cost "
-            + "lowers the run's total cost by more", example = "0.98") double savingsUsd
+        @Schema(description = "Why the job was not scheduled; null otherwise")
+        String reason,
+        @Schema(description = "Cost of the job's baseline; null for NO_FEASIBLE_SLOT", example = "1.0752")
+        Double baselineCostUsd,
+        @Schema(description = "Cost of the job's scheduled plan; null for NO_FEASIBLE_SLOT", example = "0.2304")
+        Double optimizedCostUsd,
+        @Schema(description = "baselineCostUsd minus optimizedCostUsd; may be negative; null for NO_FEASIBLE_SLOT",
+            example = "0.8448")
+        Double savingsUsd
+    ) {}
+
+    @Schema(description = "Work done by a job in one slot")
+    public record Allocation(
+        @Schema(description = "Slot start", example = "2026-10-21T01:00:00Z")
+        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = UTC_PATTERN) LocalDateTime intervalStartUtc,
+        @Schema(description = "CPU-hours in this slot", example = "64.0") double cpuHours,
+        @Schema(description = "GPU-hours in this slot", example = "16.0") double gpuHours
     ) {}
 }

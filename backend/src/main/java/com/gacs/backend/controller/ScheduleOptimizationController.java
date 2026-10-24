@@ -16,7 +16,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.security.Principal;
 
 /**
  * Schedule optimization endpoint, per the Schedule Optimization Engine Contract
@@ -37,11 +36,11 @@ public class ScheduleOptimizationController {
 
     @Operation(
         summary = "Run the schedule optimizer",
-        description = "Evaluates the supplied jobs - or, when the jobs field is omitted, the "
-            + "authenticated operator's own eligible stored jobs - against the price forecast "
-            + "for the requested location and horizon, and returns a proposed schedule with its "
-            + "cost against the fixed-schedule baseline. Jobs that cannot be moved are returned "
-            + "at their original time with a per-job status explaining why."
+        description = "Places the supplied jobs against the price forecast (an explicit forecast[] or a "
+            + "forecastLocation) and the cluster's per-hour capacity. Each job's work is split into "
+            + "hourly shares over consecutive hours. Places as many jobs as possible, then minimises "
+            + "cost, and reports each job's cost against its baseline. A job with no room left is "
+            + "returned as NO_FEASIBLE_SLOT with a reason; that is not an error."
     )
     @ApiResponses(value = {
         @io.swagger.v3.oas.annotations.responses.ApiResponse(
@@ -51,8 +50,14 @@ public class ScheduleOptimizationController {
         ),
         @io.swagger.v3.oas.annotations.responses.ApiResponse(
             responseCode = "400",
-            description = "Invalid request: empty job set, malformed job fields, a horizon outside "
-                + "1-168 hours, non-positive capacity, or a job whose baseline cannot be priced."
+            description = "Invalid input: missing or malformed fields, duplicate job ids, a time not on the "
+                + "hour, deadline before start, no forecast or forecastLocation, or a job that cannot "
+                + "finish by its deadline even alone on the cluster."
+        ),
+        @io.swagger.v3.oas.annotations.responses.ApiResponse(
+            responseCode = "422",
+            description = "Missing data: a job's baseline hours have no forecast price, so its baseline "
+                + "cannot be priced."
         ),
         @io.swagger.v3.oas.annotations.responses.ApiResponse(
             responseCode = "403",
@@ -61,10 +66,9 @@ public class ScheduleOptimizationController {
     })
     @PostMapping("/optimize")
     public ResponseEntity<ApiResponse<OptimizeResponseDto>> optimize(
-        @RequestBody(required = false) OptimizeRequestDto request,
-        Principal principal
+        @RequestBody(required = false) OptimizeRequestDto request
     ) {
-        OptimizeResponseDto plan = optimizationService.optimize(request, principal.getName());
+        OptimizeResponseDto plan = optimizationService.optimize(request);
         return ResponseEntity.ok(ApiResponse.ok("Optimized schedule generated", plan));
     }
 }
