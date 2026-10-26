@@ -83,6 +83,81 @@ export type ComputeJobPayload = Pick<ComputeJob,
   "name" | "cpuHours" | "gpuHours" | "originalStartTime" | "deadline" | "flexibilityWindowHours" | "isExempt"
 > & { rawConstraints?: string | null }
 
+export interface FacilityConfig {
+  id?: number
+  ownerEmail?: string
+  name: string
+  maxCpuHours: number
+  maxGpuHours: number
+  location: string
+  updatedAt?: string
+}
+
+export interface OptimizeJobInput {
+  id: number
+  name: string
+  cpuHours: number
+  gpuHours: number
+  originalStartTime: string
+  deadline: string
+  flexibilityWindowHours: number
+  isExempt: boolean
+}
+
+export interface OptimizeRequest {
+  jobs: OptimizeJobInput[]
+  clusterCapacity?: {
+    maxConcurrentCpuHours?: number
+    maxConcurrentGpuHours?: number
+  }
+  forecastLocation?: string
+  horizonHours?: number
+  forecast?: Array<{
+    intervalStartUtc: string
+    predictedPrice: number
+  }>
+  capacityOverrides?: Array<{
+    intervalStartUtc: string
+    maxCpuHours: number
+    maxGpuHours: number
+  }>
+}
+
+export interface AllocationSlot {
+  intervalStartUtc: string
+  cpuHours: number
+  gpuHours: number
+}
+
+export interface ScheduleItem {
+  jobId: number
+  jobName: string
+  baselineStart: string
+  scheduledStart: string | null
+  scheduledEnd: string | null
+  allocatedCpuHours: number
+  allocatedGpuHours: number
+  allocations: AllocationSlot[]
+  perJobStatus: "OPTIMISED" | "UNCHANGED_EXEMPT" | "NO_FEASIBLE_SLOT"
+  reason: string | null
+  baselineCostUsd: number | null
+  optimizedCostUsd: number | null
+  savingsUsd: number | null
+}
+
+export interface OptimizeResponse {
+  runId: string
+  status: "SCHEDULED" | "NEEDS_ATTENTION"
+  provenOptimal: boolean
+  baselineCostUsd: number
+  optimizedCostUsd: number
+  projectedSavingsUsd: number
+  projectedSavingsPercent: number
+  plainEnglishExplanation: string
+  usedSeededFallbackPrices: boolean
+  items: ScheduleItem[]
+}
+
 export interface CreateWorkloadSchedule {
   title: string
   type: string
@@ -307,6 +382,27 @@ export const jobsApi = {
   },
   remove(id: number): Promise<ApiResponse<void>> {
     return fetchJson<ApiResponse<void>>(`/api/jobs/${id}`, { method: "DELETE" })
+  },
+}
+
+export const optimizerApi = {
+  optimize(payload: OptimizeRequest): Promise<ApiResponse<OptimizeResponse>> {
+    return fetchJson<ApiResponse<OptimizeResponse>>("/api/schedules/optimize", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+}
+
+export const facilityApi = {
+  get(): Promise<ApiResponse<FacilityConfig>> {
+    return fetchJson<ApiResponse<FacilityConfig>>("/api/facilities/me", { cache: "no-store" })
+  },
+  update(payload: FacilityConfig): Promise<ApiResponse<FacilityConfig>> {
+    return fetchJson<ApiResponse<FacilityConfig>>("/api/facilities/me", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
   },
 }
 

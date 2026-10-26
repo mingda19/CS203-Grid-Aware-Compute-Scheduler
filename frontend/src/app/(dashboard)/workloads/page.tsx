@@ -1,71 +1,178 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import {
   Calendar,
   Table,
-  Plus,
-  Layers,
+  RefreshCw,
+  Sparkles,
+  BriefcaseBusiness,
+  CheckCircle2,
+  AlertCircle,
+  ArrowRight,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { GoogleCalendarView } from "@/components/schedule-calendar/GoogleCalendarView"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { DataStatusBadge } from "@/components/ui/data-status-badge"
-import { initialWorkloads, type Workload } from "@/lib/workload-data"
-import { WorkloadQueue } from "@/components/workloads/WorkloadQueue"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
+  jobsApi,
+  optimizerApi,
+  facilityApi,
+  workloadScheduleApi,
+  type ComputeJob,
+  type OptimizeJobInput,
+} from "@/lib/api"
+import { formatSgtDateTime } from "@/lib/date-utils"
+import type { Workload } from "@/lib/workload-data"
+import { WorkloadQueue } from "@/components/workloads/WorkloadQueue"
+
+function computeJobToWorkload(job: ComputeJob): Workload {
+  const power = Math.round(job.cpuHours * 5 + job.gpuHours * 25) || 250
+  return {
+    id: `JOB-${job.id}`,
+    name: job.name,
+    type: job.gpuHours > 0 ? "ML Training" : "HPC Batch",
+    powerKw: power,
+    actualPowerKw: power,
+    scheduledWindow: `${formatSgtDateTime(job.originalStartTime)} (Baseline)`,
+    deadline: formatSgtDateTime(job.deadline),
+    savings: job.isExempt ? "Pinned (Exempt)" : "Pending Solver Optimization",
+    status:
+      job.status === "COMPLETED"
+        ? "Completed"
+        : job.status === "RUNNING"
+        ? "Running"
+        : "Scheduled",
+    machineCluster: `${job.cpuHours} CPU-hrs · ${job.gpuHours} GPU-hrs`,
+    priority: job.isExempt ? "Critical" : "Normal",
+    hardware: `${job.cpuHours} vCPUs · ${job.gpuHours} GPUs`,
+    precedence: job.isExempt
+      ? "Pinned start time (Exempt from rescheduling)"
+      : `Flexibility window: ${job.flexibilityWindowHours}h`,
+    slaBuffer: `${job.flexibilityWindowHours}h delay tolerance`,
+    slaRisk: job.isExempt ? "Zero" : "Low",
+    scheduleRationale: job.rawConstraints || "Submitted by operator for grid-aware scheduling",
+    carbonOffsetKg: Math.round(power * 0.3),
+  }
+}
 
 export default function WorkloadsPage() {
-  const [workloads, setWorkloads] = React.useState<Workload[]>(initialWorkloads)
+  const [workloads, setWorkloads] = React.useState<Workload[]>([])
+  const [loading, setLoading] = React.useState(true)
   const [displayMode, setDisplayMode] = React.useState<"table" | "calendar">("table")
-  const [registerOpen, setRegisterOpen] = React.useState(false)
+  const [optimizing, setOptimizing] = React.useState(false)
+  const [calendarKey, setCalendarKey] = React.useState(0)
+  const [feedback, setFeedback] = React.useState<{ type: "success" | "error"; message: string } | null>(null)
 
-  // Registration Form State
-  const [newJobName, setNewJobName] = React.useState("")
-  const [newJobType, setNewJobType] = React.useState<Workload["type"]>("ML Training")
-  const [newJobCluster, setNewJobCluster] = React.useState("64x NVIDIA H100 SXM5")
-  const [newJobPower, setNewJobPower] = React.useState("850")
-  const [newJobWindow, setNewJobWindow] = React.useState("02:00 – 06:00 UTC")
-  const [newJobDeadline, setNewJobDeadline] = React.useState("12:00 PM UTC")
-
-  const handleRegisterWorkload = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!newJobName.trim()) return
-
-    const power = Number(newJobPower) || 500
-    const newWorkload: Workload = {
-      id: `WL-${Math.floor(100 + Math.random() * 900)}`,
-      name: newJobName.trim(),
-      type: newJobType,
-      powerKw: power,
-      actualPowerKw: power,
-      scheduledWindow: newJobWindow,
-      deadline: newJobDeadline,
-      savings: "$680 (24%)",
-      status: "Scheduled",
-      machineCluster: newJobCluster,
-      priority: "Normal",
-      hardware: `${newJobCluster} · Allocated ${power} kW envelope`,
-      precedence: "Operator-submitted batch; standalone dependency chain",
-      slaBuffer: "+2.5 hrs buffer before target deadline",
-      slaRisk: "Low",
-      scheduleRationale: `Slotted into window ${newJobWindow} based on forecast LMP pricing under $22/MWh.`,
-      carbonOffsetKg: Math.round(power * 0.4),
+  const loadData = React.useCallback(async () => {
+    setLoading(true)
+    try {
+      const response = await jobsApi.list()
+      const jobList = response.data ?? []
+      setWorkloads(jobList.map(computeJobToWorkload))
+    } catch {
+      setWorkloads([])
+    } finally {
+      setLoading(false)
     }
+  }, [])
 
-    setWorkloads((prev) => [newWorkload, ...prev])
-    setNewJobName("")
-    setRegisterOpen(false)
+  React.useEffect(() => {
+    void loadData()
+  }, [loadData])
+
+  const handleRunOptimizer = async () => {
+    setOptimizing(true)
+    setFeedback(null)
+    try {
+      const [jobsRes, facilityRes] = await Promise.all([
+        jobsApi.list(),
+        facilityApi.get().catch(() => ({ data: null })),
+      ])
+      const jobList = jobsRes.data ?? []
+      if (jobList.length === 0) {
+        setFeedback({
+          type: "error",
+          message: "No compute jobs found. Please create compute jobs in the Job Registry first.",
+        })
+        return
+      }
+
+      const facilityConfig = facilityRes.data ?? {
+        name: "Primary Cluster",
+        maxCpuHours: 256.0,
+        maxGpuHours: 64.0,
+        location: "LZ_NORTH",
+      }
+
+      const optimizeJobs: OptimizeJobInput[] = jobList.map((j) => {
+        let startStr = j.originalStartTime
+        if (startStr.includes("T")) {
+          const [d, t] = startStr.split("T")
+          const hh = t.slice(0, 2)
+          startStr = `${d}T${hh}:00:00`
+        }
+        return {
+          id: j.id,
+          name: j.name,
+          cpuHours: j.cpuHours,
+          gpuHours: j.gpuHours,
+          originalStartTime: startStr,
+          deadline: j.deadline,
+          flexibilityWindowHours: j.flexibilityWindowHours,
+          isExempt: j.isExempt,
+        }
+      })
+
+      const optRes = await optimizerApi.optimize({
+        jobs: optimizeJobs,
+        forecastLocation: facilityConfig.location || "LZ_NORTH",
+        horizonHours: 48,
+        clusterCapacity: {
+          maxConcurrentCpuHours: Number(facilityConfig.maxCpuHours) || 256.0,
+          maxConcurrentGpuHours: Number(facilityConfig.maxGpuHours) || 64.0,
+        },
+      })
+
+      if (!optRes.success || !optRes.data) {
+        throw new Error(optRes.message || "Failed to solve schedule")
+      }
+
+      const plan = optRes.data
+      let appliedCount = 0
+      for (const item of plan.items) {
+        if (item.scheduledStart && item.scheduledEnd) {
+          const powerEst = Math.round(item.allocatedCpuHours * 5 + item.allocatedGpuHours * 25) || 500
+          await workloadScheduleApi.create({
+            title: item.jobName,
+            type: item.allocatedGpuHours > 0 ? "ML Training" : "HPC Batch",
+            cluster: facilityConfig.name || "Cluster Primary",
+            powerKw: powerEst,
+            savings: item.savingsUsd != null ? `$${item.savingsUsd.toFixed(2)}` : null,
+            startUtc: item.scheduledStart.replace("Z", ""),
+            endUtc: item.scheduledEnd.replace("Z", ""),
+            notes: item.perJobStatus + (item.reason ? `: ${item.reason}` : ""),
+          })
+          appliedCount++
+        }
+      }
+
+      setFeedback({
+        type: "success",
+        message: `Solver executed! Placed ${appliedCount} jobs into the calendar with $${plan.projectedSavingsUsd.toFixed(2)} (${plan.projectedSavingsPercent.toFixed(1)}%) projected savings against facility envelope (${facilityConfig.name}).`,
+      })
+      setCalendarKey((prev) => prev + 1)
+      await loadData()
+    } catch (err) {
+      setFeedback({
+        type: "error",
+        message: err instanceof Error ? err.message : "Optimization run failed.",
+      })
+    } finally {
+      setOptimizing(false)
+    }
   }
 
   return (
@@ -75,20 +182,15 @@ export default function WorkloadsPage() {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold tracking-tight text-foreground">
-              Workload Scheduler & Queue
+              Workload Scheduler & Dispatch Timeline
             </h1>
-            <DataStatusBadge
-              size="sm"
-              status="demo"
-              source="Simulated Slurm/K8s Compute Adapter"
-            />
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            Dispatch, throttle, pause, and inspect flexible compute batches mapped to wholesale ERCOT LMP signals.
+            Dispatch, throttle, and inspect flexible compute batches mapped to wholesale ERCOT LMP signals.
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5 text-xs">
             <button
               type="button"
@@ -100,7 +202,7 @@ export default function WorkloadsPage() {
                   : "text-muted-foreground hover:text-foreground"
               )}
             >
-              <Table className="h-3.5 w-3.5" />
+              <Table className={cn("h-3.5 w-3.5", displayMode === "table" && "text-emerald-500")} />
               Queue Table
             </button>
             <button
@@ -113,110 +215,105 @@ export default function WorkloadsPage() {
                   : "text-muted-foreground hover:text-foreground"
               )}
             >
-              <Calendar className="h-3.5 w-3.5 text-blue-500" />
+              <Calendar className={cn("h-3.5 w-3.5", displayMode === "calendar" && "text-emerald-500")} />
               Calendar View
             </button>
           </div>
 
-          <Dialog open={registerOpen} onOpenChange={setRegisterOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm" className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer">
-                <Plus className="h-4 w-4" /> Register Workload
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-md">
-              <form onSubmit={handleRegisterWorkload}>
-                <DialogHeader>
-                  <DialogTitle>Register New Workload</DialogTitle>
-                  <DialogDescription>
-                    Add a compute batch with power draw limits, deadline, and cluster assignment.
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="space-y-4 py-4 text-xs">
-                  <div className="space-y-1.5">
-                    <label className="font-semibold text-foreground">Job Name</label>
-                    <Input
-                      placeholder="e.g. DeepSeek-R1 Distillation Batch"
-                      value={newJobName}
-                      onChange={(e) => setNewJobName(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1.5">
-                      <label className="font-semibold text-foreground">Workload Type</label>
-                      <select
-                        value={newJobType}
-                        onChange={(e) => setNewJobType(e.target.value as Workload["type"])}
-                        className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-xs"
-                      >
-                        <option value="ML Training">ML Training</option>
-                        <option value="Crypto Mining">Crypto Mining</option>
-                        <option value="HPC Batch">HPC Batch</option>
-                        <option value="HVAC Pre-Cool">HVAC Pre-Cool</option>
-                      </select>
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="font-semibold text-foreground">Cluster</label>
-                      <select
-                        value={newJobCluster}
-                        onChange={(e) => setNewJobCluster(e.target.value)}
-                        className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-xs"
-                      >
-                        <option value="64x NVIDIA H100 SXM5">64x NVIDIA H100 SXM5</option>
-                        <option value="Antminer S19 Pro+ Pod 2">Antminer S19 Pro+ Pod 2</option>
-                        <option value="Slurm HPC Cluster (96 Nodes)">Slurm HPC Cluster (96 Nodes)</option>
-                        <option value="Trane Centrifugal Chiller Bank">Trane Centrifugal Chiller Bank</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="space-y-1.5">
-                      <label className="font-semibold text-foreground">Power (kW)</label>
-                      <Input
-                        type="number"
-                        value={newJobPower}
-                        onChange={(e) => setNewJobPower(e.target.value)}
-                        required
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="font-semibold text-foreground">Window</label>
-                      <Input
-                        value={newJobWindow}
-                        onChange={(e) => setNewJobWindow(e.target.value)}
-                        required
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="font-semibold text-foreground">Hard Deadline</label>
-                      <Input
-                        value={newJobDeadline}
-                        onChange={(e) => setNewJobDeadline(e.target.value)}
-                        required
-                      />
-                    </div>
-                  </div>
-                </div>
-                <DialogFooter>
-                  <Button type="button" variant="outline" onClick={() => setRegisterOpen(false)}>
-                    Cancel
-                  </Button>
-                  <Button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white">
-                    Submit to Solver
-                  </Button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              void loadData()
+              setCalendarKey((k) => k + 1)
+            }}
+            disabled={loading}
+            className="gap-1.5"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+            Refresh
+          </Button>
+
+          <Button
+            size="sm"
+            onClick={handleRunOptimizer}
+            disabled={optimizing || loading}
+            className="gap-2 bg-teal-600 hover:bg-teal-700 text-white cursor-pointer font-medium shadow-xs"
+          >
+            <Sparkles className="h-4 w-4" />
+            {optimizing ? "Solving Schedule…" : "Run Optimizer"}
+          </Button>
+
+          <Button
+            size="sm"
+            variant="outline"
+            asChild
+            className="gap-2 border-border font-medium cursor-pointer"
+          >
+            <Link href="/jobs">
+              <BriefcaseBusiness className="h-4 w-4 text-emerald-500" />
+              <span>Job & Facility Registry</span>
+              <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+            </Link>
+          </Button>
         </div>
       </div>
 
+      {feedback && (
+        <div
+          role="status"
+          className={cn(
+            "rounded-xl border p-4 text-xs flex items-center justify-between gap-3 shadow-xs",
+            feedback.type === "success"
+              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+              : "border-destructive/30 bg-destructive/10 text-destructive"
+          )}
+        >
+          <div className="flex items-center gap-2.5">
+            {feedback.type === "success" ? (
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+            ) : (
+              <AlertCircle className="h-4 w-4 shrink-0" />
+            )}
+            <span className="font-medium">{feedback.message}</span>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-[11px]"
+            onClick={() => setFeedback(null)}
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
+
       {/* Main View Area */}
       {displayMode === "calendar" ? (
-        <Card>
+        <Card className="border border-border bg-card shadow-xs">
           <CardContent className="p-4 sm:p-6">
-            <GoogleCalendarView />
+            <GoogleCalendarView key={calendarKey} />
+          </CardContent>
+        </Card>
+      ) : loading ? (
+        <Card>
+          <CardContent className="py-16 text-center text-sm text-muted-foreground">
+            Loading workloads from compute jobs…
+          </CardContent>
+        </Card>
+      ) : workloads.length === 0 ? (
+        <Card>
+          <CardContent className="py-16 text-center space-y-3">
+            <BriefcaseBusiness className="h-10 w-10 mx-auto text-muted-foreground/40" />
+            <h3 className="font-semibold text-lg text-foreground">No compute workloads registered</h3>
+            <p className="text-sm text-muted-foreground max-w-md mx-auto">
+              Submit your compute jobs with resource hours, baseline start times, and deadlines in the Job Registry to see them in the queue and run schedule optimization.
+            </p>
+            <Button asChild className="mt-2 bg-emerald-600 hover:bg-emerald-700 text-white">
+              <Link href="/jobs">
+                <BriefcaseBusiness className="mr-2 h-4 w-4" /> Open Job & Facility Registry
+              </Link>
+            </Button>
           </CardContent>
         </Card>
       ) : (
