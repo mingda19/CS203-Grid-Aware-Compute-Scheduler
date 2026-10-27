@@ -243,5 +243,50 @@ class WritePredictionsTests(unittest.TestCase):
         self.assertEqual(sorted(rows["predicted_price"].tolist()), [40.0, 41.0])
 
 
+# --------------------------------------------------------------------------- #
+# Confidence score - this is the FINAL value written to
+# predicted_price.confidence_score (nothing downstream converts it again -
+# see predictions.py's REFERENCE_RMSE comment and confidence_scores()
+# docstring), so its own bounds are what every consumer (the public API, the
+# low-confidence alert service) relies on.
+# --------------------------------------------------------------------------- #
+
+class ConfidenceScoreTests(unittest.TestCase):
+    def test_score_stays_within_0_to_100_across_a_wide_range_of_ratios(self):
+        # Exercise the formula directly against a real REFERENCE_RMSE key,
+        # bypassing decayed_abs_residuals_by_hour entirely - this test pins
+        # confidence_scores()'s own bounds, not the decay/residual plumbing
+        # feeding it. 1e9 stands in for "arbitrarily large" rather than inf:
+        # a real decayed residual is always a finite price-error magnitude.
+        kind, horizon = next(iter(pred.REFERENCE_RMSE))
+        ratios = [0.0, 0.001, 0.5, 1.0, 2.0, 10.0, 1000.0, 1e9]
+        decayed_by_hour = {
+            hour: ratio * pred.REFERENCE_RMSE[(kind, horizon)][hour]
+            for hour, ratio in enumerate(ratios)
+        }
+
+        scores = pred.confidence_scores(kind, horizon, decayed_by_hour)
+
+        for hour, ratio in enumerate(ratios):
+            score = scores[hour]
+            self.assertGreater(score, 0.0, f"hour {hour} (ratio={ratio}) should be > 0")
+            self.assertLessEqual(score, 100.0, f"hour {hour} (ratio={ratio}) should be <= 100")
+        # Zero recent error is the only way to hit the closed upper bound exactly.
+        self.assertEqual(scores[0], 100.0)
+        # Scores must fall as the ratio rises (worse recent errors -> less confidence).
+        self.assertEqual(scores_sorted := [scores[h] for h in range(len(ratios))],
+                          sorted(scores_sorted, reverse=True))
+
+    def test_missing_live_history_is_nan_not_a_fabricated_score(self):
+        kind, horizon = next(iter(pred.REFERENCE_RMSE))
+        scores = pred.confidence_scores(kind, horizon, {})  # no live history at all yet
+        self.assertEqual(len(scores), 24)
+        self.assertTrue(all(np.isnan(v) for v in scores.values()))
+
+    def test_unknown_kind_or_horizon_is_nan(self):
+        scores = pred.confidence_scores("not-a-real-kind", "y0", {0: 10.0})
+        self.assertTrue(np.isnan(scores[0]))
+
+
 if __name__ == "__main__":
     unittest.main()

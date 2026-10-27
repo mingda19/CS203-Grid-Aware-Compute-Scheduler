@@ -40,7 +40,8 @@ public class DataFreshnessService {
     private final Set<String> lowConfidenceForecastWindows = new HashSet<>();
     private final Set<String> emailedLowConfidenceForecastRuns = new HashSet<>();
 
-    @Value("${forecast.confidence-threshold:0.7}")
+    /** 0-100 scale, matching predicted_price.confidence_score. */
+    @Value("${forecast.confidence-threshold:40}")
     private double confidenceThreshold;
 
     public DataFreshnessService(
@@ -111,9 +112,11 @@ public class DataFreshnessService {
         String key = location + "|" + intervalStartUtc + "|" + generatedAt;
         if (lowConfidenceForecastWindows.add(key)) {
             long id = notificationIds.incrementAndGet();
+            // confidenceScore and confidenceThreshold are already 0-100 percentages
+            // (data_scripts/predictions.py's confidence_scores()) - no *100 here.
             String message = String.format(java.util.Locale.ROOT,
                     "Forecast confidence is %.0f%% for the window starting %s UTC, below the %.0f%% alert threshold.",
-                    confidenceScore * 100, intervalStartUtc, confidenceThreshold * 100);
+                    confidenceScore, intervalStartUtc, confidenceThreshold);
             notifications.put(id, new DataFreshnessResponse.FreshnessNotification(
                     id, "Forecast · " + location, message, Instant.now(), false));
         }

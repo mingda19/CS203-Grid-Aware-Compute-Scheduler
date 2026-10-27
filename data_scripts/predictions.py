@@ -88,10 +88,11 @@ WINSORIZE_UPPER = 1506.55
 # measured once on model/evaluate.py's held-out run (model/reports/
 # forecasts_holdout_y0.parquet / forecasts_holdout_y1.parquet) - hand-updated
 # whenever a model is retrained, same "fixed constant" pattern as
-# WINSORIZE_LOWER/WINSORIZE_UPPER above. Used as the denominator of the
-# per-prediction uncertainty ratio: how a recent run of real-world errors for
-# this exact slot compares to what held-out evaluation said to expect. The API
-# converts this ratio to a bounded confidence score (1 / (1 + ratio)).
+# WINSORIZE_LOWER/WINSORIZE_UPPER above. Used as the denominator of a raw
+# uncertainty ratio (how a recent run of real-world errors for this exact slot
+# compares to what held-out evaluation said to expect), which confidence_scores()
+# below converts to the bounded (0, 100] score actually written to the DB -
+# nothing downstream (the API, the alert service) converts it again.
 REFERENCE_RMSE: dict[tuple[str, str], list[float]] = {
     ("xgb", "y0"):  [60.12, 53.73, 48.09, 38.24, 20.49, 17.81, 12.59, 14.20,
                      15.62, 20.16, 21.80, 24.86, 25.21, 26.20, 20.70, 16.44,
@@ -340,10 +341,16 @@ def decayed_abs_residuals_by_hour(df: pd.DataFrame, min_samples: int = MIN_CONFI
     return out
 
 
-def uncertainty_ratios(kind: str, horizon: str, decayed_by_hour: dict[int, float]) -> dict[int, float]:
-    """{hour: decayed_abs_residual / REFERENCE_RMSE[(kind, horizon)][hour]}
-    for all 24 hours. NaN (never 0, never 1) wherever decayed_by_hour has no
-    entry for that hour (no live history yet for this slot)."""
+def confidence_scores(kind: str, horizon: str, decayed_by_hour: dict[int, float]) -> dict[int, float]:
+    """{hour: confidence percentage} for all 24 hours, from the raw ratio
+    `decayed_abs_residual / REFERENCE_RMSE[(kind, horizon)][hour]` mapped
+    through `100 / (1 + ratio)`: bounded (0, 100], parameter-free, and with a
+    deliberately legible midpoint - exactly 50 means recent errors are
+    sitting right at the reference RMSE (the "expected" error level); above
+    50 is better than the reference, below is worse. This is the FINAL value
+    written to `predicted_price.confidence_score` - nothing downstream
+    converts it again. NaN (never 0, never 100) wherever decayed_by_hour has
+    no entry for that hour (no live history yet for this slot)."""
     ref = REFERENCE_RMSE.get((kind, horizon))
     out: dict[int, float] = {}
     for hour in range(24):
@@ -639,8 +646,8 @@ def run_predictions(engine: sa.Engine, model_paths: dict[str, Path],
         since = gen_at_naive - timedelta(days=CONFIDENCE_LOOKBACK_DAYS)
         residuals = load_recent_residuals(engine, location, model_path.stem, since)
         decayed_by_hour = decayed_abs_residuals_by_hour(residuals)
-        ratios = uncertainty_ratios(kind, horizon, decayed_by_hour)
-        predictions["confidence_score"] = predictions["interval_start_utc"].dt.hour.map(ratios)
+        scores = confidence_scores(kind, horizon, decayed_by_hour)
+        predictions["confidence_score"] = predictions["interval_start_utc"].dt.hour.map(scores)
 
         added = write_predictions(engine, predictions)
         logger.info("[%s] Wrote %d predictions for %s (model_version=%s)",

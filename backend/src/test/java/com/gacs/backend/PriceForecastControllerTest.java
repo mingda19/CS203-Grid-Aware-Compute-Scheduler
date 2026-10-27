@@ -58,7 +58,7 @@ class PriceForecastControllerTest {
 
     @Test
     @WithMockUser
-    void convertsStoredUncertaintyRatioToConfidence() throws Exception {
+    void returnsStoredConfidenceScoreDirectly() throws Exception {
         var interval = LocalDateTime.parse("2026-10-20T12:00:00");
         var generated = LocalDateTime.parse("2026-10-19T12:00:00");
         var row = PredictedPrice.builder()
@@ -67,13 +67,16 @@ class PriceForecastControllerTest {
             .modelVersion("xgb_v1")
             .generatedAt(generated)
             .predictedPrice(30.5)
-            .confidenceScore(1.0) // normalized error ratio; API confidence should be 0.5
+            // Already the final 0-100 score (data_scripts/predictions.py's
+            // confidence_scores()) - the API must forward it unchanged, not
+            // reapply any ratio-to-score conversion on top of it.
+            .confidenceScore(72.5)
             .build();
         when(predictions.findLatestForecast(eq("LZ_NORTH"), any(), any())).thenReturn(List.of(row));
 
         mockMvc.perform(get("/api/prices/forecast"))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.points[0].confidenceScore").value(0.5));
+            .andExpect(jsonPath("$.data.points[0].confidenceScore").value(72.5));
 
     }
 

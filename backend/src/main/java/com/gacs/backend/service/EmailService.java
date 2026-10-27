@@ -97,8 +97,9 @@ public class EmailService {
             helper.setTo(toEmail);
             helper.setSubject("Low-confidence electricity forecast for " + location);
 
-            String confidence = String.format(java.util.Locale.ROOT, "%.0f%%", confidenceScore * 100);
-            String alertThreshold = String.format(java.util.Locale.ROOT, "%.0f%%", threshold * 100);
+            // Both already 0-100 percentages (predicted_price.confidence_score) - no *100 here.
+            String confidence = String.format(java.util.Locale.ROOT, "%.0f%%", confidenceScore);
+            String alertThreshold = String.format(java.util.Locale.ROOT, "%.0f%%", threshold);
             String plainText = "The forecast horizon includes one or more low-confidence intervals.\n\n"
                     + "Location: " + location + "\n"
                     + "First low-confidence window (UTC): " + intervalStartUtc + "\n"
