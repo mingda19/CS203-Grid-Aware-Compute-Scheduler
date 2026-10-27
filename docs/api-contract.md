@@ -657,7 +657,7 @@ Returns the latest stored model prediction for each upcoming interval at a settl
     }
   }
   ```
-* `confidenceScore` (0-1, higher = more confident) is omitted when unavailable. The stored score is a normalized recent-error ratio; the API exposes it as `1 / (1 + ratio)` so it has consistent confidence semantics. A backend check runs every minute and detects newly generated low-confidence forecasts without waiting for a page request. It creates unread alerts in the existing data-freshness notification feed and sends one email per recipient, location, and forecast run. Configure the threshold with `FORECAST_CONFIDENCE_THRESHOLD` (default `0.7`); SMTP must be configured for email delivery.
+* `confidenceScore` (0-100, higher = more confident) is omitted when unavailable. `data_scripts/predictions.py` computes the final score itself (a normalized recent-error ratio mapped through `100 / (1 + ratio)`) before writing it to `predicted_price.confidence_score`; the API returns that stored value directly, with no further conversion. A backend check runs every minute and detects newly generated low-confidence forecasts without waiting for a page request. It creates unread alerts in the existing data-freshness notification feed and sends one email per recipient, location, and forecast run. Configure the threshold with `FORECAST_CONFIDENCE_THRESHOLD` (0-100 scale, default `40`); SMTP must be configured for email delivery.
 * **Empty window**: `200` with `"points": []`. **Errors**: `400` for blank `location` or `hours` outside 1-168; `403` without a valid token.
 
 #### `GET /api/forecasts/ercot`
