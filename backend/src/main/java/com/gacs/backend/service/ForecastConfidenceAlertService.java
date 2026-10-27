@@ -47,8 +47,11 @@ public class ForecastConfidenceAlertService {
 
         var verifiedUsers = users.findAll().stream().filter(user -> user.isVerified()).toList();
         for (PredictedPrice prediction : recentForecasts) {
-            Double confidence = ForecastConfidenceScore.fromUncertaintyRatio(prediction.getConfidenceScore());
-            if (confidence == null) {
+            // predicted_price.confidence_score is already the final 0-100 score
+            // (data_scripts/predictions.py's confidence_scores()) - nothing here
+            // converts it a second time.
+            Double confidence = prediction.getConfidenceScore();
+            if (confidence == null || !Double.isFinite(confidence)) {
                 continue;
             }
             notifications.recordLowConfidenceForecast(

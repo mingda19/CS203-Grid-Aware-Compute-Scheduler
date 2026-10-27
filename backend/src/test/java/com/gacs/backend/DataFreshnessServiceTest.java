@@ -92,32 +92,56 @@ class DataFreshnessServiceTest {
         LocalDateTime interval = LocalDateTime.parse("2026-10-20T12:00:00");
         LocalDateTime generated = LocalDateTime.parse("2026-10-19T12:00:00");
 
-        service.recordLowConfidenceForecast("LZ_NORTH", interval, generated, 0.69, "operator@example.com");
-        service.recordLowConfidenceForecast("LZ_NORTH", interval, generated, 0.69, "operator@example.com");
-        service.recordLowConfidenceForecast("LZ_NORTH", interval.plusHours(1), generated, 0.6, "operator@example.com");
+        service.recordLowConfidenceForecast("LZ_NORTH", interval, generated, 35.0, "operator@example.com");
+        service.recordLowConfidenceForecast("LZ_NORTH", interval, generated, 35.0, "operator@example.com");
+        service.recordLowConfidenceForecast("LZ_NORTH", interval.plusHours(1), generated, 30.0, "operator@example.com");
 
         var notifications = service.unreadNotifications();
         assertEquals(2, notifications.size());
         assertEquals("Forecast · LZ_NORTH", notifications.get(0).dataset());
-        assertTrue(notifications.get(0).message().contains("69%"));
+        assertTrue(notifications.get(0).message().contains("35%"));
         verify(emailService, times(1)).sendLowConfidenceForecastEmail(
-                "operator@example.com", "LZ_NORTH", interval, 0.69, 0.7);
+                "operator@example.com", "LZ_NORTH", interval, 35.0, 40.0);
     }
 
     @Test
     void confidenceAtOrAboveThresholdDoesNotCreateNotification() {
         DataFreshnessService service = service();
 
-        service.recordLowConfidenceForecast("LZ_NORTH", LocalDateTime.now(), LocalDateTime.now(), 0.7, "operator@example.com");
+        service.recordLowConfidenceForecast("LZ_NORTH", LocalDateTime.now(), LocalDateTime.now(), 40.0, "operator@example.com");
         service.recordLowConfidenceForecast("LZ_NORTH", LocalDateTime.now(), LocalDateTime.now(), null, "operator@example.com");
 
         assertTrue(service.unreadNotifications().isEmpty());
     }
 
     @Test
+    void alertsOnlyFireStrictlyBelowTheFortyPercentBaseline() {
+        // @Value only resolves through Spring's DI container, never on a bare `new
+        // DataFreshnessService(...)` - so confidenceThreshold must be set explicitly here,
+        // matching the application.properties default (forecast.confidence-threshold=40)
+        // rather than relying on it being auto-populated, which it never is in a plain
+        // unit test.
+        DataFreshnessService service = new DataFreshnessService(electricalPrice, fuelPrice, fuelMix,
+                monthlyGeneration, load, solar, wind, dataCenters);
+        ReflectionTestUtils.setField(service, "emailService", emailService);
+        ReflectionTestUtils.setField(service, "confidenceThreshold", 40.0);
+
+        service.recordLowConfidenceForecast("LZ_NORTH", LocalDateTime.now(), LocalDateTime.now(), 39.9, "operator@example.com");
+        service.recordLowConfidenceForecast("LZ_NORTH", LocalDateTime.now(), LocalDateTime.now(), 40.0, "operator@example.com");
+        service.recordLowConfidenceForecast("LZ_NORTH", LocalDateTime.now(), LocalDateTime.now(), 0.0, "operator@example.com");
+
+        var notifications = service.unreadNotifications();
+        assertEquals(2, notifications.size(), "39.9 and 0.0 should alert; 40.0 (at the baseline) should not");
+        verify(emailService, times(2)).sendLowConfidenceForecastEmail(
+                org.mockito.ArgumentMatchers.eq("operator@example.com"), org.mockito.ArgumentMatchers.eq("LZ_NORTH"),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyDouble(),
+                org.mockito.ArgumentMatchers.eq(40.0));
+    }
+
+    @Test
     void lowConfidenceNotificationCanBeMarkedRead() {
         DataFreshnessService service = service();
-        service.recordLowConfidenceForecast("LZ_NORTH", LocalDateTime.now(), LocalDateTime.now(), 0.5, "operator@example.com");
+        service.recordLowConfidenceForecast("LZ_NORTH", LocalDateTime.now(), LocalDateTime.now(), 30.0, "operator@example.com");
         long id = service.unreadNotifications().get(0).id();
 
         assertTrue(service.markRead(id));
@@ -127,7 +151,7 @@ class DataFreshnessServiceTest {
     private DataFreshnessService service() {
         DataFreshnessService service = new DataFreshnessService(electricalPrice, fuelPrice, fuelMix, monthlyGeneration,
                 load, solar, wind, dataCenters);
-        ReflectionTestUtils.setField(service, "confidenceThreshold", 0.7);
+        ReflectionTestUtils.setField(service, "confidenceThreshold", 40.0);
         ReflectionTestUtils.setField(service, "emailService", emailService);
         return service;
     }
