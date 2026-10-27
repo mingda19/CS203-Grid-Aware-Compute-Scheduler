@@ -1,0 +1,221 @@
+# Manual exercise of POST /api/schedules/optimize (docs/api-contract.md section 6.4).
+# Open in VS Code with the REST Client extension, or JetBrains' HTTP client,
+# and click "Send Request" above each block in order.
+#
+# Most requests send explicit prices in "forecast", so they never expire: the
+# optimiser prices everything from the request, whatever today's date is.
+# Request 6 uses "forecastLocation" instead, which reads the stored forecast
+# (or the history-based fallback curve when none covers the window).
+
+@baseUrl = http://localhost:8080
+
+### 1. Log in. Uses the auto-created, pre-verified admin account from
+### DataInitializer, which skips the email OTP step.
+# @name login
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+    "email": "admin@datacenter.io",
+    "password": "Admin@2026!"
+}
+
+###
+@token = {{login.response.body.accessToken}}
+
+### ---------------------------------------------------------------------------
+### 2. The contract's worked example. Expect 200, status SCHEDULED,
+### provenOptimal true. The job moves from 10:00 ($112) to 01:00 the next day
+### ($24): baselineCostUsd 1.0752, optimizedCostUsd 0.2304, savings 0.8448
+### (78.57%), perJobStatus OPTIMISED, one allocation at 2026-10-21T01:00:00Z.
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {
+      "id": 101,
+      "name": "LLM Fine-Tuning Run #42",
+      "cpuHours": 64.0,
+      "gpuHours": 16.0,
+      "originalStartTime": "2026-10-20T10:00:00Z",
+      "deadline": "2026-10-21T18:00:00Z",
+      "flexibilityWindowHours": 15,
+      "isExempt": false
+    }
+  ],
+  "forecast": [
+    { "intervalStartUtc": "2026-10-20T10:00:00Z", "predictedPrice": 112.0 },
+    { "intervalStartUtc": "2026-10-20T11:00:00Z", "predictedPrice": 100.0 },
+    { "intervalStartUtc": "2026-10-21T01:00:00Z", "predictedPrice": 24.0 }
+  ]
+}
+
+### ---------------------------------------------------------------------------
+### 3. A job spread over several hours. 600 CPU-hours needs at least three
+### hours at 256 per hour; it may start at 10:00 or 11:00 and must finish by
+### 16:00; 13:00 is down to 100 CPU-hours. Expect 200 with a start at 11:00 and
+### consecutive allocations: tiny shares at 11:00 and 12:00 (a run cannot skip
+### hours), then 100 CPU-hours at 13:00, 256 at 14:00 and the rest at 15:00.
+### The allocations' cpuHours add up to 600.
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {"id": 201, "name": "Large batch", "cpuHours": 600.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-20T10:00:00Z", "deadline": "2026-10-20T16:00:00Z",
+     "flexibilityWindowHours": 1, "isExempt": false}
+  ],
+  "forecast": [
+    { "intervalStartUtc": "2026-10-20T10:00:00Z", "predictedPrice": 60.0 },
+    { "intervalStartUtc": "2026-10-20T11:00:00Z", "predictedPrice": 55.0 },
+    { "intervalStartUtc": "2026-10-20T12:00:00Z", "predictedPrice": 40.0 },
+    { "intervalStartUtc": "2026-10-20T13:00:00Z", "predictedPrice": 15.0 },
+    { "intervalStartUtc": "2026-10-20T14:00:00Z", "predictedPrice": 18.0 },
+    { "intervalStartUtc": "2026-10-20T15:00:00Z", "predictedPrice": 20.0 }
+  ],
+  "capacityOverrides": [
+    { "intervalStartUtc": "2026-10-20T13:00:00Z", "maxCpuHours": 100.0, "maxGpuHours": 64.0 }
+  ]
+}
+
+### ---------------------------------------------------------------------------
+### 4. A job with no room (AC5). The exempt job fills 10:00 and the other job may
+### only run at 10:00. Expect 200 (NOT an error), status NEEDS_ATTENTION; the
+### second item is NO_FEASIBLE_SLOT with null times, no allocations, null costs,
+### a reason, and is left out of the totals.
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {"id": 301, "name": "Exempt, fills the hour", "cpuHours": 256.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-20T10:00:00Z", "deadline": "2026-10-20T11:00:00Z",
+     "flexibilityWindowHours": 0, "isExempt": true},
+    {"id": 302, "name": "No room left", "cpuHours": 100.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-20T10:00:00Z", "deadline": "2026-10-20T11:00:00Z",
+     "flexibilityWindowHours": 0, "isExempt": false}
+  ],
+  "forecast": [ { "intervalStartUtc": "2026-10-20T10:00:00Z", "predictedPrice": 10.0 } ]
+}
+
+### ---------------------------------------------------------------------------
+### 5. Negative savings. Each job alone would run at 10:00 ($20), but only 300
+### CPU-hours fit there, so 100 CPU-hours of work has to use 11:00 ($50). Expect
+### 200, baselineCostUsd 0.4, optimizedCostUsd 0.55, projectedSavingsUsd -0.15
+### (-37.5%), and an explanation saying why.
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {"id": 401, "name": "Contender A", "cpuHours": 200.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-20T10:00:00Z", "deadline": "2026-10-20T12:00:00Z",
+     "flexibilityWindowHours": 1, "isExempt": false},
+    {"id": 402, "name": "Contender B", "cpuHours": 200.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-20T10:00:00Z", "deadline": "2026-10-20T12:00:00Z",
+     "flexibilityWindowHours": 1, "isExempt": false}
+  ],
+  "forecast": [
+    { "intervalStartUtc": "2026-10-20T10:00:00Z", "predictedPrice": 20.0 },
+    { "intervalStartUtc": "2026-10-20T11:00:00Z", "predictedPrice": 50.0 }
+  ],
+  "clusterCapacity": { "maxConcurrentCpuHours": 300.0, "maxConcurrentGpuHours": 64.0 }
+}
+
+### ---------------------------------------------------------------------------
+### 6. Prices from the stored forecast for a location. Prices load from the
+### earliest originalStartTime for horizonHours. Without stored forecasts for
+### that window, usedSeededFallbackPrices is true and the explanation says so.
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {"id": 501, "name": "Overnight training", "cpuHours": 1500.0, "gpuHours": 150.0,
+     "originalStartTime": "2026-10-20T17:00:00Z", "deadline": "2026-10-21T20:00:00Z",
+     "flexibilityWindowHours": 10, "isExempt": false}
+  ],
+  "forecastLocation": "LZ_NORTH",
+  "horizonHours": 48
+}
+
+### ---------------------------------------------------------------------------
+### 7. Error cases. Each returns success false, a message naming the problem,
+### and no data - never a partial schedule.
+
+### Expect 400: jobs is required
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "forecastLocation": "LZ_NORTH" }
+
+### Expect 400: deadline before originalStartTime
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {"id": 1, "name": "bad", "cpuHours": 10.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-20T14:00:00Z", "deadline": "2026-10-20T09:00:00Z",
+     "flexibilityWindowHours": 0, "isExempt": false}
+  ],
+  "forecast": [ { "intervalStartUtc": "2026-10-20T14:00:00Z", "predictedPrice": 10.0 } ]
+}
+
+### Expect 400: cannot finish by its deadline even alone on the cluster
+### (100 CPU-hours needs a full hour; the deadline leaves 30 minutes)
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {"id": 1, "name": "Impossible deadline", "cpuHours": 100.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-20T14:00:00Z", "deadline": "2026-10-20T14:30:00Z",
+     "flexibilityWindowHours": 6, "isExempt": false}
+  ],
+  "forecast": [ { "intervalStartUtc": "2026-10-20T14:00:00Z", "predictedPrice": 10.0 } ]
+}
+
+### Expect 400: start time not on the hour
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {"id": 1, "name": "bad", "cpuHours": 10.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-20T14:30:00Z", "deadline": "2026-10-20T18:00:00Z",
+     "flexibilityWindowHours": 0, "isExempt": false}
+  ],
+  "forecast": [ { "intervalStartUtc": "2026-10-20T14:00:00Z", "predictedPrice": 10.0 } ]
+}
+
+### Expect 422: the job's original hour has no price, so its baseline cannot be priced
+POST {{baseUrl}}/api/schedules/optimize
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "jobs": [
+    {"id": 1, "name": "unpriced", "cpuHours": 10.0, "gpuHours": 0.0,
+     "originalStartTime": "2026-10-20T14:00:00Z", "deadline": "2026-10-20T18:00:00Z",
+     "flexibilityWindowHours": 2, "isExempt": false}
+  ],
+  "forecast": [ { "intervalStartUtc": "2026-10-20T15:00:00Z", "predictedPrice": 10.0 } ]
+}
+
+### Expect 403: no token
+POST {{baseUrl}}/api/schedules/optimize
+Content-Type: application/json
+
+{"jobs": []}

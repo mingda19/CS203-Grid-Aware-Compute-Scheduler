@@ -37,6 +37,18 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
     }
 
+    @ExceptionHandler(UnprocessableDataException.class)
+    public ResponseEntity<ApiResponse<Void>> handleUnprocessableData(UnprocessableDataException ex) {
+        ApiResponse<Void> response = ApiResponse.fail(ex.getMessage());
+        return ResponseEntity.status(422).body(response);
+    }
+
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ApiResponse<Void>> handleNotFound(ResourceNotFoundException ex) {
+        ApiResponse<Void> response = ApiResponse.fail(ex.getMessage());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleGeneralException(Exception ex) {
         ApiResponse<Void> response = ApiResponse.fail("An unexpected error occurred: " + ex.getMessage());

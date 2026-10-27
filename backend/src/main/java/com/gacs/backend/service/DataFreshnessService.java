@@ -10,6 +10,8 @@ import com.gacs.backend.repository.LoadDataRepository;
 import com.gacs.backend.repository.SolarRepository;
 import com.gacs.backend.repository.WindRepository;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -20,16 +22,26 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 @Service
 public class DataFreshnessService {
 
+    @Autowired(required = false)
+    private EmailService emailService;
+
     private final List<DatasetDefinition> definitions;
     private final Map<String, Boolean> staleState = new LinkedHashMap<>();
     private final Map<Long, DataFreshnessResponse.FreshnessNotification> notifications = new LinkedHashMap<>();
     private final AtomicLong notificationIds = new AtomicLong();
+    private final Set<String> lowConfidenceForecastWindows = new HashSet<>();
+    private final Set<String> emailedLowConfidenceForecastRuns = new HashSet<>();
+
+    @Value("${forecast.confidence-threshold:0.7}")
+    private double confidenceThreshold;
 
     public DataFreshnessService(
             ElectricalPriceRepository electricalPriceRepository,
@@ -88,6 +100,30 @@ public class DataFreshnessService {
         notifications.put(notificationId, new DataFreshnessResponse.FreshnessNotification(
                 notification.id(), notification.dataset(), notification.message(), notification.createdAt(), true));
         return true;
+    }
+
+    public synchronized void recordLowConfidenceForecast(
+            String location, LocalDateTime intervalStartUtc, LocalDateTime generatedAt,
+            Double confidenceScore, String recipientEmail) {
+        if (confidenceScore == null || !Double.isFinite(confidenceScore) || confidenceScore >= confidenceThreshold) {
+            return;
+        }
+        String key = location + "|" + intervalStartUtc + "|" + generatedAt;
+        if (lowConfidenceForecastWindows.add(key)) {
+            long id = notificationIds.incrementAndGet();
+            String message = String.format(java.util.Locale.ROOT,
+                    "Forecast confidence is %.0f%% for the window starting %s UTC, below the %.0f%% alert threshold.",
+                    confidenceScore * 100, intervalStartUtc, confidenceThreshold * 100);
+            notifications.put(id, new DataFreshnessResponse.FreshnessNotification(
+                    id, "Forecast · " + location, message, Instant.now(), false));
+        }
+        String emailRunKey = (recipientEmail == null ? "" : recipientEmail.toLowerCase(java.util.Locale.ROOT))
+                + "|" + location + "|" + generatedAt;
+        if (emailService != null && recipientEmail != null && !recipientEmail.isBlank()
+                && emailedLowConfidenceForecastRuns.add(emailRunKey)) {
+            emailService.sendLowConfidenceForecastEmail(
+                    recipientEmail, location, intervalStartUtc, confidenceScore, confidenceThreshold);
+        }
     }
 
     private DataFreshnessResponse.DatasetFreshness recordStatus(

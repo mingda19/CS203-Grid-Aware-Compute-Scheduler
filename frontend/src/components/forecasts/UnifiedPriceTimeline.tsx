@@ -36,6 +36,25 @@ import {
 
 export type HorizonPreset = "24h" | "48h" | "7d"
 
+export interface ForecastTelemetry {
+  isLoading: boolean
+  avgLmp: number | null
+  currentLmp: number | null
+  rollingHistoryAvg: number | null
+  peakForecastPrice: number | null
+  peakForecastTime: string | null
+  peakForecastWindow: string | null
+  lowestOpportunityPrice: number | null
+  lowestOpportunityTime: string | null
+  lowestOpportunityWindow: string | null
+  avgCleanShare: number | null
+  estWindShare: number | null
+  estSolarShare: number | null
+  maxCleanShare: number | null
+  totalIntervals: number
+  hubLocation: string
+}
+
 export interface UnifiedPriceTimelineProps {
   hubLocation?: string
   onLocationChange?: (location: string) => void
@@ -43,6 +62,7 @@ export interface UnifiedPriceTimelineProps {
   className?: string
   height?: number
   showWorkloadWindows?: boolean
+  onTelemetryChange?: (telemetry: ForecastTelemetry) => void
 }
 
 export interface TimelineDataPoint {
@@ -67,6 +87,7 @@ export function UnifiedPriceTimeline({
   className = "",
   height,
   showWorkloadWindows = false,
+  onTelemetryChange,
 }: UnifiedPriceTimelineProps) {
   const [internalHub, setInternalHub] = React.useState("LZ_NORTH")
   const activeHub = controlledHub ?? internalHub
@@ -162,7 +183,7 @@ export function UnifiedPriceTimeline({
   }, [activeHub, historyDays, forecastHours, refreshTrigger])
 
   // Construct continuous unified dataset
-  const { chartData, nowPointKey, summaryStats } = React.useMemo(() => {
+  const { chartData, nowPointKey, summaryStats, telemetry } = React.useMemo(() => {
     const data: TimelineDataPoint[] = []
 
     // 1. Sort historical points chronologically
@@ -194,11 +215,8 @@ export function UnifiedPriceTimeline({
       })
     }
 
-    // Determine the boundary "Now" timestamp key
-    const transitionKey = data.length > 0 ? data[data.length - 1].rawUtc : ""
-    const latestHistoryTime = data.length > 0 ? new Date(data[data.length - 1].rawUtc).getTime() : 0
-
     // 2. Filter forecast points to only include strictly future intervals (> latestHistoryTime)
+    const latestHistoryTime = data.length > 0 ? new Date(data[data.length - 1].rawUtc).getTime() : 0
     // and sort them chronologically
     const futureForecasts = forecastPoints
       .filter((f) => {
@@ -242,46 +260,131 @@ export function UnifiedPriceTimeline({
       })
     }
 
-    // Calculate summary statistics
-    let avg = 0
-    let max = -Infinity
-    let maxTime = ""
-    let min = Infinity
-    let minTime = ""
+    // Calculate summary statistics & telemetry
     const allPrices = [
       ...historyPoints.map((p) => p.sppUsdMwh).filter((v): v is number => v != null),
       ...forecastPoints.map((f) => f.predictedPrice).filter((v): v is number => v != null),
     ]
 
-    if (allPrices.length > 0) {
-      avg = allPrices.reduce((a, b) => a + b, 0) / allPrices.length
+    const historyPrices = historyPoints.map((p) => p.sppUsdMwh).filter((v): v is number => v != null)
+    const rollingHistoryAvg = historyPrices.length > 0
+      ? historyPrices.reduce((a, b) => a + b, 0) / historyPrices.length
+      : null
+
+    const currentLmp = sortedHistory.length > 0 && sortedHistory[sortedHistory.length - 1].sppUsdMwh != null
+      ? sortedHistory[sortedHistory.length - 1].sppUsdMwh
+      : null
+
+    const avgLmp = allPrices.length > 0 ? allPrices.reduce((a, b) => a + b, 0) / allPrices.length : null
+
+    // Impending Peak Spike (prioritize upcoming forecast intervals, fallback to timeline)
+    const forecastTimelinePoints = data.filter((d) => d.isForecast && !d.isTransition)
+    const peakSource = forecastTimelinePoints.length > 0 ? forecastTimelinePoints : data
+    let peakPrice: number | null = null
+    let peakUtc: string | null = null
+
+    for (const pt of peakSource) {
+      const val = pt.isForecast ? pt.forecastPrice : (pt.actualPrice ?? pt.forecastPrice)
+      if (val != null && (peakPrice == null || val > peakPrice)) {
+        peakPrice = val
+        peakUtc = pt.rawUtc
+      }
+    }
+
+    // Lowest Opportunity Price (prioritize upcoming forecast intervals, fallback to timeline)
+    let lowestPrice: number | null = null
+    let lowestUtc: string | null = null
+
+    for (const pt of peakSource) {
+      const val = pt.isForecast ? pt.forecastPrice : (pt.actualPrice ?? pt.forecastPrice)
+      if (val != null && (lowestPrice == null || val < lowestPrice)) {
+        lowestPrice = val
+        lowestUtc = pt.rawUtc
+      }
+    }
+
+    const peakWindow = peakUtc ? `${formatSgtChartTick(peakUtc, true)} SGT` : "—"
+    const lowestWindow = lowestUtc ? `${formatSgtChartTick(lowestUtc, true)} SGT` : "—"
+
+    // Clean energy estimations
+    const cleanShares = data.map((d) => d.cleanSharePercent).filter((v) => typeof v === "number")
+    const avgCleanShare = cleanShares.length > 0
+      ? cleanShares.reduce((a, b) => a + b, 0) / cleanShares.length
+      : null
+    const maxCleanShare = cleanShares.length > 0 ? Math.max(...cleanShares) : null
+
+    const windRatio = activeHub === "LZ_WEST" ? 0.80 : activeHub === "LZ_SOUTH" ? 0.60 : 0.70
+    const solarRatio = 1 - windRatio
+    const estWindShare = avgCleanShare != null ? +(avgCleanShare * windRatio).toFixed(1) : null
+    const estSolarShare = avgCleanShare != null ? +(avgCleanShare * solarRatio).toFixed(1) : null
+
+    // Determine the boundary "Now" timestamp key using actual current time (Date.now())
+    const nowMs = Date.now()
+    let resolvedNowKey = ""
+
+    // Find the interval currently active (start <= now < nextStart)
+    for (let i = 0; i < data.length; i++) {
+      const ptMs = new Date(data[i].rawUtc).getTime()
+      const nextMs = i < data.length - 1 ? new Date(data[i + 1].rawUtc).getTime() : Infinity
+      if (ptMs <= nowMs && nowMs < nextMs) {
+        resolvedNowKey = data[i].rawUtc
+        break
+      }
+    }
+
+    // Fallback if now is outside or between gaps: snap to the nearest available data point
+    if (!resolvedNowKey && data.length > 0) {
+      let minDiff = Infinity
       for (const pt of data) {
-        const val = pt.actualPrice ?? pt.forecastPrice
-        if (val != null) {
-          if (val > max) {
-            max = val
-            maxTime = pt.fullTimeSgt
-          }
-          if (val < min) {
-            min = val
-            minTime = pt.fullTimeSgt
-          }
+        const diff = Math.abs(new Date(pt.rawUtc).getTime() - nowMs)
+        if (diff < minDiff) {
+          minDiff = diff
+          resolvedNowKey = pt.rawUtc
         }
       }
     }
 
+    const computedTelemetry: ForecastTelemetry = {
+      isLoading,
+      avgLmp,
+      currentLmp,
+      rollingHistoryAvg,
+      peakForecastPrice: peakPrice,
+      peakForecastTime: peakUtc,
+      peakForecastWindow: peakWindow,
+      lowestOpportunityPrice: lowestPrice,
+      lowestOpportunityTime: lowestUtc,
+      lowestOpportunityWindow: lowestWindow,
+      avgCleanShare,
+      estWindShare,
+      estSolarShare,
+      maxCleanShare,
+      totalIntervals: data.length,
+      hubLocation: activeHub,
+    }
+
     return {
       chartData: data,
-      nowPointKey: transitionKey,
+      nowPointKey: resolvedNowKey,
       summaryStats: {
-        avgLmp: allPrices.length > 0 ? avg : 34.72,
-        maxLmp: max > -Infinity ? max : 142.5,
-        maxTime: maxTime || "01:00 SGT",
-        minLmp: min < Infinity ? min : 14.8,
-        minTime: minTime || "11:30 SGT",
+        avgLmp: avgLmp ?? 0,
+        maxLmp: peakPrice ?? 0,
+        maxTime: peakWindow,
+        minLmp: lowestPrice ?? 0,
+        minTime: lowestWindow,
       },
+      telemetry: computedTelemetry,
     }
-  }, [historyPoints, forecastPoints, horizon])
+  }, [historyPoints, forecastPoints, horizon, activeHub, isLoading])
+
+  const onTelemetryChangeRef = React.useRef(onTelemetryChange)
+  React.useEffect(() => {
+    onTelemetryChangeRef.current = onTelemetryChange
+  }, [onTelemetryChange])
+
+  React.useEffect(() => {
+    onTelemetryChangeRef.current?.(telemetry)
+  }, [telemetry])
 
   const chartHeight = height ?? (variant === "compact" ? 220 : 380)
 

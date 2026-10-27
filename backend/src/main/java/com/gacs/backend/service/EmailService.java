@@ -2,6 +2,7 @@ package com.gacs.backend.service;
 
 import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
+import java.time.LocalDateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -78,5 +79,49 @@ public class EmailService {
             logger.warn("FALLBACK OTP for {}: {}", toEmail, otpCode);
             throw new RuntimeException("Failed to send email: " + e.getMessage());
         }
+    }
+
+    public void sendLowConfidenceForecastEmail(
+            String toEmail, String location, LocalDateTime intervalStartUtc,
+            double confidenceScore, double threshold) {
+        if (mailSender == null) {
+            logger.warn("Cannot send low-confidence forecast alert to {} because SMTP is not configured", toEmail);
+            return;
+        }
+
+        try {
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            helper.setFrom(fromEmail, "GACS Platform");
+            helper.setReplyTo(fromEmail);
+            helper.setTo(toEmail);
+            helper.setSubject("Low-confidence electricity forecast for " + location);
+
+            String confidence = String.format(java.util.Locale.ROOT, "%.0f%%", confidenceScore * 100);
+            String alertThreshold = String.format(java.util.Locale.ROOT, "%.0f%%", threshold * 100);
+            String plainText = "The forecast horizon includes one or more low-confidence intervals.\n\n"
+                    + "Location: " + location + "\n"
+                    + "First low-confidence window (UTC): " + intervalStartUtc + "\n"
+                    + "Confidence: " + confidence + "\n"
+                    + "Alert threshold: " + alertThreshold + "\n\n"
+                    + "Review the forecast in GACS before relying on this window.\n";
+            helper.setText(plainText, "<p>The forecast horizon includes one or more low-confidence intervals.</p>"
+                    + "<ul><li>Location: " + escapeHtml(location) + "</li>"
+                    + "<li>First low-confidence window (UTC): " + intervalStartUtc + "</li>"
+                    + "<li>Confidence: " + confidence + "</li>"
+                    + "<li>Alert threshold: " + alertThreshold + "</li></ul>"
+                    + "<p>Review the forecast in GACS before relying on this window.</p>");
+            message.setHeader("X-Mailer", "GACS-Platform");
+            mailSender.send(message);
+            logger.info("Sent low-confidence forecast alert to {} for {} at {}", toEmail, location, intervalStartUtc);
+        } catch (Exception exception) {
+            // A mail outage must not make forecast retrieval fail.
+            logger.error("Failed to send low-confidence forecast alert to {}: {}", toEmail, exception.getMessage());
+        }
+    }
+
+    private String escapeHtml(String value) {
+        return value.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;");
     }
 }
