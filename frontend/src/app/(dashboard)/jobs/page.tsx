@@ -27,6 +27,7 @@ import {
   workloadScheduleApi,
   type ComputeJob,
   type ComputeJobPayload,
+  type JobPriority,
   type OptimizeJobInput,
   type OptimizeResponse,
   type ScheduleItem,
@@ -53,6 +54,7 @@ type FormState = {
   originalStartTime: string
   deadline: string
   flexibilityWindowHours: string
+  priority: JobPriority
   isExempt: boolean
 }
 
@@ -63,6 +65,7 @@ const blankForm = (): FormState => ({
   originalStartTime: "",
   deadline: "",
   flexibilityWindowHours: "0",
+  priority: "NORMAL",
   isExempt: false,
 })
 
@@ -223,6 +226,7 @@ export default function JobsPage() {
       originalStartTime: toInputDate(job.originalStartTime),
       deadline: toInputDate(job.deadline),
       flexibilityWindowHours: String(job.flexibilityWindowHours),
+      priority: job.priority ?? "NORMAL",
       isExempt: job.isExempt,
     })
     setFormOpen(true)
@@ -261,6 +265,7 @@ export default function JobsPage() {
       originalStartTime: toApiUtcDate(form.originalStartTime, true),
       deadline: toApiUtcDate(form.deadline, false),
       flexibilityWindowHours,
+      priority: form.priority,
       isExempt: form.isExempt,
     }
     setSaving(true)
@@ -286,6 +291,7 @@ export default function JobsPage() {
       originalStartTime: job.originalStartTime,
       deadline: job.deadline,
       flexibilityWindowHours: job.flexibilityWindowHours,
+      priority: job.priority ?? "NORMAL",
       isExempt,
     }
     try {
@@ -680,7 +686,7 @@ export default function JobsPage() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[820px] text-left text-sm">
+              <table className="w-full min-w-[920px] text-left text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
                     <th className="px-3 py-3">Name</th>
@@ -688,6 +694,7 @@ export default function JobsPage() {
                     <th className="px-3 py-3">Original start (SGT)</th>
                     <th className="px-3 py-3">Deadline (SGT)</th>
                     <th className="px-3 py-3">Flexibility</th>
+                    <th className="px-3 py-3">Priority</th>
                     <th className="px-3 py-3">Exemption</th>
                     <th className="px-3 py-3">Status</th>
                     <th className="px-3 py-3">Actions</th>
@@ -703,6 +710,7 @@ export default function JobsPage() {
                       <td className="px-3 py-3">{displayDate(job.originalStartTime)}</td>
                       <td className="px-3 py-3">{displayDate(job.deadline)}</td>
                       <td className="px-3 py-3">{`${job.flexibilityWindowHours}h`}</td>
+                      <td className="px-3 py-3">{job.priority ?? "NORMAL"}</td>
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-2">
                           <Checkbox
@@ -1016,6 +1024,18 @@ export default function JobsPage() {
                   onChange={(e) => setForm({ ...form, flexibilityWindowHours: e.target.value })}
                 />
               </Field>
+              <Field label="Priority">
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  value={form.priority}
+                  onChange={(e) => setForm({ ...form, priority: e.target.value as JobPriority })}
+                >
+                  <option value="CRITICAL">CRITICAL</option>
+                  <option value="HIGH">HIGH</option>
+                  <option value="NORMAL">NORMAL</option>
+                  <option value="LOW">LOW</option>
+                </select>
+              </Field>
               <div className="flex items-center gap-3 self-end rounded-md border p-3 text-sm">
                 <Checkbox
                   id="job-is-exempt"
@@ -1057,6 +1077,7 @@ export default function JobsPage() {
               <Detail label="Original start" value={displayDate(viewing.originalStartTime)} />
               <Detail label="Deadline" value={displayDate(viewing.deadline)} />
               <Detail label="Flexibility" value={`${viewing.flexibilityWindowHours} hours`} />
+              <Detail label="Priority" value={viewing.priority ?? "NORMAL"} />
               <Detail label="Exempt" value={viewing.isExempt ? "Yes" : "No"} />
             </dl>
           )}
