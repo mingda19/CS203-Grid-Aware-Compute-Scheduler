@@ -1,7 +1,13 @@
 package com.gacs.backend;
 
 import com.gacs.backend.model.PredictedPrice;
+import com.gacs.backend.model.ScheduleItem;
+import com.gacs.backend.repository.ConstraintImpactRepository;
 import com.gacs.backend.repository.PredictedPriceRepository;
+import com.gacs.backend.repository.ScheduleItemRepository;
+import com.gacs.backend.repository.ScheduleExplanationRepository;
+import com.gacs.backend.repository.ScheduleRunRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -14,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.closeTo;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
@@ -44,6 +51,20 @@ class ScheduleOptimizationIntegrationTest {
 
     @Autowired
     private PredictedPriceRepository predictions;
+
+    @Autowired
+    private ScheduleRunRepository scheduleRuns;
+
+    @Autowired
+    private ScheduleItemRepository scheduleItems;
+
+    @Autowired
+    private ConstraintImpactRepository constraintImpacts;
+
+    @Autowired
+    private ScheduleExplanationRepository scheduleExplanations;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
     void clearForecasts() {
@@ -212,6 +233,62 @@ class ScheduleOptimizationIntegrationTest {
     void unauthenticatedRequestIsForbidden() throws Exception {
         mockMvc.perform(post("/api/schedules/optimize").contentType(APPLICATION_JSON).content("{}"))
             .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithMockUser(username = "run-recorder-tester@datacenter.io")
+    void aSuccessfulRunPersistsTheRunItemAndExplanation() throws Exception {
+        // End-to-end wiring (docs/schedule-explanation-design.md section 7): proves the real HTTP
+        // path actually persists, not just that ScheduleRunRecorder is correct in isolation.
+        String body = """
+            {
+              "jobs": [{
+                "id": 501, "name": "e2e persistence job", "cpuHours": 64.0, "gpuHours": 16.0,
+                "originalStartTime": "2026-10-20T10:00:00Z", "deadline": "2026-10-21T18:00:00Z",
+                "flexibilityWindowHours": 15, "isExempt": false
+              }],
+              "forecast": [
+                { "intervalStartUtc": "2026-10-20T10:00:00Z", "predictedPrice": 112.0 },
+                { "intervalStartUtc": "2026-10-20T11:00:00Z", "predictedPrice": 100.0 },
+                { "intervalStartUtc": "2026-10-21T01:00:00Z", "predictedPrice": 24.0 }
+              ],
+              "clusterCapacity": { "maxConcurrentCpuHours": 256.0, "maxConcurrentGpuHours": 64.0 }
+            }
+            """;
+
+        String json = mockMvc.perform(post("/api/schedules/optimize").contentType(APPLICATION_JSON).content(body))
+            .andExpect(status().isOk())
+            .andReturn().getResponse().getContentAsString();
+        String runId = objectMapper.readTree(json).at("/data/runId").asText();
+
+        var savedRun = scheduleRuns.findByRunId(runId).orElseThrow(() ->
+            new AssertionError("expected a ScheduleRun persisted for runId " + runId));
+        assertThat(savedRun.getOwnerEmail()).isEqualTo("run-recorder-tester@datacenter.io");
+        assertThat(savedRun.getStatus()).isEqualTo("SCHEDULED");
+
+        var savedItems = scheduleItems.findByScheduleRunIdOrderByIdAsc(savedRun.getId());
+        assertThat(savedItems).hasSize(1);
+        assertThat(savedItems.get(0).getJobId()).isEqualTo(501L);
+        assertThat(savedItems.get(0).getWhyThisPlacement()).isEqualTo("Placed on its cheapest feasible plan.");
+
+        assertThat(constraintImpacts.findByScheduleItemIdOrderByIdAsc(savedItems.get(0).getId())).hasSize(2);
+
+        var explanation = scheduleExplanations.findByScheduleRunId(savedRun.getId()).orElseThrow();
+        assertThat(explanation.getSource()).isEqualTo("DETERMINISTIC_FALLBACK");
+        assertThat(explanation.getFallbackReason()).isEqualTo("NOT_CONFIGURED");
+    }
+
+    @Test
+    @WithMockUser
+    void aFailedRequestPersistsNothing() throws Exception {
+        // The other half of "a failure... shall not block access to the numerical recommendation"
+        // (PRD section 11): a 400 must not leave a half-written run behind either.
+        long before = scheduleRuns.count();
+
+        mockMvc.perform(post("/api/schedules/optimize").contentType(APPLICATION_JSON).content("{}"))
+            .andExpect(status().isBadRequest());
+
+        assertThat(scheduleRuns.count()).isEqualTo(before);
     }
 
     private void seedPrice(LocalDateTime intervalStart, double price, LocalDateTime generatedAt) {
