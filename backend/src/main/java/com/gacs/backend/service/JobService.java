@@ -4,6 +4,7 @@ import com.gacs.backend.dto.JobRequestDto;
 import com.gacs.backend.dto.JobResponseDto;
 import com.gacs.backend.exception.ResourceNotFoundException;
 import com.gacs.backend.model.Job;
+import com.gacs.backend.model.JobPriority;
 import com.gacs.backend.repository.JobRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -55,6 +56,8 @@ public class JobService {
                 ? request.getStatus().trim().toUpperCase()
                 : "PENDING";
 
+        JobPriority priority = JobPriority.fromString(request.getPriority());
+
         Job job = Job.builder()
                 .ownerEmail(ownerEmail)
                 .name(request.getName().trim())
@@ -66,6 +69,7 @@ public class JobService {
                 .isExempt(request.isExempt())
                 .rawConstraints(request.getRawConstraints())
                 .status(status)
+                .priority(priority)
                 .build();
 
         Job saved = jobRepository.save(job);
@@ -93,6 +97,10 @@ public class JobService {
 
         if (request.getStatus() != null && !request.getStatus().isBlank()) {
             existing.setStatus(request.getStatus().trim().toUpperCase());
+        }
+
+        if (request.getPriority() != null && !request.getPriority().isBlank()) {
+            existing.setPriority(JobPriority.fromString(request.getPriority()));
         }
 
         Job updated = jobRepository.save(existing);
@@ -156,6 +164,10 @@ public class JobService {
             if (!VALID_STATUSES.contains(normalizedStatus)) {
                 throw new IllegalArgumentException("Invalid status: '" + request.getStatus() + "'. Allowed statuses: " + VALID_STATUSES);
             }
+        }
+
+        if (request.getPriority() != null && !request.getPriority().isBlank()) {
+            JobPriority.fromString(request.getPriority());
         }
     }
 }

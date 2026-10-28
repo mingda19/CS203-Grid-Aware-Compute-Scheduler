@@ -69,6 +69,10 @@ public class JobRequestDto {
     @Builder.Default
     private String status = "PENDING";
 
+    @Schema(description = "Workload priority level", example = "NORMAL", allowableValues = {"CRITICAL", "HIGH", "NORMAL", "LOW"})
+    @Builder.Default
+    private String priority = "NORMAL";
+
     @JsonProperty("isExempt")
     public boolean isExempt() {
         return Boolean.TRUE.equals(isExempt);

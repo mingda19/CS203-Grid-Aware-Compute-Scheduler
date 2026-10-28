@@ -63,6 +63,8 @@ export interface WorkloadSchedule {
   notes: string | null
 }
 
+export type JobPriority = "CRITICAL" | "HIGH" | "NORMAL" | "LOW"
+
 export interface ComputeJob {
   id: number
   ownerEmail?: string
@@ -73,6 +75,7 @@ export interface ComputeJob {
   deadline: string
   flexibilityWindowHours: number
   isExempt: boolean
+  priority?: JobPriority
   rawConstraints?: string | null
   status: string
   createdAt?: string
@@ -81,7 +84,7 @@ export interface ComputeJob {
 
 export type ComputeJobPayload = Pick<ComputeJob,
   "name" | "cpuHours" | "gpuHours" | "originalStartTime" | "deadline" | "flexibilityWindowHours" | "isExempt"
-> & { rawConstraints?: string | null }
+> & { rawConstraints?: string | null; priority?: JobPriority }
 
 export interface FacilityConfig {
   id?: number
@@ -102,6 +105,7 @@ export interface OptimizeJobInput {
   deadline: string
   flexibilityWindowHours: number
   isExempt: boolean
+  priority?: JobPriority
 }
 
 export interface OptimizeRequest {

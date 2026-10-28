@@ -719,19 +719,20 @@ Creates a structured compute job for the authenticated operator per GRID-9 / GRI
     "deadline": "2026-10-21T18:00:00Z",
     "flexibilityWindowHours": 12,
     "isExempt": false,
+    "priority": "NORMAL",
     "rawConstraints": "Can wait up to 12 hours for low price valley, finish by tomorrow evening"
   }
   ```
-* **Success Response (201 Created)**: Returns the persisted Job entity with generated `id`, `ownerEmail`, `status: "PENDING"`, and audit timestamps.
+* **Success Response (201 Created)**: Returns the persisted Job entity with generated `id`, `ownerEmail`, `status: "PENDING"`, `priority: "NORMAL"`, and audit timestamps.
 
 #### `GET /api/jobs`
-Returns all compute jobs owned by the authenticated operator, ordered chronologically by `originalStartTime` ascending.
+Returns all compute jobs owned by the authenticated operator, ordered chronologically by `originalStartTime` ascending. Each job includes its configured `priority`.
 
 #### `GET /api/jobs/{id}`
 Returns details for a specific compute job owned by the authenticated operator. Returns 404 if the job does not exist or belongs to another operator.
 
 #### `PUT /api/jobs/{id}`
-Updates an existing job. All fields (including `flexibilityWindowHours`, `deadline`, and `isExempt`) are editable.
+Updates an existing job. All fields (including `priority`, `flexibilityWindowHours`, `deadline`, and `isExempt`) are editable. Unknown `priority` values are rejected with `400 Bad Request`.
 
 #### `DELETE /api/jobs/{id}`
 Deletes a compute job owned by the authenticated operator.
@@ -754,6 +755,7 @@ The **Job** entity represents a compute workload submitted for schedule optimiza
 | `isExempt` | Boolean | Yes | `false` | Exempt-from-rescheduling flag. If `true`, job is non-negotiable and pinned to `originalStartTime` (GRID-86 / GRID-24). |
 | `rawConstraints` | String | No | `null` | Optional natural-language constraint text (up to 1,000 characters). Auto-parsed by LLM into structured fields in Sprint 4 (GRID-39 / GRID-40). |
 | `status` | String | No | `"PENDING"` | Workflow status: `"PENDING"`, `"SCHEDULED"`, `"RUNNING"`, `"COMPLETED"`, `"CANCELLED"`. |
+| `priority` | String (Enum) | No | `"NORMAL"` | Workload priority level: `"CRITICAL"`, `"HIGH"`, `"NORMAL"`, `"LOW"`. Default `"NORMAL"`. Used by the optimizer for tie-breaking when jobs compete for capacity (GRID-155 / GRID-124). Unknown values are rejected with 400 Bad Request. |
 | `ownerEmail` | String | Read-only | Auth user | Authenticated tenant operator email for tenancy isolation. |
 | `createdAt` | ISO-8601 UTC String | Read-only | Auto | Timestamp when record was created. |
 | `updatedAt` | ISO-8601 UTC String | Read-only | Auto | Timestamp when record was last updated. |
@@ -763,6 +765,7 @@ The **Job** entity represents a compute workload submitted for schedule optimiza
 2. **Temporal Validity**: `deadline` is the latest time the job must **finish**, and must be greater than or equal to `originalStartTime`. `cpuHours` and `gpuHours` are the total *work* the job needs, not its duration; the optimiser derives the duration (see §6.4).
 3. **Flexibility Range**: `flexibilityWindowHours` must be an integer $\ge 0$. A value of `0` denotes an inflexible job that cannot be delayed.
 4. **Exemption Semantics**: When `isExempt` is `true`, the optimizer models the flexibility window as zero-width, keeping the job at `originalStartTime` regardless of price signals.
+5. **Priority Range (GRID-155 AC1 / AC1.1)**: `priority` must be one of `CRITICAL`, `HIGH`, `NORMAL`, `LOW`. Defaults to `NORMAL` if omitted or null. Unknown values are rejected with `400 Bad Request`.
 
 ---
 
@@ -791,7 +794,8 @@ Evaluates jobs against forecast prices and cluster capacity and proposes a start
       "originalStartTime": "2026-10-20T10:00:00Z",
       "deadline": "2026-10-21T18:00:00Z",
       "flexibilityWindowHours": 12,
-      "isExempt": false
+      "isExempt": false,
+      "priority": "NORMAL"
     }
   ],
   "forecastLocation": "LZ_NORTH",
@@ -818,6 +822,7 @@ Evaluates jobs against forecast prices and cluster capacity and proposes a start
 | `jobs[].deadline` | ISO 8601 UTC | Yes | Job must **finish** (end of its last slot) at or before this |
 | `jobs[].flexibilityWindowHours` | integer ≥ 0 | Yes | Start may be in `[originalStartTime, originalStartTime + flexibilityWindowHours]`. Jobs never start earlier than `originalStartTime`. |
 | `jobs[].isExempt` | boolean | Yes | `true` = never moved |
+| `jobs[].priority` | string | No | Priority level (`CRITICAL`, `HIGH`, `NORMAL`, `LOW`; default `NORMAL`). Used for tie-breaking when jobs compete for capacity (GRID-155 AC1/AC3). Unknown values are rejected with `400`. |
 | `forecast[]` | array | One of `forecast` / `forecastLocation` | Explicit price per slot (`predictedPrice` in $/MWh). Makes the run fully reproducible. |
 | `forecastLocation`, `horizonHours` | string, integer | One of `forecast` / `forecastLocation` | Server resolves per-slot prices for that location from the forecast service (same data as `GET /api/prices/forecast`), starting at the earliest `originalStartTime`. `horizonHours` defaults to `48`. |
 | `clusterCapacity` | object | No | Capacity applied to every slot. Falls back to the defaults below. |
@@ -917,6 +922,7 @@ The **baseline** of a job is its cost if it started at `originalStartTime` and, 
 | 2026-10-20 | Run `status` values changed from `OPTIMAL` / `PARTIAL` to `SCHEDULED` / `NEEDS_ATTENTION`; added `provenOptimal` so the solver's certainty is reported separately from whether every job got a place. | - |
 | 2026-10-20 | AC5: a job with no feasible slot is no longer returned at its original time; it has null times, status `NO_FEASIBLE_SLOT` (was `UNCHANGED_NO_FEASIBLE_SLOT`) and a `reason`. | - |
 | 2026-10-20 | Errors split into invalid input (`400`), invalid or missing data (`422`) and no capacity (`200`). Baseline defined as the job alone on an empty cluster. | - |
+| 2026-10-28 | Added `priority` (`CRITICAL`, `HIGH`, `NORMAL`, `LOW`; default `NORMAL`) to Job schema, CRUD API, and optimizer contract (GRID-155 AC1 / AC1.1 / GRID-124). | - |
 
 #### `POST /api/schedules/{id}/approve`
 **Mandatory Human Gate**: Explicit approval by an authorized operator prior to schedule dispatch.
