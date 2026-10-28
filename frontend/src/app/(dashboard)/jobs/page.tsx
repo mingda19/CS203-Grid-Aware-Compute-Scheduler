@@ -46,6 +46,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
 
 type FormState = {
   name: string
@@ -97,6 +98,26 @@ const toApiUtcDate = (value: string, onTheHour = false) => {
 }
 
 const displayDate = (value?: string) => (value ? formatSgtDateTime(value) : "—")
+
+const getWindowDurationText = (start: string, end: string) => {
+  if (!start || !end) return ""
+  try {
+    const [d1, t1] = start.split("T")
+    const [y1, m1, day1] = d1.split("-").map(Number)
+    const [h1, min1] = t1.split(":").map(Number)
+    const [d2, t2] = end.split("T")
+    const [y2, m2, day2] = d2.split("-").map(Number)
+    const [h2, min2] = t2.split(":").map(Number)
+    const date1 = new Date(Date.UTC(y1, m1 - 1, day1, h1, min1))
+    const date2 = new Date(Date.UTC(y2, m2 - 1, day2, h2, min2))
+    const diffHours = (date2.getTime() - date1.getTime()) / (1000 * 60 * 60)
+    if (diffHours < 0) return "⚠️ Deadline is before start time"
+    if (diffHours === 0) return "0 hours (starts at deadline)"
+    return `${diffHours % 1 === 0 ? diffHours : diffHours.toFixed(1)} hours span`
+  } catch {
+    return ""
+  }
+}
 
 export default function JobsPage() {
   const [jobs, setJobs] = React.useState<ComputeJob[]>([])
@@ -957,7 +978,7 @@ export default function JobsPage() {
 
       {/* Create / Edit Form Dialog */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
           <form onSubmit={submit}>
             <DialogHeader>
               <DialogTitle>{editing ? "Edit compute job" : "Create compute job"}</DialogTitle>
@@ -997,23 +1018,38 @@ export default function JobsPage() {
                   />
                 </Field>
               </div>
-              <Field label="Original start time (SGT - On the hour)">
-                <Input
-                  type="datetime-local"
-                  step="3600"
-                  required
+              <Field label="Original start time (SGT)">
+                <JobDateTimePicker
+                  id="job-original-start"
                   value={form.originalStartTime}
-                  onChange={(e) => setForm({ ...form, originalStartTime: e.target.value })}
+                  onChange={(val) => setForm({ ...form, originalStartTime: val })}
+                  placeholder="Select start date & hour (SGT)..."
+                  mode="start"
+                  required
                 />
               </Field>
               <Field label="Deadline (SGT)">
-                <Input
-                  type="datetime-local"
-                  required
+                <JobDateTimePicker
+                  id="job-deadline"
                   value={form.deadline}
-                  onChange={(e) => setForm({ ...form, deadline: e.target.value })}
+                  onChange={(val) => setForm({ ...form, deadline: val })}
+                  placeholder="Select deadline (SGT)..."
+                  mode="deadline"
+                  minDateTime={form.originalStartTime}
+                  required
                 />
               </Field>
+              {form.originalStartTime && form.deadline && (
+                <div className="rounded-md bg-muted/50 p-2.5 text-xs flex items-center justify-between border border-border/60">
+                  <span className="text-muted-foreground flex items-center gap-1.5">
+                    <Clock className="h-3.5 w-3.5 text-emerald-500" />
+                    <span>Scheduling Window:</span>
+                  </span>
+                  <span className={`font-mono font-medium ${form.deadline < form.originalStartTime ? "text-destructive font-semibold" : "text-foreground"}`}>
+                    {getWindowDurationText(form.originalStartTime, form.deadline)}
+                  </span>
+                </div>
+              )}
               <Field label="Flexibility window (hours)">
                 <Input
                   type="number"
