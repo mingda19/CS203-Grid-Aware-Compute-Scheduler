@@ -11,10 +11,10 @@ import java.util.Optional;
 
 /**
  * Checks a set of plans against every hard rule of the contract (section 6.4) and lists the broken
- * ones. Used on the brute-force checker now, and on the real solvers in Phase 5.
+ * ones. Used on the brute-force checker, the solvers' tests and the backtest harness.
  * Shape rules (consecutive slots, shares add up to 1) are already enforced by {@link JobPlan}.
  */
-final class ContractRules {
+public final class ContractRules {
 
     /** Relative slack for capacity checks: solver results carry floating-point dust. */
     private static final double TOLERANCE = 1e-7;
@@ -23,7 +23,7 @@ final class ContractRules {
     }
 
     /** {@code plans} maps each scheduled job to its plan; a job missing from it is not scheduled. */
-    static List<String> violations(List<OptimizerJob> jobs, Map<OptimizerJob, JobPlan> plans, PriceSeries prices,
+    public static List<String> violations(List<OptimizerJob> jobs, Map<OptimizerJob, JobPlan> plans, PriceSeries prices,
                                    SlotCapacity capacity) {
         List<String> problems = new ArrayList<>();
         BaselineCalculator baselines = new BaselineCalculator(capacity);
@@ -62,7 +62,7 @@ final class ContractRules {
         return problems;
     }
 
-    static List<String> violations(OptimizationProblem problem, AllocationResult result) {
+    public static List<String> violations(OptimizationProblem problem, AllocationResult result) {
         return violations(problem.jobs(), result.plans(), problem.prices(), problem.capacity());
     }
 

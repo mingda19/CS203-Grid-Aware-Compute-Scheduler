@@ -53,6 +53,24 @@ public final class ExactAllocationSolver {
     /** Weight per hour of start offset, as a fraction of the run's cost scale. Below one rank step. */
     private static final double START_WEIGHT = 1e-11;
 
+    /**
+     * Largest tie-break weight on one (job, hour) share, as a fraction of the run's cost scale. ojAlgo's branch and
+     * bound runs several search workers at once, so when two plans cost exactly the same it returns either one,
+     * differently from run to run (seen in the backtest: identical problems, two different job splits). A small,
+     * fixed, uneven weight on every share makes the cheapest plan unique, so every solve returns the same plan.
+     * It is large enough to survive the solver's gap tolerance and below one rank step; it changes a run's
+     * cost by at most {@code jobs x 1e-8 x costScale}, far below the 4 decimal places reported.
+     */
+    private static final double SHARE_TIE_WEIGHT = 1e-8;
+
+    /**
+     * Cost of each hour a job runs in, as a fraction of the run's cost scale. Between plans that cost the same, it
+     * prefers fewer running hours, so a plan never carries a pointless sliver of work (a share near
+     * {@link AllocationSolver#MIN_SHARE}) that saves less than this. Share tie-breaks alone are too small to
+     * separate such slivers within the solver's gap tolerance. At most 24 x 2e-9 per job, below one rank step.
+     */
+    private static final double RUNNING_HOUR_WEIGHT = 1e-9;
+
     private final EnergyCostModel costs;
     private final Duration timeBudget;
 
@@ -87,6 +105,15 @@ public final class ExactAllocationSolver {
             return Optional.of(countPass.extract(counted, false));
         }
         return Optional.of(costPass.extract(costed, countProven && costed.getState().isOptimal()));
+    }
+
+    /**
+     * A fixed number in [0, 1) for each (job rank, hour index), spread unevenly (golden-ratio steps) so no two
+     * different plans get the same total by accident. Depends only on the problem, never on the run.
+     */
+    static double shareTieBreak(int rank, int hourIndex) {
+        double step = (rank * 168L + hourIndex + 1) * 0.6180339887498949;
+        return step - Math.floor(step);
     }
 
     private static long remainingMillis(long deadlineNanos) {
@@ -163,8 +190,10 @@ public final class ExactAllocationSolver {
                         e.level(0);
                         x.level(0);
                     } else if (costPass) {
-                        x.weight(costs.slotCostUsd(job, 1.0, price.get()));
+                        x.weight(costs.slotCostUsd(job, 1.0, price.get())
+                                + SHARE_TIE_WEIGHT * costScale * shareTieBreak(rank, k));
                         s.weight(START_WEIGHT * costScale * k);
+                        a.weight(RUNNING_HOUR_WEIGHT * costScale * (1.0 + shareTieBreak(rank + 1, k)));
                     }
 
                     // a[t] = a[t-1] + s[t] - e[t-1]: a run is one consecutive block.

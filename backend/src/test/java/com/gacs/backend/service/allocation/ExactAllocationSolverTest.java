@@ -132,6 +132,33 @@ class ExactAllocationSolverTest {
     }
 
     @Test
+    @DisplayName("Plans that tie on cost still give the same plan on every solve (found by the backtest)")
+    void tiesAreBrokenTheSameWayEveryTime() {
+        // A real backtest day (nightly-batch, 2025-04-09, naive forecast). Several plans cost the same, and
+        // ojAlgo's parallel search workers returned a different one from run to run (10 vs 15 out of 25)
+        // until the tie-break weights made the cheapest plan unique.
+        java.time.LocalDateTime day = java.time.LocalDateTime.of(2025, 4, 9, 0, 0);
+        double[] perHour = {50.79, 53.29, 39.17, 37.23, 31.48, 30.67, 27.69, 25.55, 25.48, 27.71, 35.00, 36.19,
+            34.06, 29.93, 24.71, 23.73, 24.81, 27.84, 29.07, 31.12, 41.46, 46.58, 62.60, 140.00};
+        java.util.Map<java.time.LocalDateTime, Double> hours = new java.util.LinkedHashMap<>();
+        for (int h = 0; h < 24; h++) {
+            hours.put(day.plusHours(h), perHour[h]);
+        }
+        List<OptimizerJob> jobs = List.of(
+                new OptimizerJob(1L, "batch-1", 238.0, 0.0, day.plusHours(7), day.plusHours(9), 1, false),
+                new OptimizerJob(2L, "batch-2", 74.0, 0.0, day.plusHours(6), day.plusHours(11), 3, false),
+                new OptimizerJob(3L, "batch-3", 219.0, 0.0, day.plusHours(8), day.plusHours(11), 0, false),
+                new OptimizerJob(4L, "batch-4", 222.0, 0.0, day.plusHours(5), day.plusHours(12), 4, false),
+                new OptimizerJob(5L, "batch-5", 175.0, 0.0, day.plusHours(6), day.plusHours(11), 2, false));
+        OptimizationProblem problem = problem(jobs, new PriceSeries(hours, false), cpuCapacity(256.0));
+
+        AllocationResult first = solve(problem);
+        for (int i = 0; i < 40; i++) {
+            assertThat(SOLVER.solve(problem).orElseThrow()).as("solve %d", i).isEqualTo(first);
+        }
+    }
+
+    @Test
     @DisplayName("A run with only exempt jobs is trivially optimal")
     void onlyExemptJobs() {
         AllocationResult result = solve(problem(List.of(exempt(1, 20.0, 0.0, 0, 1)), prices(10), cpuCapacity(256.0)));
