@@ -1,7 +1,8 @@
 # Optimiser backtest
 
 Replays the optimiser over historical ERCOT LZ_NORTH prices and compares it with a fixed schedule. The plan
-is in [docs/backtest-plan.md](../docs/backtest-plan.md). This folder holds ticket 1: the dataset and the harness.
+is in [docs/backtest-plan.md](../docs/backtest-plan.md). This folder holds ticket 1 (the dataset and the harness)
+and ticket 2's metrics.
 
 ## How it works
 
@@ -52,7 +53,40 @@ mvn test -Dtest=BacktestRun -Dbacktest.run=true \
 ```
 
 This reruns with the same settings. It refuses to start if any input file or profile has changed, and fails
-unless `days.csv`, `jobs.csv` and `skipped.csv` are byte-identical to the original.
+unless `days.csv`, `jobs.csv` and `skipped.csv` are byte-identical to the original. If the original has metrics,
+`metrics_daily.csv` and `metrics_summary.csv` must also be byte-identical.
+
+## Metrics (ticket 2)
+
+Every run computes its metrics at the end and prints the headline per profile and source. To (re)compute them
+for an existing run:
+
+```bash
+cd backend
+mvn test -Dtest=BacktestMetricsRun -Dbacktest.metrics=../backtest/output/<run-id>
+```
+
+They are computed from the run's files and the same price files. The run refuses if a price file's hash no
+longer matches the run's manifest.
+
+For one profile, day and planning source:
+- **Realised savings** = fixed schedule − plan, both at actual prices. What the operator really saves; the headline.
+- **Projected savings** = fixed schedule − plan, both at the planning prices. What the app promised.
+- **Perfect-foresight savings** = fixed schedule − a plan made with actual prices. The most that was possible.
+- **Forecast-error cost** = realised plan cost − perfect plan cost.
+
+For the whole period:
+- totals, with savings as a ratio of totals
+- a 95% interval from a 7-day moving-block bootstrap (2,000 draws, fixed seed, the same method as `model/evaluate.py`)
+- daily savings: mean, median, standard deviation, 10th and 90th percentiles
+- share of days with negative savings
+- share of the possible savings captured
+- energy (baseline vs plan)
+- jobs scheduled, deadline adherence, violations, proven-optimal share
+- forecast MAE / RMSE, over all hours and over the hours the plan used
+- solve times (not repeatable)
+
+**Savings rule (PRD):** a day where any job was not scheduled is reported but left out of every savings figure.
 
 ## Output (`backtest/output/<run-id>/`)
 
@@ -63,6 +97,9 @@ unless `days.csv`, `jobs.csv` and `skipped.csv` are byte-identical to the origin
 | `skipped.csv` | Days or sources left out, and why (for example, missing prices) |
 | `timings.csv` | Solve time per row. The only results file that changes between reruns. |
 | `manifest.json` | See below |
+| `metrics_daily.csv` | Ticket 2 metrics, one row per profile, day and source |
+| `metrics_summary.csv` | Ticket 2 metrics for the whole period, one row per profile and source |
+| `metrics.json` | The summaries, solve times, bootstrap settings, and hashes of everything the metrics came from |
 
 Cost and flag columns in `days.csv`:
 - `baseline_cost_actual`: the fixed schedule at actual prices

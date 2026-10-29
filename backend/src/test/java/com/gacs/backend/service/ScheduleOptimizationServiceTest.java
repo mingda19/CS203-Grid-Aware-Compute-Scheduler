@@ -95,6 +95,8 @@ class ScheduleOptimizationServiceTest {
         assertThat(item.scheduledEnd()).isEqualTo(at(16));
         assertThat(item.allocatedCpuHours()).isEqualTo(64.0);
         assertThat(item.allocatedGpuHours()).isEqualTo(16.0);
+        assertThat(item.energyKwh()).isEqualTo(9.6); // 64 x 0.05 + 16 x 0.40
+        assertThat(response.energyKwh()).isEqualTo(9.6);
         assertThat(item.allocations()).hasSize(1);
         assertThat(item.allocations().getFirst().intervalStartUtc()).isEqualTo(at(15));
         assertThat(item.allocations().getFirst().cpuHours()).isCloseTo(64.0, within(1e-6));
@@ -119,6 +121,10 @@ class ScheduleOptimizationServiceTest {
         assertThat(response.optimizedCostUsd()).isEqualTo(EnergyCostModel.roundUsd(optimized));
         assertThat(response.projectedSavingsUsd())
                 .isEqualTo(EnergyCostModel.roundUsd(response.baselineCostUsd() - response.optimizedCostUsd()));
+        // 37x0.05+3x0.4 + 91x0.05 + 13x0.05+7x0.4 = 3.05 + 4.55 + 3.45
+        assertThat(response.energyKwh()).isEqualTo(11.05);
+        assertThat(response.energyKwh())
+                .isEqualTo(EnergyCostModel.roundKwh(response.items().stream().mapToDouble(ScheduleItem::energyKwh).sum()));
         for (ScheduleItem item : response.items()) {
             assertThat(item.savingsUsd())
                     .isEqualTo(EnergyCostModel.roundUsd(item.baselineCostUsd() - item.optimizedCostUsd()));
@@ -159,6 +165,7 @@ class ScheduleOptimizationServiceTest {
         assertThat(left.scheduledEnd()).isNull();
         assertThat(left.allocations()).isEmpty();
         assertThat(left.allocatedCpuHours()).isZero();
+        assertThat(left.energyKwh()).isZero();
         assertThat(left.baselineCostUsd()).isNull();
         assertThat(left.optimizedCostUsd()).isNull();
         assertThat(left.savingsUsd()).isNull();
@@ -166,6 +173,7 @@ class ScheduleOptimizationServiceTest {
         // Totals cover only the exempt job: 256 CPU-hours = 12.8 kWh at $10/MWh.
         assertThat(response.baselineCostUsd()).isEqualTo(0.128);
         assertThat(response.optimizedCostUsd()).isEqualTo(0.128);
+        assertThat(response.energyKwh()).isEqualTo(12.8); // only the exempt job's 256 CPU-hours count
         assertThat(response.plainEnglishExplanation()).contains("1 job(s) could not be placed");
     }
 

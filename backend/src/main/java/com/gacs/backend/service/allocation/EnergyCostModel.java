@@ -65,6 +65,11 @@ public final class EnergyCostModel {
                 .findFirst();
     }
 
+    /** Rounds an energy amount in kWh to {@link #COST_DECIMALS} places, half up, like costs. */
+    public static double roundKwh(double kwh) {
+        return roundUsd(kwh);
+    }
+
     /** Rounds a dollar amount to {@link #COST_DECIMALS} places, half up. */
     public static double roundUsd(double amount) {
         if (!Double.isFinite(amount)) {

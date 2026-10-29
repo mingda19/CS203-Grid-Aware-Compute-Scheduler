@@ -58,12 +58,14 @@ public class ScheduleOptimizationService {
         List<ScheduleItem> items = new ArrayList<>();
         double baselineTotal = 0.0;
         double optimizedTotal = 0.0;
+        double energyTotal = 0.0;
         for (JobOutcome outcome : result.outcomes()) {
             ScheduleItem item = item(outcome, problem);
             items.add(item);
             if (item.baselineCostUsd() != null) {
                 baselineTotal += item.baselineCostUsd();
                 optimizedTotal += item.optimizedCostUsd();
+                energyTotal += item.energyKwh();
             }
         }
         // Totals are sums of the already-rounded item costs, rounded again only to remove float dust.
@@ -77,7 +79,7 @@ public class ScheduleOptimizationService {
                 UUID.randomUUID().toString(),
                 anyLeftOut ? OptimizeResponseDto.STATUS_NEEDS_ATTENTION : OptimizeResponseDto.STATUS_SCHEDULED,
                 result.provenOptimal(),
-                baselineCostUsd, optimizedCostUsd, savingsUsd, savingsPercent,
+                baselineCostUsd, optimizedCostUsd, savingsUsd, savingsPercent, EnergyCostModel.roundKwh(energyTotal),
                 explain(result, problem, baselineCostUsd, optimizedCostUsd, savingsUsd, savingsPercent),
                 problem.prices().isSeeded(),
                 List.copyOf(items));
@@ -86,7 +88,7 @@ public class ScheduleOptimizationService {
     private ScheduleItem item(JobOutcome outcome, OptimizationProblem problem) {
         var job = outcome.job();
         if (!outcome.scheduled()) {
-            return new ScheduleItem(job.id(), job.name(), job.originalStartTime(), null, null, 0.0, 0.0, List.of(),
+            return new ScheduleItem(job.id(), job.name(), job.originalStartTime(), null, null, 0.0, 0.0, 0.0, List.of(),
                     outcome.status().name(), outcome.reason(), null, null, null);
         }
         JobPlan plan = outcome.plan();
@@ -97,7 +99,8 @@ public class ScheduleOptimizationService {
         double baseline = EnergyCostModel.roundUsd(costs.costUsd(problem.baselineOf(job), problem.prices()));
         double optimized = EnergyCostModel.roundUsd(costs.costUsd(plan, problem.prices()));
         return new ScheduleItem(job.id(), job.name(), job.originalStartTime(), plan.start(), plan.end(),
-                job.cpuHours(), job.gpuHours(), List.copyOf(allocations), outcome.status().name(), null,
+                job.cpuHours(), job.gpuHours(), EnergyCostModel.roundKwh(costs.jobKwh(job)), List.copyOf(allocations),
+                outcome.status().name(), null,
                 baseline, optimized, EnergyCostModel.roundUsd(baseline - optimized));
     }
 

@@ -41,6 +41,11 @@ public record OptimizeResponseDto(
         + "is 0", example = "78.57")
     double projectedSavingsPercent,
 
+    @Schema(description = "Energy the scheduled jobs use, in kWh (NO_FEASIBLE_SLOT jobs excluded). The same for the "
+        + "baseline and the plan: moving work changes when energy is used, not how much (PRD FR-21).",
+        example = "9.6")
+    double energyKwh,
+
     @Schema(description = "Plain-English summary of the run")
     String plainEnglishExplanation,
 
@@ -72,6 +77,9 @@ public record OptimizeResponseDto(
         double allocatedCpuHours,
         @Schema(description = "GPU-hours allocated over all slots; 0 for NO_FEASIBLE_SLOT", example = "16.0")
         double allocatedGpuHours,
+        @Schema(description = "Energy the job uses, in kWh: cpuHours x kWh per CPU-hour + gpuHours x kWh per GPU-hour; "
+            + "0 for NO_FEASIBLE_SLOT", example = "9.6")
+        double energyKwh,
         @Schema(description = "Slots used and the hours taken in each; empty for NO_FEASIBLE_SLOT")
         List<Allocation> allocations,
         @Schema(description = "OPTIMISED, UNCHANGED_EXEMPT or NO_FEASIBLE_SLOT", example = "OPTIMISED")

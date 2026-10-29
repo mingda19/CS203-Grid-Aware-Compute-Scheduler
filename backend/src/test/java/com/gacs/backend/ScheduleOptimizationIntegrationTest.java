@@ -81,6 +81,7 @@ class ScheduleOptimizationIntegrationTest {
             .andExpect(jsonPath("$.data.optimizedCostUsd", is(0.2304)))
             .andExpect(jsonPath("$.data.projectedSavingsUsd", is(0.8448)))
             .andExpect(jsonPath("$.data.projectedSavingsPercent", is(78.57)))
+            .andExpect(jsonPath("$.data.energyKwh", is(9.6)))
             .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(false)))
             .andExpect(jsonPath("$.data.items.length()", is(1)))
             .andExpect(jsonPath("$.data.items[0].jobId", is(101)))
@@ -90,6 +91,7 @@ class ScheduleOptimizationIntegrationTest {
             .andExpect(jsonPath("$.data.items[0].scheduledEnd", is("2026-10-21T02:00:00Z")))
             .andExpect(jsonPath("$.data.items[0].allocatedCpuHours", is(64.0)))
             .andExpect(jsonPath("$.data.items[0].allocatedGpuHours", is(16.0)))
+            .andExpect(jsonPath("$.data.items[0].energyKwh", is(9.6)))
             .andExpect(jsonPath("$.data.items[0].allocations.length()", is(1)))
             .andExpect(jsonPath("$.data.items[0].allocations[0].intervalStartUtc", is("2026-10-21T01:00:00Z")))
             .andExpect(jsonPath("$.data.items[0].allocations[0].cpuHours", closeTo(64.0, 1e-6)))
@@ -205,7 +207,9 @@ class ScheduleOptimizationIntegrationTest {
             .andExpect(jsonPath("$.data.items[1].allocations.length()", is(0)))
             .andExpect(jsonPath("$.data.items[1].baselineCostUsd", nullValue()))
             .andExpect(jsonPath("$.data.items[1].reason", containsString("Cluster full")))
-            .andExpect(jsonPath("$.data.baselineCostUsd", is(0.128)));
+            .andExpect(jsonPath("$.data.baselineCostUsd", is(0.128)))
+            .andExpect(jsonPath("$.data.items[1].energyKwh", is(0.0)))
+            .andExpect(jsonPath("$.data.energyKwh", is(12.8)));
     }
 
     @Test

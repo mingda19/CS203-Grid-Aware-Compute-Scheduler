@@ -141,6 +141,8 @@ export interface ScheduleItem {
   scheduledEnd: string | null
   allocatedCpuHours: number
   allocatedGpuHours: number
+  /** kWh the job uses; 0 for NO_FEASIBLE_SLOT */
+  energyKwh: number
   allocations: AllocationSlot[]
   perJobStatus: "OPTIMISED" | "UNCHANGED_EXEMPT" | "NO_FEASIBLE_SLOT"
   reason: string | null
@@ -157,6 +159,8 @@ export interface OptimizeResponse {
   optimizedCostUsd: number
   projectedSavingsUsd: number
   projectedSavingsPercent: number
+  /** kWh the scheduled jobs use; the same for the baseline and the plan */
+  energyKwh: number
   plainEnglishExplanation: string
   usedSeededFallbackPrices: boolean
   items: ScheduleItem[]
