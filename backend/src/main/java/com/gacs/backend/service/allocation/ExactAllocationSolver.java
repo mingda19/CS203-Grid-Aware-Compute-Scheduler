@@ -61,15 +61,24 @@ public final class ExactAllocationSolver {
         this.timeBudget = timeBudget;
     }
 
-    /** The best plan found within the time budget, or empty if no feasible plan was found in time. */
+    /**
+     * The best plan found within the time budget, or empty if no feasible plan was found in time.
+     * {@code provenOptimal} only covers this call's own model: when the problem has a
+     * {@link SynchronizedFinishConstraint}, that group's placement comes from a separate,
+     * independently-greedy pre-pass ({@link SynchronizedGroupPlacer}), so a proven-optimal result is
+     * optimal given the group's placement, not jointly optimal across it and the rest of the run.
+     */
     public Optional<AllocationResult> solve(OptimizationProblem problem) {
-        List<OptimizerJob> flexible = problem.flexibleJobsInTieBreakOrder();
+        SynchronizedGroupPlacer.Placement groups = SynchronizedGroupPlacer.place(problem, costs);
+        List<OptimizerJob> flexible = problem.flexibleJobsInTieBreakOrder().stream()
+                .filter(job -> !groups.groupedJobIds().contains(job.id()))
+                .toList();
         if (flexible.isEmpty()) {
-            return Optional.of(AllocationResult.of(problem, Map.of(), true));
+            return Optional.of(AllocationResult.of(problem, groups.plans(), true));
         }
         long deadline = System.nanoTime() + timeBudget.toNanos();
 
-        Model countPass = new Model(problem, flexible, OptionalInt.empty());
+        Model countPass = new Model(problem, flexible, OptionalInt.empty(), groups.plans());
         Optimisation.Result counted = countPass.minimise(remainingMillis(deadline));
         if (!counted.getState().isFeasible()) {
             return Optional.empty();
@@ -81,7 +90,7 @@ public final class ExactAllocationSolver {
         if (left <= 0) {
             return Optional.of(countPass.extract(counted, false));
         }
-        Model costPass = new Model(problem, flexible, OptionalInt.of(scheduled));
+        Model costPass = new Model(problem, flexible, OptionalInt.of(scheduled), groups.plans());
         Optimisation.Result costed = costPass.minimise(left);
         if (!costed.getState().isFeasible()) {
             return Optional.of(countPass.extract(counted, false));
@@ -100,12 +109,16 @@ public final class ExactAllocationSolver {
     /** One pass's model. With {@code fixedCount} empty it maximises scheduled jobs; otherwise it minimises cost. */
     private final class Model {
         private final OptimizationProblem problem;
+        private final Map<OptimizerJob, JobPlan> groupPlans;
         private final ExpressionsBasedModel model = new ExpressionsBasedModel();
         private final List<JobVars> vars = new ArrayList<>();
+        private final Map<Long, TreeMap<LocalDateTime, Variable>> runningByJob = new HashMap<>();
         private int expressions;
 
-        Model(OptimizationProblem problem, List<OptimizerJob> flexible, OptionalInt fixedCount) {
+        Model(OptimizationProblem problem, List<OptimizerJob> flexible, OptionalInt fixedCount,
+             Map<OptimizerJob, JobPlan> groupPlans) {
             this.problem = problem;
+            this.groupPlans = groupPlans;
             // One thread: ojAlgo's branch and bound is multi-threaded by default, which would break determinism.
             model.options.parallelism(1);
             model.options.integer(IntegerStrategy.DEFAULT.withGapTolerance(NumberContext.of(10)));
@@ -114,6 +127,7 @@ public final class ExactAllocationSolver {
             double costScale = problem.costScale(costs);
             PriceSeries prices = problem.prices();
             ResidualCapacity free = problem.residualAfterExemptJobs();
+            groupPlans.values().forEach(free::reserve);
             Map<LocalDateTime, Expression> cpuAt = new TreeMap<>();
             Map<LocalDateTime, Expression> gpuAt = new TreeMap<>();
             Expression count = costPass ? expression().level(fixedCount.getAsInt()) : null;
@@ -121,6 +135,9 @@ public final class ExactAllocationSolver {
             for (int rank = 0; rank < flexible.size(); rank++) {
                 OptimizerJob job = flexible.get(rank);
                 JobWindow window = new JobWindow(job, prices);
+                for (Constraint constraint : problem.constraintsFor(job)) {
+                    window = constraint.restrict(job, window, Map.of());
+                }
                 Set<LocalDateTime> starts = new HashSet<>(window.startSlots());
                 List<LocalDateTime> hours = new ArrayList<>();
                 for (LocalDateTime t = job.originalStartTime(); !t.isAfter(window.lastSlot()); t = t.plusHours(1)) {
@@ -149,6 +166,7 @@ public final class ExactAllocationSolver {
                 for (int k = 0; k < hours.size(); k++) {
                     LocalDateTime t = hours.get(k);
                     Optional<Double> price = prices.priceAt(t);
+                    boolean usable = window.isUsable(t);
                     String id = rank + "_" + k;
                     Variable s = model.newVariable("s" + id).binary();
                     Variable e = model.newVariable("e" + id).binary();
@@ -158,7 +176,7 @@ public final class ExactAllocationSolver {
                     if (!starts.contains(t)) {
                         s.level(0);
                     }
-                    if (price.isEmpty()) {
+                    if (!usable) {
                         a.level(0);
                         e.level(0);
                         x.level(0);
@@ -188,6 +206,9 @@ public final class ExactAllocationSolver {
                             gpuAt.computeIfAbsent(t, slot -> expression().upper(limit.gpuHours())).set(x, job.gpuHours());
                         }
                     }
+                    if (usable) {
+                        runningByJob.computeIfAbsent(job.id(), key -> new TreeMap<>()).put(t, a);
+                    }
                     running.add(a);
                     shares.add(x);
                     previousRunning = a;
@@ -196,6 +217,21 @@ public final class ExactAllocationSolver {
                 // Still running in the last allowed hour means it must end there, not run past the deadline.
                 expression().level(0).set(previousRunning, 1).set(previousEnd, -1);
                 vars.add(new JobVars(job, hours, p, running, shares));
+            }
+
+            RunningVariableLookup lookup = new RunningVariableLookup() {
+                @Override
+                public Optional<Variable> runningAt(long jobId, LocalDateTime hour) {
+                    return Optional.ofNullable(runningByJob.getOrDefault(jobId, new TreeMap<>()).get(hour));
+                }
+
+                @Override
+                public List<LocalDateTime> hoursOf(long jobId) {
+                    return List.copyOf(runningByJob.getOrDefault(jobId, new TreeMap<>()).keySet());
+                }
+            };
+            for (Constraint constraint : problem.constraints()) {
+                constraint.applyToExactModel(model, lookup);
             }
         }
 
@@ -213,7 +249,7 @@ public final class ExactAllocationSolver {
         }
 
         AllocationResult extract(Optimisation.Result result, boolean provenOptimal) {
-            Map<OptimizerJob, JobPlan> plans = new HashMap<>();
+            Map<OptimizerJob, JobPlan> plans = new HashMap<>(groupPlans);
             for (JobVars v : vars) {
                 if (value(result, v.scheduled()) < 0.5) {
                     continue;
