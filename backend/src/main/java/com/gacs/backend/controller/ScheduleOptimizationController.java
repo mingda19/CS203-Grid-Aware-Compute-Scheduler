@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.security.Principal;
 
 /**
  * Schedule optimization endpoint, per the Schedule Optimization Engine Contract
@@ -66,9 +67,10 @@ public class ScheduleOptimizationController {
     })
     @PostMapping("/optimize")
     public ResponseEntity<ApiResponse<OptimizeResponseDto>> optimize(
-        @RequestBody(required = false) OptimizeRequestDto request
+        @RequestBody(required = false) OptimizeRequestDto request,
+        Principal principal
     ) {
-        OptimizeResponseDto plan = optimizationService.optimize(request);
+        OptimizeResponseDto plan = optimizationService.optimize(request, principal.getName());
         return ResponseEntity.ok(ApiResponse.ok("Optimized schedule generated", plan));
     }
 }
