@@ -53,7 +53,7 @@ public class ScheduleOptimizationService {
         OptimizationProblem problem = problems.build(request);
         AllocationResult result = solver.solve(problem);
         OptimizeResponseDto response = buildResponse(problem, result);
-        recorder.record(result, response, ownerEmail);
+        recorder.record(result, problem.constraints(), response, ownerEmail);
         return response;
     }
 
