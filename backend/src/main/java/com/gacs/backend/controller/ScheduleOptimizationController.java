@@ -4,7 +4,7 @@ import com.gacs.backend.dto.ApiResponse;
 import com.gacs.backend.dto.ExplanationResponseDto;
 import com.gacs.backend.dto.OptimizeRequestDto;
 import com.gacs.backend.dto.OptimizeResponseDto;
-import com.gacs.backend.service.ScheduleOptimizationService;
+import com.gacs.backend.service.ScheduleReviewService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.security.Principal;
 
+
 /**
  * Schedule optimization endpoint, per the Schedule Optimization Engine Contract
  * (GRID-124) in {@code docs/api-contract.md}.
@@ -32,9 +33,9 @@ import java.security.Principal;
 @RequestMapping("/api/schedules")
 public class ScheduleOptimizationController {
 
-    private final ScheduleOptimizationService optimizationService;
+    private final ScheduleReviewService optimizationService;
 
-    public ScheduleOptimizationController(ScheduleOptimizationService optimizationService) {
+    public ScheduleOptimizationController(ScheduleReviewService optimizationService) {
         this.optimizationService = optimizationService;
     }
 
@@ -62,6 +63,10 @@ public class ScheduleOptimizationController {
             responseCode = "422",
             description = "Missing data: a job's baseline hours have no forecast price, so its baseline "
                 + "cannot be priced."
+        ),
+        @io.swagger.v3.oas.annotations.responses.ApiResponse(
+            responseCode = "401",
+            description = "Authenticated email has no database user."
         ),
         @io.swagger.v3.oas.annotations.responses.ApiResponse(
             responseCode = "403",

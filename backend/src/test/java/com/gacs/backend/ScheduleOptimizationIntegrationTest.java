@@ -49,9 +49,14 @@ class ScheduleOptimizationIntegrationTest {
     private PredictedPriceRepository predictions;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+    @Autowired
+    private com.gacs.backend.repository.UserRepository users;
 
     @BeforeEach
     void clearForecasts() {
+        for (String email : java.util.List.of("contract-tester@datacenter.io", "user")) {
+            if (!users.existsByEmail(email)) users.save(new com.gacs.backend.model.User(email, "test-password", "Operator", "ROLE_USER"));
+        }
         predictions.deleteAll();
     }
 
