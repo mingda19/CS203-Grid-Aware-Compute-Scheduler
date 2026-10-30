@@ -24,6 +24,11 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verifyNoInteractions;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -45,10 +50,10 @@ class AuditEventControllerTest {
     private final String validHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     private final String validRationale = "Approved schedule after cooling check.";
 
-    @Test
-    @WithMockUser(username = "operator@gacs.internal")
+    @ParameterizedTest
+    @ValueSource(strings = {"USER", "ADMIN"})
     @DisplayName("AC4.1 — POST /api/audit-events records audit event and returns 201 Created")
-    void recordEvent_Success() throws Exception {
+    void recordEvent_Success(String role) throws Exception {
         AuditEventRequestDto request = new AuditEventRequestDto(
                 AuditActionType.APPROVE,
                 validRunId,
@@ -68,7 +73,9 @@ class AuditEventControllerTest {
 
         when(auditEventService.recordEvent(any(AuditEventRequestDto.class))).thenReturn(responseDto);
 
-        mockMvc.perform(post("/api/audit-events")
+        mockMvc.perform(post("/api/audit-events").with(
+                        org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors
+                                .user("operator@gacs.internal").roles(role))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isCreated())
@@ -83,7 +90,7 @@ class AuditEventControllerTest {
     }
 
     @Test
-    @WithMockUser(username = "operator@gacs.internal")
+    @WithMockUser(username = "operator@gacs.internal", roles = "ADMIN")
     @DisplayName("AC4.1a — Caller-supplied actor in JSON payload is ignored; authenticated user is enforced")
     void recordEvent_CallerSuppliedActorIgnored() throws Exception {
         // Construct raw JSON payload that attempts to inject an actor
@@ -134,7 +141,7 @@ class AuditEventControllerTest {
     }
 
     @Test
-    @WithMockUser(username = "operator@gacs.internal")
+    @WithMockUser(username = "operator@gacs.internal", roles = "ADMIN")
     @DisplayName("POST /api/audit-events returns 400 when required fields are missing or invalid")
     void recordEvent_ValidationErrors() throws Exception {
         // Missing actionType, blank runId, invalid scheduleHash length, blank rationale
@@ -188,5 +195,67 @@ class AuditEventControllerTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.message").value("Audit event not found with id: 999"));
+    }
+
+    @Test
+    @WithMockUser(roles = "OTHER")
+    void recordEvent_UnsupportedRoleForbidden() throws Exception {
+        AuditEventRequestDto request = new AuditEventRequestDto(
+                AuditActionType.APPROVE, validRunId, validHash, validRationale);
+        mockMvc.perform(post("/api/audit-events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(auditEventService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/api/audit-events", "/api/audit-events/run/run-1", "/api/audit-events/1"})
+    void reads_UnauthenticatedForbidden(String path) throws Exception {
+        mockMvc.perform(get(path)).andExpect(status().isForbidden());
+        verifyNoInteractions(auditEventService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/api/audit-events", "/api/audit-events/run/run-1", "/api/audit-events/1"})
+    @WithMockUser(roles = "OTHER")
+    void reads_UnsupportedRoleForbidden(String path) throws Exception {
+        mockMvc.perform(get(path)).andExpect(status().isForbidden());
+        verifyNoInteractions(auditEventService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"USER", "ADMIN"})
+    void reads_AllowedRoles(String role) throws Exception {
+        when(auditEventService.getEvents(any(Pageable.class))).thenReturn(Page.empty());
+        when(auditEventService.getEventsByRunId("run-1")).thenReturn(List.of());
+        when(auditEventService.getEventById(1L)).thenReturn(new AuditEventResponseDto(
+                1L, "admin", AuditActionType.APPROVE, Instant.now(), validRunId, validHash, validRationale));
+        for (String path : List.of("/api/audit-events", "/api/audit-events/run/run-1", "/api/audit-events/1")) {
+            mockMvc.perform(get(path).with(
+                    org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors
+                            .user("reader").roles(role)))
+                    .andExpect(status().isOk());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"trailing-space", "non-hex", "uppercase", "short", "long"})
+    @WithMockUser(roles = "ADMIN")
+    void recordEvent_InvalidHashRejected(String kind) throws Exception {
+        String hash = switch (kind) {
+            case "trailing-space" -> "a".repeat(63) + " ";
+            case "non-hex" -> "g".repeat(64);
+            case "uppercase" -> "A".repeat(64);
+            case "short" -> "a".repeat(63);
+            default -> "a".repeat(65);
+        };
+        AuditEventRequestDto request = new AuditEventRequestDto(
+                AuditActionType.APPROVE, validRunId, hash, validRationale);
+        mockMvc.perform(post("/api/audit-events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(auditEventService);
     }
 }

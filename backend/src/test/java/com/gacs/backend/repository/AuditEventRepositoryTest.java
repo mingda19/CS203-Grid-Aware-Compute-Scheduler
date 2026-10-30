@@ -9,6 +9,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import jakarta.persistence.EntityManager;
+import org.springframework.test.util.ReflectionTestUtils;
 import java.util.List;
 import java.util.Optional;
 
@@ -22,6 +24,9 @@ class AuditEventRepositoryTest {
     @Autowired
     private AuditEventRepository auditEventRepository;
 
+    @Autowired
+    private EntityManager entityManager;
+
     @Test
     @DisplayName("AC4.1 — Persist and retrieve AuditEvent with all attributes")
     void testSaveAndRetrieveAuditEvent() {
@@ -30,6 +35,7 @@ class AuditEventRepositoryTest {
         String rationale = "Approved schedule after verifying cooling margin and spot price forecast.";
 
         AuditEvent event = AuditEvent.builder()
+                .timestamp(Instant.parse("2026-10-28T09:30:00Z"))
                 .actor("operator@gacs.internal")
                 .actionType(AuditActionType.APPROVE)
                 .runId(runId)
@@ -58,9 +64,10 @@ class AuditEventRepositoryTest {
     }
 
     @Test
-    @DisplayName("AC4.1 / AC5.1 — Audit events are append-only; update attempts throw UnsupportedOperationException")
+    @DisplayName("AC4.1 / AC5.1 — Audit events remain unchanged after managed entity mutations")
     void testImmutabilityOnUpdate() {
         AuditEvent event = AuditEvent.builder()
+                .timestamp(Instant.parse("2026-10-28T09:30:00Z"))
                 .actor("operator@gacs.internal")
                 .actionType(AuditActionType.APPROVE)
                 .runId("run-12345")
@@ -68,16 +75,23 @@ class AuditEventRepositoryTest {
                 .operatorRationale("Initial approval")
                 .build();
 
-        // Verify entity @PreUpdate throws UnsupportedOperationException
-        assertThatThrownBy(event::onUpdate)
-                .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessage("Audit events are immutable and append-only. Updates are forbidden.");
+        AuditEvent saved = auditEventRepository.saveAndFlush(event);
+        Long id = saved.getId();
+        ReflectionTestUtils.setField(saved, "operatorRationale", "Tampered rationale");
+        assertThat(saved.getOperatorRationale()).isEqualTo("Tampered rationale");
+
+        auditEventRepository.flush();
+        entityManager.clear();
+
+        AuditEvent reloaded = auditEventRepository.findById(id).orElseThrow();
+        assertThat(reloaded.getOperatorRationale()).isEqualTo("Initial approval");
     }
 
     @Test
     @DisplayName("AC4.1 / AC5.1 — Audit events are append-only; delete attempts throw UnsupportedOperationException")
     void testImmutabilityOnDelete() {
         AuditEvent event = AuditEvent.builder()
+                .timestamp(Instant.parse("2026-10-28T09:30:00Z"))
                 .actor("operator@gacs.internal")
                 .actionType(AuditActionType.REJECT)
                 .runId("run-delete-test")

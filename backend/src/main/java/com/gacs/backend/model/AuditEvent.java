@@ -47,18 +47,6 @@ public class AuditEvent {
     @Column(name = "operator_rationale", nullable = false, updatable = false, length = 2000)
     private String operatorRationale;
 
-    @PrePersist
-    public void onCreate() {
-        if (this.timestamp == null) {
-            this.timestamp = Instant.now();
-        }
-    }
-
-    @PreUpdate
-    public void onUpdate() {
-        throw new UnsupportedOperationException("Audit events are immutable and append-only. Updates are forbidden.");
-    }
-
     @PreRemove
     public void onRemove() {
         throw new UnsupportedOperationException("Audit events are append-only. Deletions are forbidden.");

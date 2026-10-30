@@ -11,7 +11,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.access.AccessDeniedException;
@@ -22,6 +21,8 @@ import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 import java.time.Instant;
+import java.time.Clock;
+import java.time.ZoneOffset;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
@@ -37,12 +38,13 @@ class AuditEventServiceTest {
     @Mock
     private AuditEventRepository auditEventRepository;
 
-    @InjectMocks
     private AuditEventService auditEventService;
 
     @BeforeEach
     void setUp() {
         SecurityContextHolder.clearContext();
+        auditEventService = new AuditEventService(auditEventRepository,
+                Clock.fixed(Instant.parse("2026-10-28T09:30:00Z"), ZoneOffset.UTC));
     }
 
     @AfterEach
@@ -79,7 +81,7 @@ class AuditEventServiceTest {
                     .id(1L)
                     .actor(event.getActor())
                     .actionType(event.getActionType())
-                    .timestamp(event.getTimestamp() != null ? event.getTimestamp() : Instant.now())
+                    .timestamp(event.getTimestamp())
                     .runId(event.getRunId())
                     .scheduleHash(event.getScheduleHash())
                     .operatorRationale(event.getOperatorRationale())
@@ -89,6 +91,7 @@ class AuditEventServiceTest {
         AuditEventResponseDto response = auditEventService.recordEvent(request);
 
         assertThat(response).isNotNull();
+        assertThat(response.timestamp()).isEqualTo(Instant.parse("2026-10-28T09:30:00Z"));
         assertThat(response.actor()).isEqualTo("operator@gacs.internal");
         assertThat(response.actionType()).isEqualTo(AuditActionType.APPROVE);
         assertThat(response.runId()).isEqualTo("run-777");

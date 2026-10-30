@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.Clock;
 import java.util.List;
 
 /**
@@ -25,8 +26,11 @@ public class AuditEventService {
 
     private final AuditEventRepository auditEventRepository;
 
-    public AuditEventService(AuditEventRepository auditEventRepository) {
+    private final Clock clock;
+
+    public AuditEventService(AuditEventRepository auditEventRepository, Clock clock) {
         this.auditEventRepository = auditEventRepository;
+        this.clock = clock;
     }
 
     /**
@@ -46,9 +50,9 @@ public class AuditEventService {
         AuditEvent event = AuditEvent.builder()
                 .actor(actor)
                 .actionType(request.actionType())
-                .timestamp(Instant.now())
+                .timestamp(Instant.now(clock))
                 .runId(request.runId().trim())
-                .scheduleHash(request.scheduleHash().trim())
+                .scheduleHash(request.scheduleHash())
                 .operatorRationale(request.operatorRationale().trim())
                 .build();
 

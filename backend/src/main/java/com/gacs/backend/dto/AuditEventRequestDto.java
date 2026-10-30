@@ -6,6 +6,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+import jakarta.validation.constraints.Pattern;
 
 /**
  * Payload to record an operator decision audit event.
@@ -27,7 +28,7 @@ public record AuditEventRequestDto(
 
     @Schema(description = "Cryptographic SHA-256 hash of the schedule acted upon", example = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
     @NotBlank(message = "scheduleHash is required")
-    @Size(min = 64, max = 64, message = "scheduleHash must be a 64-character SHA-256 hex string")
+    @Pattern(regexp = "^[0-9a-f]{64}$", message = "scheduleHash must be a 64-character lowercase SHA-256 hex string")
     String scheduleHash,
 
     @Schema(description = "Justification and reasoning provided by the operator", example = "Approved schedule after verifying cooling margin.")

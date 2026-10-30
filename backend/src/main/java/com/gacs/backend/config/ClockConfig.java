@@ -7,12 +7,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import java.time.Clock;
 
 /**
- * Supplies the UTC clock used by the schedule optimizer.
- *
- * <p>The optimizer must never call {@code LocalDateTime.now()} directly: its horizon,
- * its price lookups and its deadline arithmetic all key off "now", so a hard-coded
- * system clock makes every optimizer test dependent on the wall clock and liable to
- * flake in CI. Tests replace this bean with {@link Clock#fixed} to pin time.
+ * Supplies the UTC clock used for audit timestamps. Tests can replace it with a fixed clock.
  */
 @Configuration
 public class ClockConfig {
