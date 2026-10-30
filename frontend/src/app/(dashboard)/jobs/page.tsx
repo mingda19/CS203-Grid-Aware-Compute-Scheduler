@@ -19,6 +19,7 @@ import {
   Check,
   ArrowRight,
   SlidersHorizontal,
+  ChevronDown,
 } from "lucide-react"
 import {
   jobsApi,
@@ -134,6 +135,8 @@ export default function JobsPage() {
   // Optimizer state
   const [optimizing, setOptimizing] = React.useState(false)
   const [optimizationPlan, setOptimizationPlan] = React.useState<OptimizeResponse | null>(null)
+  const [optimizationJobSnapshot, setOptimizationJobSnapshot] = React.useState<Record<number, OptimizeJobInput>>({})
+  const [expandedRecommendationIds, setExpandedRecommendationIds] = React.useState<Set<number>>(new Set())
   const [optimizeOpen, setOptimizeOpen] = React.useState(false)
   const [applyingSchedule, setApplyingSchedule] = React.useState(false)
   const [applySuccessMessage, setApplySuccessMessage] = React.useState<string | null>(null)
@@ -368,6 +371,8 @@ export default function JobsPage() {
         isExempt: j.isExempt,
       }
     })
+    setOptimizationJobSnapshot(Object.fromEntries(optimizeJobs.map((job) => [job.id, job])))
+    setExpandedRecommendationIds(new Set())
 
     try {
       const response = await optimizerApi.optimize({
@@ -906,38 +911,112 @@ export default function JobsPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border/60">
-                      {optimizationPlan.items.map((item: ScheduleItem) => (
-                        <tr key={item.jobId} className="hover:bg-muted/20">
-                          <td className="py-2.5 px-3 font-medium text-foreground">{item.jobName}</td>
-                          <td className="py-2.5 px-3">
-                            <span
-                              className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${item.perJobStatus === "OPTIMISED"
-                                  ? "bg-teal-500/15 text-teal-700 dark:text-teal-300 border border-teal-500/30"
-                                  : item.perJobStatus === "UNCHANGED_EXEMPT"
-                                    ? "bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-500/30"
-                                    : "bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30"
-                                }`}
-                            >
-                              {item.perJobStatus}
-                            </span>
-                            {item.reason && (
-                              <p className="text-[10px] text-muted-foreground mt-0.5">{item.reason}</p>
-                            )}
-                          </td>
-                          <td className="py-2.5 px-3 text-muted-foreground">
-                            {item.scheduledStart ? displayDate(item.scheduledStart) : "—"}
-                          </td>
-                          <td className="py-2.5 px-3 text-muted-foreground">
-                            {item.scheduledEnd ? displayDate(item.scheduledEnd) : "—"}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono">
-                            {item.optimizedCostUsd != null ? `$${item.optimizedCostUsd.toFixed(2)}` : "—"}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono text-emerald-600 dark:text-emerald-400 font-medium">
-                            {item.savingsUsd != null ? `$${item.savingsUsd.toFixed(2)}` : "—"}
-                          </td>
-                        </tr>
-                      ))}
+                      {optimizationPlan.items.map((item: ScheduleItem) => {
+                        const submittedJob = optimizationJobSnapshot[item.jobId]
+                        const baseline = item.baselineCostUsd
+                        const optimized = item.optimizedCostUsd
+                        const costDifference = baseline != null && optimized != null ? baseline - optimized : null
+                        const explanation = item.perJobStatus === "NO_FEASIBLE_SLOT"
+                          ? `${item.jobName} could not be placed in the available schedule.`
+                          : item.perJobStatus === "UNCHANGED_EXEMPT"
+                            ? `${item.jobName} stayed at its original start time because it is exempt from rescheduling.`
+                            : item.scheduledStart && item.baselineStart && item.scheduledStart !== item.baselineStart
+                              ? `${item.jobName} was moved from its original start time to ${displayDate(item.scheduledStart)} in the optimized schedule.`
+                              : `${item.jobName} kept its original start time in the optimized schedule.`
+                        const isExpanded = expandedRecommendationIds.has(item.jobId)
+                        return (
+                          <React.Fragment key={item.jobId}>
+                              <tr className="hover:bg-muted/20">
+                                <td className="py-2.5 px-3 font-medium text-foreground">{item.jobName}</td>
+                                <td className="py-2.5 px-3">
+                                  <span
+                                    className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${item.perJobStatus === "OPTIMISED"
+                                        ? "bg-teal-500/15 text-teal-700 dark:text-teal-300 border border-teal-500/30"
+                                        : item.perJobStatus === "UNCHANGED_EXEMPT"
+                                          ? "bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-500/30"
+                                          : "bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30"
+                                      }`}
+                                  >
+                                    {item.perJobStatus}
+                                  </span>
+                                  {item.reason && (
+                                    <p className="text-[10px] text-muted-foreground mt-0.5">{item.reason}</p>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-3 text-muted-foreground">
+                                  {item.scheduledStart ? displayDate(item.scheduledStart) : "—"}
+                                </td>
+                                <td className="py-2.5 px-3 text-muted-foreground">
+                                  {item.scheduledEnd ? displayDate(item.scheduledEnd) : "—"}
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-mono">
+                                  {item.optimizedCostUsd != null ? `$${item.optimizedCostUsd.toFixed(2)}` : "—"}
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-mono text-emerald-600 dark:text-emerald-400 font-medium">
+                                  {item.savingsUsd != null ? `$${item.savingsUsd.toFixed(2)}` : "—"}
+                                  <button
+                                    type="button"
+                                    className="ml-2 inline-flex items-center gap-1 text-[10px] font-sans font-medium text-muted-foreground hover:text-foreground"
+                                    aria-label={`${isExpanded ? "Hide" : "Show"} explanation for ${item.jobName}`}
+                                    aria-expanded={isExpanded}
+                                    onClick={() => setExpandedRecommendationIds((current) => {
+                                      const next = new Set(current)
+                                      if (next.has(item.jobId)) next.delete(item.jobId)
+                                      else next.add(item.jobId)
+                                      return next
+                                    })}
+                                  >
+                                    {isExpanded ? "Hide" : "Details"}
+                                    <ChevronDown className={`h-3 w-3 transition-transform ${isExpanded ? "rotate-180" : ""}`} />
+                                  </button>
+                                </td>
+                              </tr>
+                              {isExpanded && (
+                                <tr className="border-b bg-muted/20">
+                                  <td colSpan={6} className="px-4 py-3">
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                      <div>
+                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Recommendation explanation</p>
+                                        <p className="mt-1 text-xs text-foreground">{explanation}</p>
+                                        {item.reason && <p className="mt-1 text-xs text-muted-foreground">{item.reason}</p>}
+                                      </div>
+                                      <div>
+                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Cost difference</p>
+                                        <p className="mt-1 text-xs text-foreground">
+                                          {costDifference == null
+                                            ? "Cost comparison is unavailable for this recommendation."
+                                            : costDifference > 0
+                                              ? `$${costDifference.toFixed(2)} saved versus the baseline.`
+                                              : costDifference < 0
+                                                ? `$${Math.abs(costDifference).toFixed(2)} more than the baseline.`
+                                                : "No cost difference versus the baseline."}
+                                        </p>
+                                      </div>
+                                    </div>
+                                    <div className="mt-3 border-t border-border/60 pt-3">
+                                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                        {item.perJobStatus === "NO_FEASIBLE_SLOT" ? "Scheduling constraints" : "Constraints respected"}
+                                      </p>
+                                      {item.perJobStatus === "NO_FEASIBLE_SLOT" && (
+                                        <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">No available placement met the job constraints.</p>
+                                      )}
+                                      {submittedJob ? (
+                                        <ul className="mt-1 grid gap-x-5 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
+                                          <li>Deadline: {displayDate(submittedJob.deadline)}</li>
+                                          <li>Flexible start window: up to {submittedJob.flexibilityWindowHours}h after original start</li>
+                                          <li>Exemption: {submittedJob.isExempt ? "exempt; kept at original start" : "reschedulable"}</li>
+                                          <li>Resources: {submittedJob.cpuHours} CPU-h · {submittedJob.gpuHours} GPU-h</li>
+                                        </ul>
+                                      ) : (
+                                        <p className="mt-1 text-xs text-muted-foreground">Submitted job constraints are unavailable.</p>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                          </React.Fragment>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
