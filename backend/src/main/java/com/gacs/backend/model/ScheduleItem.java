@@ -66,7 +66,12 @@ public class ScheduleItem {
     private Double savingsUsd;
 
     /** The per-job explanation text - filled by either the LLM or the deterministic fallback,
-     *  same column either way. Null until an explanation has been generated. */
+     *  same column either way. Null until an explanation has been generated.
+     *
+     *  <p>Security contract: may be LLM-generated text narrating this job's user-supplied
+     *  {@code jobName} - treat as untrusted on display. Any future consumer rendering this in a
+     *  web view must HTML-encode it (ordinary text interpolation, never raw/unencoded HTML
+     *  insertion), the same rule every other free-text field in this system follows. */
     @Column(name = "why_this_placement", columnDefinition = "TEXT")
     private String whyThisPlacement;
 }

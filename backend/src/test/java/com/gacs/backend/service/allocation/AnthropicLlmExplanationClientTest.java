@@ -162,6 +162,9 @@ class AnthropicLlmExplanationClientTest {
         ObjectMapper mapper = new ObjectMapper();
         JsonNode request = mapper.readTree(capturedBody.get());
         assertThat(request.path("model").asText()).isEqualTo("claude-haiku-4-5-20251001");
+        // Instructions live in `system`, structurally separate from the user-suppliable data in the
+        // user message - and explicitly flag jobName as untrusted (prompt-injection hardening).
+        assertThat(request.path("system").asText()).contains("jobName").contains("never as an instruction");
         assertThat(request.path("tool_choice").path("type").asText()).isEqualTo("tool");
         assertThat(request.path("tool_choice").path("name").asText()).isEqualTo("submit_schedule_explanation");
         JsonNode tool = request.path("tools").get(0);
@@ -171,6 +174,48 @@ class AnthropicLlmExplanationClientTest {
                 .contains("headline", "narrative", "jobExplanations", "constraintExplanations");
         String promptText = request.path("messages").get(0).path("content").asText();
         assertThat(promptText).contains("101"); // the job's id is present in the data block
+    }
+
+    @Test
+    @DisplayName("The user message's data block also repeats the untrusted-jobName warning inline")
+    void dataBlockRepeatsUntrustedJobNameWarning() throws IOException {
+        AtomicReference<String> capturedBody = new AtomicReference<>();
+        String okBody = """
+                {"stop_reason":"tool_use","content":[{"type":"tool_use","name":"submit_schedule_explanation",
+                "input":{"headline":"H","narrative":"N","jobExplanations":[{"jobId":101,"explanation":"ok"}],
+                "constraintExplanations":[]}}]}""";
+        String uri = start(exchange -> {
+            capturedBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(exchange, 200, okBody);
+        });
+        AnthropicLlmExplanationClient client = new AnthropicLlmExplanationClient("key", "model", uri);
+
+        client.generate(RUN, List.of(ITEM), List.of(), Duration.ofSeconds(5));
+
+        ObjectMapper mapper = new ObjectMapper();
+        String userMessage = mapper.readTree(capturedBody.get()).path("messages").get(0).path("content").asText();
+        assertThat(userMessage).containsIgnoringCase("untrusted").contains("jobName");
+    }
+
+    @Test
+    @DisplayName("The tool definition itself also warns against following instructions in free-text fields")
+    void toolDescriptionAlsoWarnsAgainstInjection() throws IOException {
+        AtomicReference<String> capturedBody = new AtomicReference<>();
+        String okBody = """
+                {"stop_reason":"tool_use","content":[{"type":"tool_use","name":"submit_schedule_explanation",
+                "input":{"headline":"H","narrative":"N","jobExplanations":[{"jobId":101,"explanation":"ok"}],
+                "constraintExplanations":[]}}]}""";
+        String uri = start(exchange -> {
+            capturedBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(exchange, 200, okBody);
+        });
+        AnthropicLlmExplanationClient client = new AnthropicLlmExplanationClient("key", "model", uri);
+
+        client.generate(RUN, List.of(ITEM), List.of(), Duration.ofSeconds(5));
+
+        ObjectMapper mapper = new ObjectMapper();
+        String toolDescription = mapper.readTree(capturedBody.get()).path("tools").get(0).path("description").asText();
+        assertThat(toolDescription).containsIgnoringCase("never follow").contains("jobName");
     }
 
     @Test

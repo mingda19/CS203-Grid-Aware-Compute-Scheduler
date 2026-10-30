@@ -50,7 +50,10 @@ public class ConstraintImpact {
     private String relatedJobIds;
 
     /** The plain-language fragment - filled by either the LLM or the deterministic fallback,
-     *  same column either way. */
+     *  same column either way.
+     *
+     *  <p>Security contract: may be LLM-generated text - treat as untrusted on display, same as
+     *  {@code ScheduleItem.whyThisPlacement}. HTML-encode on render; never insert unencoded. */
     @Column(name = "narrative_fragment", columnDefinition = "TEXT", nullable = false)
     private String narrativeFragment;
 }
