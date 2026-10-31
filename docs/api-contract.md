@@ -774,6 +774,16 @@ Any nonnull parse metadata requires nonblank source text, and a nonnull outcome 
 
 Schema rollout: the application currently uses Hibernate `ddl-auto=update`. The additive, idempotent SQL file `V3__add_job_parse_metadata.sql` is provided for managed PostgreSQL schema updates; no migration runner is configured to execute files in `db/migration` automatically. Apply the SQL explicitly when managing schema outside Hibernate. It adds nullable columns and an outcome check constraint without altering existing row values.
 
+#### PostgreSQL CRUD evidence tests (AC4.2 / AC5.1)
+
+`JobParseMetadataIntegrationTest` runs the shared CRUD assertions using the existing H2 test configuration during ordinary Maven verification. `JobParseMetadataPostgresIntegrationTest` runs the same assertions against a separately configured PostgreSQL test database when `TEST_POSTGRES_URL` is set. No Docker or Testcontainers setup is required, and no CI infrastructure changes are needed.
+
+To run the PostgreSQL evidence suite, set `TEST_POSTGRES_URL` to a JDBC URL such as `jdbc:postgresql://localhost:5432/gacs_test`, `TEST_POSTGRES_USERNAME` (default `postgres`), and `TEST_POSTGRES_PASSWORD` (default empty), then run `./mvnw -B -Dtest=JobParseMetadataPostgresIntegrationTest test` from `backend` (Windows: `.\mvnw.cmd` instead of `./mvnw`). Use a test database account permitted to create and drop schemas. Without `TEST_POSTGRES_URL`, this PostgreSQL suite is explicitly skipped; an H2 pass alone does not establish AC5.1. Once configured, database connection or SQL errors fail the suite.
+
+Before Spring creates its datasource, the PostgreSQL suite creates a unique schema and explicitly executes the test-only `src/test/resources/db/jobs-baseline.sql`, then the production V2 priority and V3 parse metadata SQL scripts. Each SQL file executes intact so PostgreSQL `DO $$` blocks retain their meaning. Hibernate schema generation is disabled (`spring.jpa.hibernate.ddl-auto=none`), and automatic Spring SQL initialization is disabled. All connections use the test schema; cleanup drops only that generated schema. Existing application tables are not modified. The baseline is test infrastructure only; production SQL must still be applied manually.
+
+Requests commit through the existing controller/service/repository path without an enclosing test transaction. Fresh repository reads and direct SQL queries verify source text, microsecond timestamps, and confirmation outcomes across creation, update, detail, and list responses. Tests also cover omission versus null, source replacement, reparsing, owner isolation, and invalid updates leaving every stored job field unchanged. The PostgreSQL suite additionally checks script reapplication. `PENDING` and `REJECTED` are evidence states, not save barriers: valid job edits remain allowed, and existing job validation applies to every confirmation state.
+
 #### Field Constraints & Validation Rules (GRID-9 AC4)
 1. **Resource Requirements**: At least one of `cpuHours > 0.0` or `gpuHours > 0.0` must be true. Both must be non-negative.
 2. **Temporal Validity**: `deadline` is the latest time the job must **finish**, and must be greater than or equal to `originalStartTime`. `cpuHours` and `gpuHours` are the total *work* the job needs, not its duration; the optimiser derives the duration (see §6.4).
