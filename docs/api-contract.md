@@ -720,7 +720,9 @@ Creates a structured compute job for the authenticated operator per GRID-9 / GRI
     "flexibilityWindowHours": 12,
     "isExempt": false,
     "priority": "NORMAL",
-    "rawConstraints": "Can wait up to 12 hours for low price valley, finish by tomorrow evening"
+    "rawConstraints": "Can wait up to 12 hours for low price valley, finish by tomorrow evening",
+    "parsedAt": "2026-10-20T09:30:00",
+    "confirmationOutcome": "CONFIRMED"
   }
   ```
 * **Success Response (201 Created)**: Returns the persisted Job entity with generated `id`, `ownerEmail`, `status: "PENDING"`, `priority: "NORMAL"`, and audit timestamps.
@@ -753,12 +755,24 @@ The **Job** entity represents a compute workload submitted for schedule optimiza
 | `deadline` | ISO-8601 UTC String | Yes | - | Hard completion deadline in UTC. Must be $\ge$ `originalStartTime`. |
 | `flexibilityWindowHours` | Integer | Yes | `0` | Delay tolerance in hours ($\ge 0$). Start time may shift within $[\text{originalStartTime}, \text{originalStartTime} + \text{flexibilityWindowHours}]$. |
 | `isExempt` | Boolean | Yes | `false` | Exempt-from-rescheduling flag. If `true`, job is non-negotiable and pinned to `originalStartTime` (GRID-86 / GRID-24). |
-| `rawConstraints` | String | No | `null` | Optional natural-language constraint text (up to 1,000 characters). Auto-parsed by LLM into structured fields in Sprint 4 (GRID-39 / GRID-40). |
+| `rawConstraints` | String | No | `null` | Original natural-language source retained verbatim (up to 1,000 characters). Persistence does not trigger parsing. |
+| `parsedAt` | ISO-8601 UTC local date-time | No | `null` | Actual parser timestamp supplied by the caller, e.g. `2026-10-20T09:30:00`; never inferred from job audit timestamps. |
+| `confirmationOutcome` | String (Enum) | No | `null` | Latest parse decision: `PENDING`, `CONFIRMED`, or `REJECTED`. A supplied nonnull `parsedAt` defaults this to `PENDING` when the outcome is omitted. |
 | `status` | String | No | `"PENDING"` | Workflow status: `"PENDING"`, `"SCHEDULED"`, `"RUNNING"`, `"COMPLETED"`, `"CANCELLED"`. |
 | `priority` | String (Enum) | No | `"NORMAL"` | Workload priority level: `"CRITICAL"`, `"HIGH"`, `"NORMAL"`, `"LOW"`. Default `"NORMAL"`. Used by the optimizer for tie-breaking when jobs compete for capacity (GRID-155 / GRID-124). Unknown values are rejected with 400 Bad Request. |
 | `ownerEmail` | String | Read-only | Auth user | Authenticated tenant operator email for tenancy isolation. |
 | `createdAt` | ISO-8601 UTC String | Read-only | Auto | Timestamp when record was created. |
 | `updatedAt` | ISO-8601 UTC String | Read-only | Auto | Timestamp when record was last updated. |
+
+#### Natural-language provenance (AC4.1 / GRID-39)
+
+Create, update, list, and detail responses include `rawConstraints`, `parsedAt`, and `confirmationOutcome`. Only the latest parse is stored. Existing jobs and new jobs without parse metadata have null metadata; no timestamps or decisions are backfilled.
+
+On `PUT`, omission of any of these three fields preserves its stored value; explicit null clears it, subject to final-state validation. Changing `rawConstraints` (including clearing it) first resets the stored timestamp and outcome, then applies any replacement metadata in the request. Supplying a nonnull `parsedAt` with no outcome sets `PENDING`, including on a reparse of unchanged source. An explicitly null outcome remains null. For example, `"parsedAt": null, "confirmationOutcome": null` clears metadata while retaining the source if it is omitted.
+
+Any nonnull parse metadata requires nonblank source text, and a nonnull outcome requires a nonnull timestamp. Invalid combinations, malformed timestamps, unknown outcomes, and source text longer than 1,000 characters return HTTP 400. These fields describe caller-supplied parsing and confirmation information; they do not change scheduling behavior or introduce parser or confirmation UI integration.
+
+Schema rollout: the application currently uses Hibernate `ddl-auto=update`. The additive, idempotent SQL file `V3__add_job_parse_metadata.sql` is provided for managed PostgreSQL schema updates; no migration runner is configured to execute files in `db/migration` automatically. Apply the SQL explicitly when managing schema outside Hibernate. It adds nullable columns and an outcome check constraint without altering existing row values.
 
 #### Field Constraints & Validation Rules (GRID-9 AC4)
 1. **Resource Requirements**: At least one of `cpuHours > 0.0` or `gpuHours > 0.0` must be true. Both must be non-negative.
