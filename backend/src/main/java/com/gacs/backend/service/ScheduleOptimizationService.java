@@ -12,9 +12,9 @@ import com.gacs.backend.service.allocation.JobPlan;
 import com.gacs.backend.service.allocation.OptimizationProblem;
 import com.gacs.backend.service.allocation.OptimizationProblemFactory;
 import com.gacs.backend.service.allocation.PerJobStatus;
+import com.gacs.backend.service.allocation.ScheduleRunRecorder;
 import com.gacs.backend.service.allocation.SlotAllocation;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -24,8 +24,16 @@ import java.util.Locale;
 import java.util.UUID;
 
 /**
- * One optimisation run (docs/api-contract.md section 6.4): validate the request into a problem, solve it,
- * and price the result against each job's baseline. Nothing is stored.
+ * One optimisation run (docs/api-contract.md section 6.4): validate the request into a problem,
+ * solve it, price the result against each job's baseline, then persist it via
+ * {@link ScheduleRunRecorder}.
+ *
+ * <p>Deliberately not {@code @Transactional}: {@link ScheduleRunRecorder#record} itself holds no
+ * single transaction spanning this whole call (it brackets an external LLM call that must never
+ * hold a database connection - see {@code ScheduleRunPersistence}'s javadoc). Adding
+ * {@code @Transactional} here would defeat that by Spring's REQUIRED propagation folding both of
+ * {@code ScheduleRunPersistence}'s short transactions back into one that spans the HTTP call again.
+ * Nothing else in this method touches the database in a way that needs transactional wrapping.
  */
 @Service
 public class ScheduleOptimizationService {
@@ -33,23 +41,26 @@ public class ScheduleOptimizationService {
     private final OptimizationProblemFactory problems;
     private final AllocationSolver solver;
     private final EnergyCostModel costs;
+    private final ScheduleRunRecorder recorder;
 
     public ScheduleOptimizationService(OptimizationProblemFactory problems, AllocationSolver solver,
-                                       EnergyCostModel costs) {
+                                       EnergyCostModel costs, ScheduleRunRecorder recorder) {
         this.problems = problems;
         this.solver = solver;
         this.costs = costs;
+        this.recorder = recorder;
     }
 
     /**
      * @throws IllegalArgumentException invalid input (400)
      * @throws com.gacs.backend.exception.UnprocessableDataException baseline hours without a price (422)
      */
-    @Transactional(readOnly = true)
-    public OptimizeResponseDto optimize(OptimizeRequestDto request) {
+    public OptimizeResponseDto optimize(OptimizeRequestDto request, String ownerEmail) {
         OptimizationProblem problem = problems.build(request);
         AllocationResult result = solver.solve(problem);
-        return buildResponse(problem, result);
+        OptimizeResponseDto response = buildResponse(problem, result);
+        recorder.record(result, problem.constraints(), response, ownerEmail);
+        return response;
     }
 
     // ------------------------------------------------------------------ response
