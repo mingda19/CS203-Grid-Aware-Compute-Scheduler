@@ -56,6 +56,13 @@ public class Job {
     @Column(name = "raw_constraints", length = 1000)
     private String rawConstraints;
 
+    @Column(name = "parsed_at")
+    private LocalDateTime parsedAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "confirmation_outcome", length = 20)
+    private ConfirmationOutcome confirmationOutcome;
+
     @Builder.Default
     @Column(nullable = false, length = 30)
     private String status = "PENDING";

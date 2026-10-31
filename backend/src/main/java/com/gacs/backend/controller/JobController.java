@@ -124,7 +124,7 @@ public class JobController {
      */
     @Operation(
             summary = "Update compute job",
-            description = "Updates all fields of an existing compute workload, including flexibility window and exemption status."
+            description = "Updates a compute workload. Omitted rawConstraints, parsedAt, and confirmationOutcome preserve stored values; null clears them subject to validation. Changing rawConstraints resets old parse metadata before applying replacements."
     )
     @ApiResponses(value = {
             @io.swagger.v3.oas.annotations.responses.ApiResponse(

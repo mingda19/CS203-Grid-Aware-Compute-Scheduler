@@ -65,6 +65,8 @@ export interface WorkloadSchedule {
 
 export type JobPriority = "CRITICAL" | "HIGH" | "NORMAL" | "LOW"
 
+export type ConfirmationOutcome = "PENDING" | "CONFIRMED" | "REJECTED"
+
 export interface ComputeJob {
   id: number
   ownerEmail?: string
@@ -77,6 +79,8 @@ export interface ComputeJob {
   isExempt: boolean
   priority?: JobPriority
   rawConstraints?: string | null
+  parsedAt?: string | null
+  confirmationOutcome?: ConfirmationOutcome | null
   status: string
   createdAt?: string
   updatedAt?: string
@@ -84,7 +88,12 @@ export interface ComputeJob {
 
 export type ComputeJobPayload = Pick<ComputeJob,
   "name" | "cpuHours" | "gpuHours" | "originalStartTime" | "deadline" | "flexibilityWindowHours" | "isExempt"
-> & { rawConstraints?: string | null; priority?: JobPriority }
+> & {
+  rawConstraints?: string | null
+  parsedAt?: string | null
+  confirmationOutcome?: ConfirmationOutcome | null
+  priority?: JobPriority
+}
 
 export interface FacilityConfig {
   id?: number
