@@ -4,6 +4,7 @@ import com.gacs.backend.dto.ApiResponse;
 import com.gacs.backend.dto.ExplanationResponseDto;
 import com.gacs.backend.dto.OptimizeRequestDto;
 import com.gacs.backend.dto.OptimizeResponseDto;
+import com.gacs.backend.service.ScheduleReviewService;
 import com.gacs.backend.service.ScheduleOptimizationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -32,9 +33,12 @@ import java.security.Principal;
 @RequestMapping("/api/schedules")
 public class ScheduleOptimizationController {
 
+    private final ScheduleReviewService reviewService;
     private final ScheduleOptimizationService optimizationService;
 
-    public ScheduleOptimizationController(ScheduleOptimizationService optimizationService) {
+    public ScheduleOptimizationController(ScheduleReviewService reviewService,
+                                          ScheduleOptimizationService optimizationService) {
+        this.reviewService = reviewService;
         this.optimizationService = optimizationService;
     }
 
@@ -64,6 +68,10 @@ public class ScheduleOptimizationController {
                 + "cannot be priced."
         ),
         @io.swagger.v3.oas.annotations.responses.ApiResponse(
+            responseCode = "401",
+            description = "Authenticated email has no database user."
+        ),
+        @io.swagger.v3.oas.annotations.responses.ApiResponse(
             responseCode = "403",
             description = "Forbidden: invalid or missing JWT access token."
         )
@@ -72,7 +80,7 @@ public class ScheduleOptimizationController {
     public ResponseEntity<ApiResponse<OptimizeResponseDto>> optimize(
         @RequestBody(required = false) OptimizeRequestDto request, Principal principal
     ) {
-        OptimizeResponseDto plan = optimizationService.optimize(request, principal.getName());
+        OptimizeResponseDto plan = reviewService.optimize(request, principal.getName());
         return ResponseEntity.ok(ApiResponse.ok("Optimized schedule generated", plan));
     }
 

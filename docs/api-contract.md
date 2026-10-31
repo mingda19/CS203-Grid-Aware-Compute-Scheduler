@@ -893,7 +893,7 @@ The **baseline** of a job is its cost if it started at `originalStartTime` and, 
   }
 }
 ```
-* `runId`: UUID v4 generated per request and used to persist the run's explanation for later views. The explanation is scoped to the authenticated operator.
+* `runId`: UUID v4 generated per request. Successful API runs atomically persist an `OptimizerRun` (configured solver name, version, configuration snapshot, outcome and optimality) and a linked `OptimizationPlan` with a shared `VARCHAR(36)` run ID enforced by a foreign key. The plan stores the immutable result, authenticated owner's database user ID, UTC creation time, and a separate review state initially `PENDING`. Decision routes reference this ID; the optimizer response shape and optimization `status` are unchanged. Failed optimization requests create neither row. Each call stores the complete result as unbounded `text`; storage growth and retention need review before large-scale use. Authenticated principals without a database user receive `401`. The run's persisted explanation remains scoped to the authenticated operator.
 * `status` (run level): `SCHEDULED` when every job is scheduled or exempt; `NEEDS_ATTENTION` when at least one job is `NO_FEASIBLE_SLOT`.
 * `provenOptimal` (run level): `true` when the solver proved that no cheaper schedule exists; `false` when a heuristic fallback produced the plan. A `false` plan still satisfies every window, deadline and capacity rule. Informational only.
 * `optimizedCostUsd` (run level) is the total cost of the proposed schedule. `scheduledStart` is the start of the job's first slot and `scheduledEnd` the end of its last.
@@ -942,18 +942,47 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 | 2026-10-20 | Errors split into invalid input (`400`), invalid or missing data (`422`) and no capacity (`200`). Baseline defined as the job alone on an empty cluster. | - |
 | 2026-10-28 | Added `priority` (`CRITICAL`, `HIGH`, `NORMAL`, `LOW`; default `NORMAL`) to Job schema, CRUD API, and optimizer contract (GRID-155 AC1 / AC1.1 / GRID-124). | - |
 
-#### `POST /api/schedules/{id}/approve`
-**Mandatory Human Gate**: Explicit approval by an authorized operator prior to schedule dispatch.
-* **Request Body**:
-  ```json
-  {
-    "comment": "Approved schedule after verifying cooling margin."
-  }
-  ```
-* **Success Response (200 OK)**: Updates status to `APPROVED`, records immutable audit log, and delivers plan to execution adapter.
+### 6.5 Operator decisions (GRID-11 AC2 / AC2.2)
 
-#### `POST /api/schedules/{id}/reject`
-Rejects the proposed plan. Status transitions to `REJECTED`, leaving the facility on the fixed-schedule baseline.
+All routes require JWT authentication and ownership of the persisted optimization plan. Existing users act as operators; administrator privileges do not bypass ownership. The operator's numeric database ID is resolved from the authenticated email, never from request fields or the JWT's numeric user ID claim.
+
+| Route | Recorded action | New review state |
+|---|---|---|
+| `POST /api/schedules/{runId}/approve` | `APPROVE` | `APPROVED` |
+| `POST /api/schedules/{runId}/reject` | `REJECT` | `REJECTED` |
+| `POST /api/schedules/{runId}/revise` | `REVISE` | `REVISION_REQUESTED` |
+
+Each route requires a JSON object with a nonblank string `comment`, limited to 2,000 characters before trimming. Missing, null, empty, whitespace-only, and non-string comments return `400` before plan lookup or locking. This follows the approved audit log requirement for operator rationale. Identity fields are ignored. Example:
+
+```json
+{"comment":"Approved schedule after verifying cooling margin."}
+```
+
+All three return **200 OK** in the standard envelope:
+
+```json
+{
+  "success": true,
+  "message": "Schedule decision recorded",
+  "data": {
+    "decisionId": 42,
+    "runId": "7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44",
+    "action": "APPROVE",
+    "operatorId": 7,
+    "comment": "Approved schedule after verifying cooling margin.",
+    "decidedAt": "2026-10-30T09:00:00Z",
+    "reviewState": "APPROVED"
+  }
+}
+```
+
+Decisions use `audit_events` as their only immutable history; there is no separate `schedule_decisions` table. `decisionId` is the audit event ID. The audit actor comes from the authenticated security context, and `operatorRationale` stores the trimmed comment. `scheduleHash` is the lowercase SHA-256 hex digest of the stored `resultJson` encoded as UTF-8. Each audit event insert and review-state update commits atomically under a per-plan database write lock; the last committed decision determines current review state. Repeated requests, including retries, create additional history entries. The original optimizer result never changes.
+
+Errors: **400** for malformed UUIDs/JSON, a missing or non-object body, missing, null, blank, non-string, or oversized comments; **403** for missing/invalid JWTs (existing security behavior); **401** for an authenticated email without a database user; **404** with `Optimization plan not found` for both missing and unowned plans.
+
+Audit history can be read through the existing audit log endpoints.
+
+Approval records intent only and does **not** dispatch or export workloads. Revision does not edit or rerun a plan: a later optimization creates a new immutable version with a new `runId`. Frontend integration, dispatch gating, and expiry/material-change policies are separate work. Run IDs created before plan persistence was introduced cannot be reviewed; optimize again to obtain a persisted plan.
 
 ---
 

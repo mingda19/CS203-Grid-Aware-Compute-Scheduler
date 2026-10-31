@@ -17,7 +17,7 @@ import java.util.List;
 @Schema(description = "Optimized schedule plan")
 public record OptimizeResponseDto(
 
-    @Schema(description = "UUID v4 generated per run, not stored yet", example = "7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44")
+    @Schema(description = "UUID v4 identifying the persisted immutable optimization plan", example = "7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44")
     String runId,
 
     @Schema(description = "SCHEDULED when every job is scheduled or exempt; NEEDS_ATTENTION when at least one "
