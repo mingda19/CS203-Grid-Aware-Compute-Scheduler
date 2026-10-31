@@ -30,4 +30,22 @@ public interface PlanSolver {
             return heuristic.solve(problem);
         };
     }
+
+    /** The deterministic heuristic alone, never proven optimal. Used to measure its gap to the exact plans (A8). */
+    static PlanSolver heuristicOnly(EnergyCostModel costs) {
+        return new AnnealingAllocationSolver(costs)::solve;
+    }
+
+    /** By name, as given in {@code backtest.solver}: {@code repeatable} (the default) or {@code heuristic}. */
+    static PlanSolver named(String name, EnergyCostModel costs, Duration exactBudget) {
+        return switch (name) {
+            case REPEATABLE -> repeatable(costs, exactBudget);
+            case HEURISTIC -> heuristicOnly(costs);
+            default -> throw new IllegalArgumentException("unknown backtest.solver '" + name
+                    + "': use " + REPEATABLE + " or " + HEURISTIC);
+        };
+    }
+
+    String REPEATABLE = "repeatable";
+    String HEURISTIC = "heuristic";
 }

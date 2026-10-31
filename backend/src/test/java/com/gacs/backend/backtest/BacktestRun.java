@@ -38,6 +38,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>{@code backtest.sources}: comma-separated forecast sources (default: every {@code forecast_*.csv})</li>
  *   <li>{@code backtest.exactBudgetSeconds} (default 30), {@code backtest.threads} (default: CPU count),
  *       {@code backtest.runId} (default: the current UTC time)</li>
+ *   <li>Sensitivity runs (docs/backtest-plan.md section 5.2): {@code backtest.capacityCpu} /
+ *       {@code backtest.capacityGpu} (default 256 / 64 per hour), {@code backtest.cpuKwhPerHour} /
+ *       {@code backtest.gpuKwhPerHour} (default: the contract's 0.05 / 0.40), and {@code backtest.solver}:
+ *       {@code repeatable} (default) or {@code heuristic} (the heuristic alone, to measure its gap)</li>
  *   <li>{@code backtest.reproduce}: path to an earlier run's manifest.json. Reruns it with the same settings,
  *       refuses if any input file changed, and fails unless the results are byte-identical.</li>
  * </ul>
@@ -52,16 +56,19 @@ class BacktestRun {
     @Test
     void run() {
         String reproduce = System.getProperty("backtest.reproduce");
-        BacktestConfig config = reproduce == null ? configFromProperties() : configFromManifest(Path.of(reproduce));
-        OptimizerProperties properties = OptimizerProperties.DEFAULTS;
+        JsonNode original = reproduce == null ? null : BacktestOutput.read(Path.of(reproduce));
+        BacktestConfig config = original == null ? configFromProperties() : configFromManifest(Path.of(reproduce));
+        OptimizerProperties properties = original == null ? propertiesFromProperties() : propertiesFromManifest(original);
+        String solverName = original == null ? System.getProperty("backtest.solver", PlanSolver.REPEATABLE)
+                : original.path("config").path("solver").asText(PlanSolver.REPEATABLE);
         String runId = System.getProperty("backtest.runId",
                 LocalDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")));
         Path runDir = path("backtest.outDir", REPO.resolve("backtest/output")).resolve(runId);
 
         long started = System.nanoTime();
-        PlanSolver solver = PlanSolver.repeatable(new EnergyCostModel(properties), config.exactBudget());
+        PlanSolver solver = PlanSolver.named(solverName, new EnergyCostModel(properties), config.exactBudget());
         BacktestRunner.Result result = new BacktestRunner(properties, solver).run(config);
-        JsonNode manifest = BacktestOutput.write(result, config, properties, runDir, REPO);
+        JsonNode manifest = BacktestOutput.write(result, config, properties, solverName, runDir, REPO);
         BacktestMetrics.Result metrics = MetricsFiles.write(runDir, REPO);
         long seconds = (System.nanoTime() - started) / 1_000_000_000;
 
@@ -109,10 +116,34 @@ class BacktestRun {
                 sources(dataDir),
                 LocalDate.parse(System.getProperty("backtest.from", "2024-01-01")),
                 LocalDate.parse(System.getProperty("backtest.to", "2026-08-29")),
-                OptimizerProperties.DEFAULTS.defaultCapacity(),
+                new CapacityLimit(
+                        number("backtest.capacityCpu", OptimizerProperties.DEFAULTS.defaultMaxCpuHoursPerSlot()),
+                        number("backtest.capacityGpu", OptimizerProperties.DEFAULTS.defaultMaxGpuHoursPerSlot())),
                 Duration.ofSeconds(Long.parseLong(System.getProperty("backtest.exactBudgetSeconds", "30"))),
                 Integer.parseInt(System.getProperty("backtest.threads",
                         String.valueOf(Runtime.getRuntime().availableProcessors()))));
+    }
+
+    /** The contract's kWh factors, unless {@code backtest.cpuKwhPerHour} / {@code backtest.gpuKwhPerHour} are set. */
+    private static OptimizerProperties propertiesFromProperties() {
+        OptimizerProperties d = OptimizerProperties.DEFAULTS;
+        return new OptimizerProperties(number("backtest.cpuKwhPerHour", d.cpuKwhPerHour()),
+                number("backtest.gpuKwhPerHour", d.gpuKwhPerHour()),
+                d.defaultMaxCpuHoursPerSlot(), d.defaultMaxGpuHoursPerSlot());
+    }
+
+    /** The kWh factors an earlier run used (the contract's, for manifests written before they were configurable). */
+    private static OptimizerProperties propertiesFromManifest(JsonNode manifest) {
+        OptimizerProperties d = OptimizerProperties.DEFAULTS;
+        JsonNode optimiser = manifest.path("optimiser");
+        return new OptimizerProperties(optimiser.path("cpuKwhPerHour").asDouble(d.cpuKwhPerHour()),
+                optimiser.path("gpuKwhPerHour").asDouble(d.gpuKwhPerHour()),
+                d.defaultMaxCpuHoursPerSlot(), d.defaultMaxGpuHoursPerSlot());
+    }
+
+    private static double number(String property, double fallback) {
+        String value = System.getProperty(property);
+        return value == null ? fallback : Double.parseDouble(value);
     }
 
     /** The settings an earlier run used, after checking its inputs have not changed. */

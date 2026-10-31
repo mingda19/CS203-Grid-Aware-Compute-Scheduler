@@ -50,13 +50,19 @@ public final class BacktestOutput {
     /** Writes every file and returns the manifest that was written. */
     public static JsonNode write(Result result, BacktestConfig config, OptimizerProperties properties, Path runDir,
                                  Path repoRoot) {
+        return write(result, config, properties, PlanSolver.REPEATABLE, runDir, repoRoot);
+    }
+
+    /** As above, recording which {@link PlanSolver} made the plans ({@code repeatable} or {@code heuristic}). */
+    public static JsonNode write(Result result, BacktestConfig config, OptimizerProperties properties, String solver,
+                                 Path runDir, Path repoRoot) {
         try {
             Files.createDirectories(runDir);
             writeLines(runDir.resolve("days.csv"), daysCsv(result.days()));
             writeLines(runDir.resolve("jobs.csv"), jobsCsv(result.jobs()));
             writeLines(runDir.resolve("skipped.csv"), skippedCsv(result.skipped()));
             writeLines(runDir.resolve("timings.csv"), timingsCsv(result.timings()));
-            ObjectNode manifest = manifest(result, config, properties, runDir, repoRoot);
+            ObjectNode manifest = manifest(result, config, properties, solver, runDir, repoRoot);
             Files.writeString(runDir.resolve(MANIFEST), JSON.writeValueAsString(manifest) + "\n");
             return manifest;
         } catch (IOException e) {
@@ -132,7 +138,7 @@ public final class BacktestOutput {
     // ------------------------------------------------------------------ manifest
 
     private static ObjectNode manifest(Result result, BacktestConfig config, OptimizerProperties properties,
-                                       Path runDir, Path repoRoot) {
+                                       String solver, Path runDir, Path repoRoot) {
         ObjectNode root = JSON.createObjectNode();
         root.put("runId", runDir.getFileName().toString());
         root.put("createdAtUtc", Instant.now().toString());
@@ -149,6 +155,7 @@ public final class BacktestOutput {
         settings.put("capacityCpuHoursPerHour", config.capacity().cpuHours());
         settings.put("capacityGpuHoursPerHour", config.capacity().gpuHours());
         settings.put("exactBudgetSeconds", config.exactBudget().toSeconds());
+        settings.put("solver", solver);
         settings.put("threads", config.threads());
 
         ObjectNode optimiser = root.putObject("optimiser");
