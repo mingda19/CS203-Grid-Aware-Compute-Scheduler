@@ -1,6 +1,7 @@
 package com.gacs.backend.controller;
 
 import com.gacs.backend.dto.ApiResponse;
+import com.gacs.backend.dto.ExplanationResponseDto;
 import com.gacs.backend.dto.OptimizeRequestDto;
 import com.gacs.backend.dto.OptimizeResponseDto;
 import com.gacs.backend.service.ScheduleOptimizationService;
@@ -12,10 +13,13 @@ import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.security.Principal;
 
 /**
  * Schedule optimization endpoint, per the Schedule Optimization Engine Contract
@@ -66,9 +70,20 @@ public class ScheduleOptimizationController {
     })
     @PostMapping("/optimize")
     public ResponseEntity<ApiResponse<OptimizeResponseDto>> optimize(
-        @RequestBody(required = false) OptimizeRequestDto request
+        @RequestBody(required = false) OptimizeRequestDto request, Principal principal
     ) {
-        OptimizeResponseDto plan = optimizationService.optimize(request);
+        OptimizeResponseDto plan = optimizationService.optimize(request, principal.getName());
         return ResponseEntity.ok(ApiResponse.ok("Optimized schedule generated", plan));
+    }
+
+    @Operation(summary = "View a persisted run explanation",
+        description = "Returns the explanation saved when the run was created. It does not re-run optimization or "
+            + "generate a new explanation.")
+    @GetMapping("/{runId}/explanation")
+    public ResponseEntity<ApiResponse<ExplanationResponseDto>> explanation(
+        @PathVariable String runId, Principal principal
+    ) {
+        return ResponseEntity.ok(ApiResponse.ok("Run explanation retrieved",
+            optimizationService.getExplanation(runId, principal.getName())));
     }
 }
