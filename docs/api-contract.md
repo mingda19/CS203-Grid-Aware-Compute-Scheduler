@@ -917,7 +917,7 @@ The **baseline** of a job is its cost if it started at `originalStartTime` and, 
   }
 }
 ```
-* `runId`: UUID v4 generated per request, not stored yet. Later features (approval, audit log, overrides, savings tracking) reference a decision by this ID.
+* `runId`: UUID v4 generated per request and used to persist the run's explanation for later views. The explanation is scoped to the authenticated operator.
 * `status` (run level): `SCHEDULED` when every job is scheduled or exempt; `NEEDS_ATTENTION` when at least one job is `NO_FEASIBLE_SLOT`.
 * `provenOptimal` (run level): `true` when the solver proved that no cheaper schedule exists; `false` when a heuristic fallback produced the plan. A `false` plan still satisfies every window, deadline and capacity rule. Informational only.
 * `optimizedCostUsd` (run level) is the total cost of the proposed schedule. `scheduledStart` is the start of the job's first slot and `scheduledEnd` the end of its last.
@@ -936,6 +936,24 @@ The **baseline** of a job is its cost if it started at `originalStartTime` and, 
 * **Invalid input, `400`:** malformed JSON, missing fields, blank `name`, neither `forecast` nor `forecastLocation`, duplicate job `id`, negative values, both `cpuHours` and `gpuHours` equal to 0, a start time not on the hour, `deadline` before `originalStartTime`, or a job whose work cannot be finished between `originalStartTime` and `deadline` even alone on an empty cluster.
 * **Invalid or missing data, `422`:** the forecast or other data source is missing, corrupted or does not cover a job's `originalStartTime` slot, so the baseline cannot be priced. The message names the missing or bad data.
 * **No capacity** is **not** an error: see *No feasible slot* above.
+
+### Persisted run explanation
+
+`GET /api/schedules/{runId}/explanation` returns the explanation saved with the optimization run:
+
+```json
+{
+  "success": true,
+  "message": "Run explanation retrieved",
+  "data": {
+    "runId": "7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44",
+    "explanation": "Scheduled 1 of 1 job(s). ..."
+  }
+}
+```
+
+The endpoint only reads the persisted explanation for the authenticated operator. It does not re-run the
+optimizer or invoke explanation generation again. A run belonging to another operator is returned as `404`.
 
 **Contract change notes**
 | Date | Change | By |

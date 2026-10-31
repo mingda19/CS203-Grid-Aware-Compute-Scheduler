@@ -5,6 +5,8 @@ import com.gacs.backend.repository.PredictedPriceRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.security.test.context.support.WithMockUser;
@@ -21,6 +23,7 @@ import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -45,6 +48,8 @@ class ScheduleOptimizationIntegrationTest {
     @Autowired
     private PredictedPriceRepository predictions;
 
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
     @BeforeEach
     void clearForecasts() {
         predictions.deleteAll();
@@ -68,6 +73,7 @@ class ScheduleOptimizationIntegrationTest {
               ],
               "clusterCapacity": { "maxConcurrentCpuHours": 256.0, "maxConcurrentGpuHours": 64.0 }
             }
+
             """;
 
         mockMvc.perform(post("/api/schedules/optimize").contentType(APPLICATION_JSON).content(body))
@@ -98,6 +104,41 @@ class ScheduleOptimizationIntegrationTest {
             .andExpect(jsonPath("$.data.items[0].baselineCostUsd", is(1.0752)))
             .andExpect(jsonPath("$.data.items[0].optimizedCostUsd", is(0.2304)))
             .andExpect(jsonPath("$.data.items[0].savingsUsd", is(0.8448)));
+    }
+
+    @Test
+    @WithMockUser(username = "explanation-owner@datacenter.io")
+    void explanationIsPersistedAndRepeatedViewsReuseIt() throws Exception {
+        String body = """
+            {
+              "jobs": [{
+                "id": 101, "name": "Explanation test", "cpuHours": 64.0, "gpuHours": 16.0,
+                "originalStartTime": "2026-10-20T10:00:00Z", "deadline": "2026-10-21T18:00:00Z",
+                "flexibilityWindowHours": 15, "isExempt": false
+              }],
+              "forecast": [
+                { "intervalStartUtc": "2026-10-20T10:00:00Z", "predictedPrice": 112.0 },
+                { "intervalStartUtc": "2026-10-20T11:00:00Z", "predictedPrice": 100.0 },
+                { "intervalStartUtc": "2026-10-21T01:00:00Z", "predictedPrice": 24.0 }
+              ],
+              "clusterCapacity": { "maxConcurrentCpuHours": 256.0, "maxConcurrentGpuHours": 64.0 }
+            }
+            """;
+
+        String response = mockMvc.perform(post("/api/schedules/optimize")
+                .contentType(APPLICATION_JSON).content(body))
+            .andExpect(status().isOk())
+            .andReturn().getResponse().getContentAsString();
+        JsonNode data = objectMapper.readTree(response).get("data");
+        String runId = data.get("runId").asText();
+        String expectedExplanation = data.get("plainEnglishExplanation").asText();
+
+        for (int i = 0; i < 2; i++) {
+            mockMvc.perform(get("/api/schedules/{runId}/explanation", runId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.runId", is(runId)))
+                .andExpect(jsonPath("$.data.explanation", is(expectedExplanation)));
+        }
     }
 
     @Test

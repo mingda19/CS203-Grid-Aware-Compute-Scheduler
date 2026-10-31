@@ -171,6 +171,11 @@ export interface OptimizeResponse {
   items: ScheduleItem[]
 }
 
+export interface ExplanationResponse {
+  runId: string
+  explanation: string
+}
+
 export interface CreateWorkloadSchedule {
   title: string
   type: string
@@ -403,6 +408,11 @@ export const optimizerApi = {
     return fetchJson<ApiResponse<OptimizeResponse>>("/api/schedules/optimize", {
       method: "POST",
       body: JSON.stringify(payload),
+    })
+  },
+  explanation(runId: string): Promise<ApiResponse<ExplanationResponse>> {
+    return fetchJson<ApiResponse<ExplanationResponse>>(`/api/schedules/${runId}/explanation`, {
+      cache: "no-store",
     })
   },
 }
