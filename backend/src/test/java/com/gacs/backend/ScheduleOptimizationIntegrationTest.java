@@ -54,7 +54,7 @@ class ScheduleOptimizationIntegrationTest {
 
     @BeforeEach
     void clearForecasts() {
-        for (String email : java.util.List.of("contract-tester@datacenter.io", "user")) {
+        for (String email : java.util.List.of("contract-tester@datacenter.io", "user", "explanation-owner@datacenter.io")) {
             if (!users.existsByEmail(email)) users.save(new com.gacs.backend.model.User(email, "test-password", "Operator", "ROLE_USER"));
         }
         predictions.deleteAll();

@@ -5,7 +5,6 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 import java.time.Instant;
-import java.util.UUID;
 
 @Entity
 @Table(name = "optimization_plans", indexes = @Index(name = "idx_plan_owner", columnList = "owner_id"))
@@ -13,7 +12,13 @@ import java.util.UUID;
 @NoArgsConstructor(access = lombok.AccessLevel.PROTECTED)
 public class OptimizationPlan {
     @Id
-    private UUID runId;
+    @Column(name = "run_id", length = 36, nullable = false, updatable = false)
+    private String runId;
+
+    @MapsId
+    @OneToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "run_id", nullable = false, updatable = false)
+    private OptimizerRun run;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "owner_id", nullable = false, updatable = false)
@@ -29,12 +34,20 @@ public class OptimizationPlan {
     @Column(nullable = false, length = 30)
     private ReviewState reviewState = ReviewState.PENDING;
 
-    public OptimizationPlan(UUID runId, User owner, String resultJson, Instant createdAt) {
-        this.runId = runId;
+    public OptimizationPlan(OptimizerRun run, User owner, String resultJson, Instant createdAt) {
+        // Leave the derived ID unset so Spring Data persists this new entity instead of merging it.
+        this.run = run;
         this.owner = owner;
         this.resultJson = resultJson;
         this.createdAt = createdAt;
     }
 
-    public void recordDecision(DecisionAction action) { reviewState = action.reviewState(); }
+    public void recordDecision(AuditActionType action) {
+        reviewState = switch (action) {
+            case APPROVE -> ReviewState.APPROVED;
+            case REJECT -> ReviewState.REJECTED;
+            case REVISE -> ReviewState.REVISION_REQUESTED;
+            default -> throw new IllegalArgumentException("Unsupported schedule decision: " + action);
+        };
+    }
 }

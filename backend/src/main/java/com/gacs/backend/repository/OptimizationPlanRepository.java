@@ -8,10 +8,9 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.Optional;
-import java.util.UUID;
 
-public interface OptimizationPlanRepository extends JpaRepository<OptimizationPlan, UUID> {
+public interface OptimizationPlanRepository extends JpaRepository<OptimizationPlan, String> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from OptimizationPlan p where p.runId = :runId and p.owner.id = :ownerId")
-    Optional<OptimizationPlan> findOwnedForUpdate(@Param("runId") UUID runId, @Param("ownerId") Long ownerId);
+    Optional<OptimizationPlan> findOwnedForUpdate(@Param("runId") String runId, @Param("ownerId") Long ownerId);
 }

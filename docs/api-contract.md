@@ -893,7 +893,7 @@ The **baseline** of a job is its cost if it started at `originalStartTime` and, 
   }
 }
 ```
-* `runId`: UUID v4 generated per request. Successful API runs persist the immutable result, authenticated owner's database user ID, UTC creation time, and a separate review state initially `PENDING`. Decision routes reference this ID; the optimizer response shape and optimization `status` are unchanged. Failed runs create no plan. Authenticated principals without a database user receive `401`. The run's persisted explanation remains scoped to the authenticated operator.
+* `runId`: UUID v4 generated per request. Successful API runs atomically persist an `OptimizerRun` (configured solver name, version, configuration snapshot, outcome and optimality) and a linked `OptimizationPlan` with a shared `VARCHAR(36)` run ID enforced by a foreign key. The plan stores the immutable result, authenticated owner's database user ID, UTC creation time, and a separate review state initially `PENDING`. Decision routes reference this ID; the optimizer response shape and optimization `status` are unchanged. Failed optimization requests create neither row. Each call stores the complete result as unbounded `text`; storage growth and retention need review before large-scale use. Authenticated principals without a database user receive `401`. The run's persisted explanation remains scoped to the authenticated operator.
 * `status` (run level): `SCHEDULED` when every job is scheduled or exempt; `NEEDS_ATTENTION` when at least one job is `NO_FEASIBLE_SLOT`.
 * `provenOptimal` (run level): `true` when the solver proved that no cheaper schedule exists; `false` when a heuristic fallback produced the plan. A `false` plan still satisfies every window, deadline and capacity rule. Informational only.
 * `optimizedCostUsd` (run level) is the total cost of the proposed schedule. `scheduledStart` is the start of the job's first slot and `scheduledEnd` the end of its last.
@@ -952,7 +952,7 @@ All routes require JWT authentication and ownership of the persisted optimizatio
 | `POST /api/schedules/{runId}/reject` | `REJECT` | `REJECTED` |
 | `POST /api/schedules/{runId}/revise` | `REVISE` | `REVISION_REQUESTED` |
 
-Each route requires a JSON object. `comment` is optional or nullable, must be a string when supplied, and is limited to 2,000 characters before trimming. `{}` is valid. Identity fields are ignored. Example:
+Each route requires a JSON object with a nonblank string `comment`, limited to 2,000 characters before trimming. Missing, null, empty, whitespace-only, and non-string comments return `400` before plan lookup or locking. This follows the approved audit log requirement for operator rationale. Identity fields are ignored. Example:
 
 ```json
 {"comment":"Approved schedule after verifying cooling margin."}
@@ -976,11 +976,13 @@ All three return **200 OK** in the standard envelope:
 }
 ```
 
-Decisions append immutable history. Each decision insert and review-state update commits atomically under a per-plan database write lock; the last committed decision determines current review state. Repeated requests, including retries, create additional history entries. The original optimizer result never changes.
+Decisions use `audit_events` as their only immutable history; there is no separate `schedule_decisions` table. `decisionId` is the audit event ID. The audit actor comes from the authenticated security context, and `operatorRationale` stores the trimmed comment. `scheduleHash` is the lowercase SHA-256 hex digest of the stored `resultJson` encoded as UTF-8. Each audit event insert and review-state update commits atomically under a per-plan database write lock; the last committed decision determines current review state. Repeated requests, including retries, create additional history entries. The original optimizer result never changes.
 
-Errors: **400** for malformed UUIDs/JSON, a missing or non-object body, non-string comments, or excessive comment length; **403** for missing/invalid JWTs (existing security behavior); **401** for an authenticated email without a database user; **404** with `Optimization plan not found` for both missing and unowned plans.
+Errors: **400** for malformed UUIDs/JSON, a missing or non-object body, missing, null, blank, non-string, or oversized comments; **403** for missing/invalid JWTs (existing security behavior); **401** for an authenticated email without a database user; **404** with `Optimization plan not found` for both missing and unowned plans.
 
-Approval records intent only and does **not** dispatch or export workloads. Revision does not edit or rerun a plan: a later optimization creates a new immutable version with a new `runId`. Frontend integration, history retrieval, dispatch gating, and expiry/material-change policies are separate work. Run IDs created before plan persistence was introduced cannot be reviewed; optimize again to obtain a persisted plan.
+Audit history can be read through the existing audit log endpoints.
+
+Approval records intent only and does **not** dispatch or export workloads. Revision does not edit or rerun a plan: a later optimization creates a new immutable version with a new `runId`. Frontend integration, dispatch gating, and expiry/material-change policies are separate work. Run IDs created before plan persistence was introduced cannot be reviewed; optimize again to obtain a persisted plan.
 
 ---
 

@@ -5,6 +5,7 @@ import com.gacs.backend.dto.ExplanationResponseDto;
 import com.gacs.backend.dto.OptimizeRequestDto;
 import com.gacs.backend.dto.OptimizeResponseDto;
 import com.gacs.backend.service.ScheduleReviewService;
+import com.gacs.backend.service.ScheduleOptimizationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -21,7 +22,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.security.Principal;
 
-
 /**
  * Schedule optimization endpoint, per the Schedule Optimization Engine Contract
  * (GRID-124) in {@code docs/api-contract.md}.
@@ -33,9 +33,12 @@ import java.security.Principal;
 @RequestMapping("/api/schedules")
 public class ScheduleOptimizationController {
 
-    private final ScheduleReviewService optimizationService;
+    private final ScheduleReviewService reviewService;
+    private final ScheduleOptimizationService optimizationService;
 
-    public ScheduleOptimizationController(ScheduleReviewService optimizationService) {
+    public ScheduleOptimizationController(ScheduleReviewService reviewService,
+                                          ScheduleOptimizationService optimizationService) {
+        this.reviewService = reviewService;
         this.optimizationService = optimizationService;
     }
 
@@ -77,7 +80,7 @@ public class ScheduleOptimizationController {
     public ResponseEntity<ApiResponse<OptimizeResponseDto>> optimize(
         @RequestBody(required = false) OptimizeRequestDto request, Principal principal
     ) {
-        OptimizeResponseDto plan = optimizationService.optimize(request, principal.getName());
+        OptimizeResponseDto plan = reviewService.optimize(request, principal.getName());
         return ResponseEntity.ok(ApiResponse.ok("Optimized schedule generated", plan));
     }
 

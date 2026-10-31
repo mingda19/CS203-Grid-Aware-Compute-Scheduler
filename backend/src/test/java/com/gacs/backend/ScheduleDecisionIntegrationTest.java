@@ -38,9 +38,12 @@ class ScheduleDecisionIntegrationTest {
         """;
 
     @Autowired MockMvc mvc;
-    @Autowired OptimizationPlanRepository plans;
-    @Autowired ScheduleDecisionRepository decisions;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean OptimizationPlanRepository plans;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.gacs.backend.service.AuditEventService audit;
+    @Autowired AuditEventRepository decisions;
     @Autowired UserRepository users;
+    @Autowired OptimizerRunRepository runs;
+    @Autowired ScheduleExplanationRepository explanations;
     @Autowired ScheduleReviewService reviews;
     @Autowired JwtUtils jwt;
     @Autowired PlatformTransactionManager transactions;
@@ -56,8 +59,9 @@ class ScheduleDecisionIntegrationTest {
     @AfterEach
     void cleanup() {
         for (UUID runId : createdPlans) {
-            decisions.deleteAll(decisions.findByPlanRunIdOrderByIdAsc(runId));
-            plans.deleteById(runId);
+            // Audit records remain append-only; each test uses unique run IDs.
+            plans.deleteById(runId.toString());
+            runs.deleteById(runId.toString());
         }
         users.deleteById(owner.getId());
     }
@@ -71,19 +75,48 @@ class ScheduleDecisionIntegrationTest {
         JsonNode result = json.readTree(response).path("data");
         UUID runId = UUID.fromString(result.path("runId").asText());
         createdPlans.add(runId);
-        OptimizationPlan plan = plans.findById(runId).orElseThrow();
+        OptimizationPlan plan = plans.findById(runId.toString()).orElseThrow();
         assertThat(plan.getOwner().getId()).isEqualTo(owner.getId());
         assertThat(plan.getReviewState()).isEqualTo(ReviewState.PENDING);
         assertThat(plan.getCreatedAt()).isBetween(before.minusSeconds(1), Instant.now().plusSeconds(1));
         assertThat(json.readTree(plan.getResultJson())).isEqualTo(result);
+        OptimizerRun run = runs.findById(runId.toString()).orElseThrow();
+        assertThat(run.getCreatedAt()).isEqualTo(plan.getCreatedAt());
+        assertThat(plan.getRun().getId()).isEqualTo(runId.toString());
+        assertThat(explanations.findByRunIdAndOwnerEmail(runId.toString(), owner.getEmail())).isPresent();
+        assertThat(run.getSolverName()).isEqualTo("HybridAllocationSolver");
+        assertThat(run.getSolverVersion()).isEqualTo(com.gacs.backend.service.allocation.AllocationSolver.VERSION);
+        assertThat(run.getStatus().name()).isEqualTo(result.path("status").asText());
+        assertThat(run.getProvenOptimal()).isEqualTo(result.path("provenOptimal").asBoolean());
+        assertThat(json.readTree(run.getSolverConfig()).path("cpuKwhPerHour").asDouble()).isEqualTo(0.05);
         return runId;
+    }
+
+    private List<AuditEvent> history(UUID runId) {
+        return decisions.findByRunIdOrderByTimestampDesc(runId.toString()).stream()
+            .sorted(Comparator.comparing(AuditEvent::getId)).toList();
+    }
+
+    private static ReviewState state(AuditActionType action) {
+        return switch (action) {
+            case APPROVE -> ReviewState.APPROVED;
+            case REJECT -> ReviewState.REJECTED;
+            case REVISE -> ReviewState.REVISION_REQUESTED;
+            default -> throw new IllegalArgumentException();
+        };
+    }
+
+    private void authenticate() {
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+            new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                owner.getEmail(), "unused", List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_USER"))));
     }
 
     @Test
     void allActionsAppendHistoryAndUseAuthenticatedDatabaseIdentity() throws Exception {
         UUID runId = optimize();
-        String snapshot = plans.findById(runId).orElseThrow().getResultJson();
-        for (DecisionAction action : DecisionAction.values()) {
+        String snapshot = plans.findById(runId.toString()).orElseThrow().getResultJson();
+        for (AuditActionType action : List.of(AuditActionType.APPROVE, AuditActionType.REJECT, AuditActionType.REVISE)) {
             String response = mvc.perform(post("/api/schedules/" + runId + "/" + action.name().toLowerCase(Locale.ROOT))
                     // Even a signed token's numeric claim is not trusted as the database identity.
                     .header("Authorization", "Bearer " + jwt.generateAccessToken(owner.getEmail(), -123L, "ROLE_USER", "Operator"))
@@ -92,21 +125,30 @@ class ScheduleDecisionIntegrationTest {
                 .andExpect(jsonPath("$.data.operatorId").value(owner.getId()))
                 .andExpect(jsonPath("$.data.runId").value(runId.toString()))
                 .andExpect(jsonPath("$.data.action").value(action.name()))
-                .andExpect(jsonPath("$.data.reviewState").value(action.reviewState().name()))
+                .andExpect(jsonPath("$.data.reviewState").value(state(action).name()))
                 .andExpect(jsonPath("$.data.comment").value("reviewed"))
                 .andReturn().getResponse().getContentAsString();
             String timestamp = json.readTree(response).path("data").path("decidedAt").asText();
             assertThat(timestamp).endsWith("Z");
             assertThat(Instant.parse(timestamp)).isBeforeOrEqualTo(Instant.now());
+            AuditEvent saved = decisions.findById(json.readTree(response).path("data").path("decisionId").asLong()).orElseThrow();
+            assertThat(saved.getActionType()).isEqualTo(action);
+            assertThat(saved.getTimestamp()).isCloseTo(Instant.parse(timestamp), within(1, java.time.temporal.ChronoUnit.MICROS));
+            assertThat(saved.getOperatorRationale()).isEqualTo("reviewed");
         }
         mvc.perform(post("/api/schedules/" + runId + "/approve").with(user(owner.getEmail()))
-                .contentType(APPLICATION_JSON).content("{}"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.comment").doesNotExist());
-        var history = decisions.findByPlanRunIdOrderByIdAsc(runId);
-        assertThat(history).extracting(ScheduleDecision::getAction)
-            .containsExactly(DecisionAction.APPROVE, DecisionAction.REJECT, DecisionAction.REVISE, DecisionAction.APPROVE);
-        assertThat(history).allSatisfy(d -> assertThat(d.getOperator().getId()).isEqualTo(owner.getId()));
-        OptimizationPlan plan = plans.findById(runId).orElseThrow();
+                .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed again\"}"))
+            .andExpect(status().isOk());
+        var history = history(runId);
+        assertThat(history).extracting(AuditEvent::getActionType)
+            .containsExactly(AuditActionType.APPROVE, AuditActionType.REJECT, AuditActionType.REVISE, AuditActionType.APPROVE);
+        String expectedHash = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+            .digest(snapshot.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        assertThat(history).allSatisfy(d -> {
+            assertThat(d.getActor()).isEqualTo(owner.getEmail());
+            assertThat(d.getScheduleHash()).isEqualTo(expectedHash);
+        });
+        OptimizationPlan plan = plans.findById(runId.toString()).orElseThrow();
         assertThat(plan.getReviewState()).isEqualTo(ReviewState.APPROVED);
         assertThat(plan.getResultJson()).isEqualTo(snapshot);
     }
@@ -115,70 +157,75 @@ class ScheduleDecisionIntegrationTest {
     void invalidRequestsAndUnauthorizedAccessDoNotWrite() throws Exception {
         UUID runId = optimize();
         String route = "/api/schedules/" + runId + "/approve";
-        for (String body : List.of("", "null", "[]", "1", "\"text\"", "{", "{\"comment\":4}",
-                "{\"comment\":{}}", "{\"comment\":\"" + "x".repeat(2001) + "\"}")) {
+        org.mockito.Mockito.clearInvocations(plans);
+        for (String body : List.of("", "null", "[]", "1", "\"text\"", "{", "{}", "{\"comment\":null}", "{\"comment\":\"   \"}", "{\"comment\":true}", "{\"comment\":4}",
+                "{\"comment\":{}}", "{\"comment\":[]}", "{\"comment\":\"\"}", "{\"comment\":\"" + "x".repeat(2001) + "\"}")) {
             mvc.perform(post(route).with(user(owner.getEmail())).contentType(APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest());
         }
+        org.mockito.Mockito.verifyNoInteractions(plans);
         mvc.perform(post("/api/schedules/not-a-uuid/approve").with(user(owner.getEmail()))
-                .contentType(APPLICATION_JSON).content("{}"))
+                .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
             .andExpect(status().isBadRequest());
-        mvc.perform(post(route).contentType(APPLICATION_JSON).content("{}"))
+        mvc.perform(post(route).contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
             .andExpect(status().isForbidden());
         mvc.perform(post(route).header("Authorization", "Bearer invalid-token")
-                .contentType(APPLICATION_JSON).content("{}"))
+                .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
             .andExpect(status().isForbidden());
-        mvc.perform(post(route).with(user("missing@test.io")).contentType(APPLICATION_JSON).content("{}"))
+        mvc.perform(post(route).with(user("missing@test.io")).contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
             .andExpect(status().isUnauthorized());
         User other = users.save(new User(UUID.randomUUID() + "@test.io", "password", "Other", "ROLE_ADMIN"));
         try {
             String hidden = mvc.perform(post(route).with(user(other.getEmail()).roles("ADMIN"))
-                    .contentType(APPLICATION_JSON).content("{}"))
+                    .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
                 .andExpect(status().isNotFound()).andReturn().getResponse().getContentAsString();
             String missing = mvc.perform(post("/api/schedules/" + UUID.randomUUID() + "/approve")
-                    .with(user(other.getEmail()).roles("ADMIN")).contentType(APPLICATION_JSON).content("{}"))
+                    .with(user(other.getEmail()).roles("ADMIN")).contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
                 .andExpect(status().isNotFound()).andReturn().getResponse().getContentAsString();
             assertThat(hidden).isEqualTo(missing);
         } finally { users.deleteById(other.getId()); }
-        assertThat(decisions.findByPlanRunIdOrderByIdAsc(runId)).isEmpty();
-        assertThat(plans.findById(runId).orElseThrow().getReviewState()).isEqualTo(ReviewState.PENDING);
+        assertThat(history(runId)).isEmpty();
+        assertThat(plans.findById(runId.toString()).orElseThrow().getReviewState()).isEqualTo(ReviewState.PENDING);
     }
 
     @Test
     void failedOptimizationDoesNotCreatePlan() throws Exception {
         long before = plans.count();
+        long runsBefore = runs.count();
         mvc.perform(post("/api/schedules/optimize").with(user(owner.getEmail()))
-                .contentType(APPLICATION_JSON).content("{}"))
+                .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
             .andExpect(status().isBadRequest());
         mvc.perform(post("/api/schedules/optimize").with(user("missing@test.io"))
                 .contentType(APPLICATION_JSON).content(REQUEST))
             .andExpect(status().isUnauthorized());
         assertThat(plans.count()).isEqualTo(before);
+        assertThat(runs.count()).isEqualTo(runsBefore);
     }
 
     @Test
     void rollbackRevertsBothHistoryAndReviewState() throws Exception {
         UUID runId = optimize();
         assertThatThrownBy(() -> new TransactionTemplate(transactions).executeWithoutResult(tx -> {
-            reviews.decide(runId, DecisionAction.APPROVE, "reviewed", owner.getEmail());
+            authenticate();
+            try { reviews.decide(runId, AuditActionType.APPROVE, "reviewed", owner.getEmail()); }
+            finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); }
             throw new IllegalStateException("Force rollback after decision insert");
         })).isInstanceOf(IllegalStateException.class);
-        assertThat(decisions.findByPlanRunIdOrderByIdAsc(runId)).isEmpty();
-        assertThat(plans.findById(runId).orElseThrow().getReviewState()).isEqualTo(ReviewState.PENDING);
+        assertThat(history(runId)).isEmpty();
+        assertThat(plans.findById(runId.toString()).orElseThrow().getReviewState()).isEqualTo(ReviewState.PENDING);
     }
 
     @Test
-    void acceptsNullAndMaximumLengthComments() throws Exception {
+    void acceptsMaximumLengthComments() throws Exception {
         UUID runId = optimize();
-        for (String commentJson : List.of("null", "\"" + "x".repeat(2000) + "\"")) {
+        for (String commentJson : List.of("\"" + "x".repeat(2000) + "\"")) {
             mvc.perform(post("/api/schedules/" + runId + "/revise").with(user(owner.getEmail()))
                     .contentType(APPLICATION_JSON).content("{\"comment\":" + commentJson + "}"))
                 .andExpect(status().isOk());
         }
-        var history = decisions.findByPlanRunIdOrderByIdAsc(runId);
-        assertThat(history).hasSize(2);
-        assertThat(history.getFirst().getComment()).isNull();
-        assertThat(history.getLast().getComment()).hasSize(2000);
+        var history = history(runId);
+        assertThat(history).hasSize(1);
+        assertThat(history.getLast().getOperatorRationale()).hasSize(2000);
     }
 
     @Test
@@ -187,20 +234,70 @@ class ScheduleDecisionIntegrationTest {
         CountDownLatch start = new CountDownLatch(1);
         try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
             List<Future<ScheduleDecisionDto>> calls = new ArrayList<>();
-            for (DecisionAction action : List.of(DecisionAction.APPROVE, DecisionAction.REJECT)) {
+            for (AuditActionType action : List.of(AuditActionType.APPROVE, AuditActionType.REJECT)) {
                 calls.add(executor.submit(() -> {
                     assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
-                    return reviews.decide(runId, action, "concurrent", owner.getEmail());
+                    authenticate();
+                    try { return reviews.decide(runId, action, "concurrent", owner.getEmail()); }
+                    finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); }
                 }));
             }
             start.countDown();
             for (var call : calls) assertThat(call.get(15, TimeUnit.SECONDS).decisionId()).isNotNull();
         }
-        var history = decisions.findByPlanRunIdOrderByIdAsc(runId);
+        var history = history(runId);
         assertThat(history).hasSize(2);
-        assertThat(history).extracting(ScheduleDecision::getAction)
-            .containsExactlyInAnyOrder(DecisionAction.APPROVE, DecisionAction.REJECT);
-        assertThat(plans.findById(runId).orElseThrow().getReviewState())
-            .isEqualTo(history.getLast().getAction().reviewState());
+        assertThat(history).extracting(AuditEvent::getActionType)
+            .containsExactlyInAnyOrder(AuditActionType.APPROVE, AuditActionType.REJECT);
+        assertThat(plans.findById(runId.toString()).orElseThrow().getReviewState())
+            .isEqualTo(state(history.getLast().getActionType()));
     }
+    @Test
+    void planPersistenceFailureRollsBackRunAndExplanation() throws Exception {
+        long plansBefore = plans.count();
+        long runsBefore = runs.count();
+        long explanationsBefore = explanations.count();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            runs.flush();
+            throw new IllegalStateException("Plan write failed");
+        }).when(plans).save(org.mockito.ArgumentMatchers.any(OptimizationPlan.class));
+        try {
+            mvc.perform(post("/api/schedules/optimize").with(user(owner.getEmail()))
+                    .contentType(APPLICATION_JSON).content(REQUEST))
+                .andExpect(status().isInternalServerError());
+        } finally {
+            org.mockito.Mockito.reset(plans);
+        }
+        assertThat(plans.count()).isEqualTo(plansBefore);
+        assertThat(runs.count()).isEqualTo(runsBefore);
+        assertThat(explanations.count()).isEqualTo(explanationsBefore);
+    }
+
+    @Test
+    void auditFailureRollsBackReviewState() throws Exception {
+        UUID runId = optimize();
+        org.mockito.Mockito.doThrow(new IllegalStateException("Audit write failed"))
+            .when(audit).recordEvent(org.mockito.ArgumentMatchers.any());
+        try {
+            mvc.perform(post("/api/schedules/" + runId + "/approve").with(user(owner.getEmail()))
+                    .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
+                .andExpect(status().isInternalServerError());
+        } finally {
+            org.mockito.Mockito.reset(audit);
+        }
+        assertThat(history(runId)).isEmpty();
+        assertThat(plans.findById(runId.toString()).orElseThrow().getReviewState()).isEqualTo(ReviewState.PENDING);
+    }
+
+    @Test
+    void foreignKeyPreventsRemovingRunWithExistingPlan() throws Exception {
+        UUID runId = optimize();
+        assertThatThrownBy(() -> new TransactionTemplate(transactions).executeWithoutResult(tx -> {
+            runs.deleteById(runId.toString());
+            runs.flush();
+        })).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(runs.findById(runId.toString())).isPresent();
+        assertThat(plans.findById(runId.toString())).isPresent();
+    }
+
 }
