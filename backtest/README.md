@@ -128,12 +128,38 @@ These are committed in `backend/src/test/resources/backtest/profiles/`:
 Hours are UTC; each file's description gives the Texas time. **Bump `version` whenever a profile changes**, so
 old results are never mistaken for new ones.
 
+## Report (ticket 3)
+
+One command rebuilds everything and writes `docs/reports/backtest-<date>.md` with its charts:
+
+```bash
+backtest/run_report.sh     # from the repo root; about 6 minutes on a 14-core laptop
+```
+
+It runs, in order:
+1. `backtest/build_features.py`: rebuilds `model/train.csv` / `val.csv` in the current 48 h feature layout
+   (`lag_72h`, `lag_96h`, Henry Hub `lag2d` / `lag3d`) into `backtest/data/features/`. The old CSVs predate the
+   switch to 48 h targets and the script that first built them isn't in this repo. Scoring the saved
+   `xgboost_y0_train.json` on the rebuilt files reproduces its held-out error per hour exactly.
+2. `model/evaluate.py --mode walkforward --target y0` on those files, for XGBoost and the naive forecasts.
+3. `export_prices.py` into `backtest/data/y0/`.
+4. The headline run and the assumption reruns into `backtest/output/report/<run>/`.
+5. `backtest/report.py`.
+
+Settings the reruns use (all optional, on `BacktestRun`):
+
+| Property | Default | Used for |
+|---|---|---|
+| `backtest.capacityCpu`, `backtest.capacityGpu` | `256`, `64` | A4: capacity |
+| `backtest.cpuKwhPerHour`, `backtest.gpuKwhPerHour` | `0.05`, `0.40` | A3: kWh factors |
+| `backtest.solver` | `repeatable` | A8: `heuristic` runs the heuristic alone |
+
+They are recorded in the manifest, and `backtest.reproduce` restores them. The flexibility profiles for A2 are in
+`profiles/sensitivity/` (copies of `mixed` with flexibility fixed), so default runs don't pick them up.
+
 ## Known limits
 
-- **Forecasts:** the forecasts used now come from `forecasts_walkforward.parquet` (9 October): XGBoost and naive
-  models predicting one day ahead. The model the app serves predicts 48 hours ahead (`y0`). Its walk-forward
-  forecasts need `model/train.csv` / `val.csv` rebuilt with the current feature columns (`lag_72h`, `lag_96h`,
-  Henry Hub `lag2d` / `lag3d`), and the script that builds them isn't in this repo. Once rebuilt, run
-  `model/evaluate.py --mode walkforward --target y0` and export from `forecasts_walkforward_y0.parquet`.
+- **Forecasts:** the report plans with the served model's 48 h forecast (y0). The older `full-v4` run used the
+  9 October one-day-ahead file in `backtest/data/`, kept so that run still reproduces. The LSTM isn't tested.
 - **Jobs:** all generated, and they start and finish inside one UTC day (plan decision D5).
 - **Market:** one zone (LZ_NORTH), day-ahead prices only.
