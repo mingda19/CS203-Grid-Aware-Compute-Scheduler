@@ -126,9 +126,10 @@ class DataFreshnessServiceTest {
         ReflectionTestUtils.setField(service, "emailService", emailService);
         ReflectionTestUtils.setField(service, "confidenceThreshold", 40.0);
 
-        service.recordLowConfidenceForecast("LZ_NORTH", LocalDateTime.now(), LocalDateTime.now(), 39.9, "operator@example.com");
-        service.recordLowConfidenceForecast("LZ_NORTH", LocalDateTime.now(), LocalDateTime.now(), 40.0, "operator@example.com");
-        service.recordLowConfidenceForecast("LZ_NORTH", LocalDateTime.now(), LocalDateTime.now(), 0.0, "operator@example.com");
+        LocalDateTime now = LocalDateTime.now();
+        service.recordLowConfidenceForecast("LZ_NORTH", now, now, 39.9, "operator@example.com");
+        service.recordLowConfidenceForecast("LZ_NORTH", now.plusHours(1), now, 40.0, "operator@example.com");
+        service.recordLowConfidenceForecast("LZ_NORTH", now.plusHours(2), now.plusMinutes(1), 0.0, "operator@example.com");
 
         var notifications = service.unreadNotifications();
         assertEquals(2, notifications.size(), "39.9 and 0.0 should alert; 40.0 (at the baseline) should not");
