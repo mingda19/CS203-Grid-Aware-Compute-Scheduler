@@ -91,7 +91,7 @@ public record OptimizationProblem(
         String jobLine = jobs.stream()
                 .sorted(Comparator.comparing(OptimizerJob::id, Comparator.nullsLast(Comparator.<Long>naturalOrder())))
                 .map(job -> jobEntry(job.id(), job.cpuHours(), job.gpuHours(), job.originalStartTime(),
-                        job.deadline(), job.flexibilityWindowHours(), job.exempt()))
+                        job.deadline(), job.flexibilityWindowHours(), job.exempt(), job.priority()))
                 .collect(Collectors.joining(";"));
         StringBuilder priceLine = new StringBuilder();
         StringBuilder capacityLine = new StringBuilder();
@@ -106,13 +106,14 @@ public record OptimizationProblem(
 
     /**
      * One job's line in {@link #snapshot()}. Shared with the export check, which rebuilds it from the
-     * job as it is now: one formatter, so the two can never drift apart. Priority is left out because
-     * the solver does not use it yet.
+     * job as it is now: one formatter, so the two can never drift apart. Priority participates in
+     * the solver's tie-break order (GRID-155).
      */
     public static String jobEntry(Long id, double cpuHours, double gpuHours, LocalDateTime start,
-                                  LocalDateTime deadline, int flexibilityWindowHours, boolean exempt) {
+                                  LocalDateTime deadline, int flexibilityWindowHours, boolean exempt,
+                                  JobPriority priority) {
         return id + "," + number(cpuHours) + "," + number(gpuHours) + "," + start + "," + deadline + ","
-                + flexibilityWindowHours + "," + exempt;
+                + flexibilityWindowHours + "," + exempt + "," + priority;
     }
 
     private static String number(double value) {

@@ -36,7 +36,7 @@ class OptimizationPlanRecorder {
 
     @Transactional
     void record(String runId, Instant createdAt, String solverName, String solverVersion, String solverConfig,
-               User owner, String resultJson, Collection<Long> jobIds, String inputSnapshot) {
+               User owner, String resultJson, Collection<Long> jobIds, String inputSnapshot, String provenance) {
         OptimizerRun run = runs.save(OptimizerRun.builder()
                 .id(runId)
                 .createdAt(createdAt)
@@ -47,7 +47,7 @@ class OptimizationPlanRecorder {
                 .inputHash(ScheduleHashUtil.computeSha256(inputSnapshot))
                 .build());
         var plan = new OptimizationPlan(run, owner, resultJson, jobIds, createdAt);
-        plan.recordInputs(inputSnapshot);
+        plan.recordInputs(provenance);
         plans.save(plan);
     }
 }

@@ -264,7 +264,8 @@ class OptimizationProblemFactoryTest {
         JobInput moreHours = new JobInput(1L, "job-1", 65.0, 16.0, T0, at(4), 2, false);
         JobInput moreFlexible = new JobInput(1L, "job-1", 64.0, 16.0, T0, at(4), 3, false);
         JobInput exempt = new JobInput(1L, "job-1", 64.0, 16.0, T0, at(4), 2, true);
-        for (JobInput changed : List.of(moreHours, moreFlexible, exempt)) {
+        JobInput higherPriority = new JobInput(1L, "job-1", 64.0, 16.0, T0, at(4), 2, false, "HIGH");
+        for (JobInput changed : List.of(moreHours, moreFlexible, exempt, higherPriority)) {
             assertThat(factory.build(request(List.of(changed, validJob(2)))).snapshot()).isNotEqualTo(base);
         }
         List<JobInput> jobs = List.of(validJob(1), validJob(2));

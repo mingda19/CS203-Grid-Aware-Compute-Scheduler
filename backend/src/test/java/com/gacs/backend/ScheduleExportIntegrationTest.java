@@ -351,11 +351,11 @@ class ScheduleExportIntegrationTest {
             // GRID-141: the plan still fits, but the job is not what the optimiser was given.
             case "deadline-later" -> {
                 job.setDeadline(start.plusHours(10));
-                yield "its jobs have changed since the schedule was generated";
+                yield "Scheduling inputs changed";
             }
             case "more-flexible" -> {
                 job.setFlexibilityWindowHours(4);
-                yield "its jobs have changed since the schedule was generated";
+                yield "Scheduling inputs changed";
             }
             default -> "is no longer in your jobs";
         };
@@ -378,7 +378,7 @@ class ScheduleExportIntegrationTest {
     }
 
     @Test
-    @DisplayName("Edits to what the optimiser does not use (name, priority, status) keep it exportable")
+    @DisplayName("Edits to the job name and non-cancelled status keep it exportable")
     void harmlessJobEdits_StillExportable() throws Exception {
         Job job = job("Train", start);
         String runId = optimize(start, job);

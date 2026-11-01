@@ -38,7 +38,7 @@ import java.util.function.BiConsumer;
  * ({@link #getExplanation}) - it does not re-run optimisation or regenerate anything, only reads
  * what {@link ScheduleRunRecorder} already wrote.
  *
- * <p>{@link #optimize(OptimizeRequestDto, String, java.util.function.Consumer)} is deliberately not
+ * <p>{@link #optimize(OptimizeRequestDto, String, BiConsumer)} is deliberately not
  * {@code @Transactional}:
  * {@link ScheduleRunRecorder#record} itself holds no single transaction spanning this whole call
  * (it brackets an external LLM call that must never hold a database connection - see
