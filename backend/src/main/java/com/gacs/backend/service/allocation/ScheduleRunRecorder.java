@@ -36,17 +36,11 @@ public class ScheduleRunRecorder {
         this.explanationGenerator = explanationGenerator;
     }
 
-    public void record(AllocationResult result, List<PlacementConstraint> constraints,
-                       List<SynchronizedFinishConstraint> synchronizedGroups, OptimizeResponseDto response,
-                       String ownerEmail) {
-        record(result, constraints, synchronizedGroups, response, ownerEmail, ignored -> { });
-    }
-
     /**
-     * Same as {@link #record(AllocationResult, List, List, OptimizeResponseDto, String)}, plus a
-     * hook run inside the same transaction as {@link ScheduleRunPersistence#finalizeExplanation} -
-     * see that method's javadoc for why a caller would want this instead of just doing its own
-     * persistence after {@code record} returns.
+     * {@code afterExplanationPersisted} runs inside the same transaction as {@link
+     * ScheduleRunPersistence#finalizeExplanation} - see that method's javadoc for why a caller
+     * would want this instead of just doing its own persistence after {@code record} returns. A
+     * caller with nothing to do there passes a no-op.
      */
     public void record(AllocationResult result, List<PlacementConstraint> constraints,
                        List<SynchronizedFinishConstraint> synchronizedGroups, OptimizeResponseDto response,

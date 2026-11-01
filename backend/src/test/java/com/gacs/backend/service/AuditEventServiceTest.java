@@ -8,6 +8,8 @@ import com.gacs.backend.model.AuditActionType;
 import com.gacs.backend.model.AuditEvent;
 import com.gacs.backend.model.OptimizationPlan;
 import com.gacs.backend.model.OptimizerRun;
+import com.gacs.backend.model.OptimizerRunStatus;
+import com.gacs.backend.model.ScheduleRun;
 import com.gacs.backend.model.User;
 import com.gacs.backend.util.ScheduleHashUtil;
 import com.gacs.backend.repository.AuditEventRepository;
@@ -31,6 +33,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 
 import java.time.Instant;
 import java.time.Clock;
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Collections;
 import java.util.List;
@@ -276,6 +279,31 @@ class AuditEventServiceTest {
         assertThat(result.scheduleHashMatches()).isTrue();
         assertThat(result.schedule()).isNotNull();
         assertThat(result.schedule().items()).extracting(OptimizeResponseDto.ScheduleItem::jobId).containsExactly(5L);
+    }
+
+    @Test
+    @DisplayName("AC6.1b — status/provenOptimal come from the matching ScheduleRun, not OptimizerRun")
+    void testGetEventDetail_StatusAndProvenOptimalFromScheduleRun() {
+        storePlanOwnedByUser3(ScheduleHashUtil.computeSha256(STORED_RESULT));
+        when(userRepository.findByEmail("owner@gacs.internal")).thenReturn(Optional.of(user(3L, "owner@gacs.internal")));
+        ScheduleRun scheduleRun = ScheduleRun.builder()
+                .runId("run-7")
+                .ownerEmail("owner@gacs.internal")
+                .requestedAt(LocalDateTime.parse("2026-10-28T09:00:00"))
+                .status("NEEDS_ATTENTION")
+                .provenOptimal(false)
+                .baselineCostUsd(0.02)
+                .optimizedCostUsd(0.002)
+                .projectedSavingsUsd(0.018)
+                .projectedSavingsPercent(90.0)
+                .usedSeededFallbackPrices(false)
+                .build();
+        when(scheduleRunRepository.findByRunId("run-7")).thenReturn(Optional.of(scheduleRun));
+
+        AuditEventDetailDto result = auditEventService.getEventDetail(7L, "owner@gacs.internal");
+
+        assertThat(result.run().status()).isEqualTo(OptimizerRunStatus.NEEDS_ATTENTION);
+        assertThat(result.run().provenOptimal()).isFalse();
     }
 
     @Test

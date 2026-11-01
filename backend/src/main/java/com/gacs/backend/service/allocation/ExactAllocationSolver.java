@@ -46,7 +46,7 @@ import java.util.TreeMap;
  * </ol>
  * Each pass is time-boxed. The result is proven optimal only when both passes finish optimal.
  */
-public final class ExactAllocationSolver implements BoundedAllocationSolver {
+public final class ExactAllocationSolver {
 
     /** Tie-break weight per rank step, as a fraction of the run's cost scale. */
     private static final double RANK_WEIGHT = 1e-7;
@@ -66,7 +66,6 @@ public final class ExactAllocationSolver implements BoundedAllocationSolver {
      * independently-greedy pre-pass ({@link SynchronizedGroupPlacer}), so a proven-optimal result is
      * optimal given the group's placement, not jointly optimal across it and the rest of the run.
      */
-    @Override
     public Optional<AllocationResult> solve(OptimizationProblem problem, Duration budget) {
         SynchronizedGroupPlacer.Placement groups = SynchronizedGroupPlacer.place(problem, costs);
         List<OptimizerJob> flexible = problem.flexibleJobsInTieBreakOrder().stream()

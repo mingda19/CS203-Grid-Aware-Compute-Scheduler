@@ -33,7 +33,7 @@ import java.util.stream.Collectors;
  * #finalizeExplanation} writes the one {@code ScheduleExplanation} row and, only on LLM success,
  * overwrites that deterministic text. Callers needing to persist something else in the same
  * transaction as {@code finalizeExplanation} (never as part of {@code persist}, which commits
- * before the LLM call even happens) use the overload that takes a callback.
+ * before the LLM call even happens) pass it a hook.
  *
  * <p>Split out of {@code ScheduleRunRecorder} deliberately, not just for naming: Spring's
  * {@code @Transactional} proxy only intercepts calls that arrive from <em>another</em> bean - a
@@ -101,21 +101,14 @@ public class ScheduleRunPersistence {
      * returned: those came from a transaction that already committed and whose connection was
      * released, so re-querying is what guarantees these are live, attached entities in <em>this</em>
      * transaction - not a detail to get wrong by assuming the old instances are still good to save.
-     */
-    @Transactional
-    public void finalizeExplanation(Long scheduleRunId, ExplanationOutcome explanation,
-                                    OptimizeResponseDto response) {
-        finalizeExplanation(scheduleRunId, explanation, response, ignored -> { });
-    }
-
-    /**
-     * Same as {@link #finalizeExplanation(Long, ExplanationOutcome, OptimizeResponseDto)}, plus a
-     * hook run last, still inside this same transaction. {@code ScheduleReviewService} uses this to
-     * record its own {@code OptimizerRun}/{@code OptimizationPlan} pair here rather than in a later,
-     * separate transaction: Spring's REQUIRED propagation makes whatever {@code @Transactional} bean
-     * the hook calls join this transaction instead of starting its own, so a failure there rolls
-     * back the explanation too, instead of leaving an explanation on record for a run whose review
-     * plan never got created.
+     *
+     * <p>{@code afterPersist} runs last, still inside this same transaction. {@code
+     * ScheduleReviewService} uses this to record its own {@code OptimizerRun}/{@code
+     * OptimizationPlan} pair here rather than in a later, separate transaction: Spring's REQUIRED
+     * propagation makes whatever {@code @Transactional} bean the hook calls join this transaction
+     * instead of starting its own, so a failure there rolls back the explanation too, instead of
+     * leaving an explanation on record for a run whose review plan never got created. A caller with
+     * nothing to do there passes a no-op.
      */
     @Transactional
     public void finalizeExplanation(Long scheduleRunId, ExplanationOutcome explanation,

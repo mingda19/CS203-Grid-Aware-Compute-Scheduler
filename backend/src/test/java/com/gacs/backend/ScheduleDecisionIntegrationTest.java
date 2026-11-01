@@ -42,7 +42,7 @@ class ScheduleDecisionIntegrationTest {
     @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.gacs.backend.service.AuditEventService audit;
     @Autowired AuditEventRepository decisions;
     @Autowired UserRepository users;
-    @Autowired OptimizerRunRepository runs;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean OptimizerRunRepository runs;
     @Autowired ScheduleExplanationRepository explanations;
     @Autowired com.gacs.backend.repository.ScheduleRunRepository scheduleRuns;
     @Autowired ScheduleReviewService reviews;
@@ -271,6 +271,25 @@ class ScheduleDecisionIntegrationTest {
                 .andExpect(status().isInternalServerError());
         } finally {
             org.mockito.Mockito.reset(plans);
+        }
+        assertThat(plans.count()).isEqualTo(plansBefore);
+        assertThat(runs.count()).isEqualTo(runsBefore);
+        assertThat(explanations.count()).isEqualTo(explanationsBefore);
+    }
+
+    @Test
+    void optimizerRunPersistenceFailureRollsBackExplanation() throws Exception {
+        long plansBefore = plans.count();
+        long runsBefore = runs.count();
+        long explanationsBefore = explanations.count();
+        org.mockito.Mockito.doThrow(new IllegalStateException("Optimizer run write failed"))
+            .when(runs).save(org.mockito.ArgumentMatchers.any(OptimizerRun.class));
+        try {
+            mvc.perform(post("/api/schedules/optimize").with(user(owner.getEmail()))
+                    .contentType(APPLICATION_JSON).content(REQUEST))
+                .andExpect(status().isInternalServerError());
+        } finally {
+            org.mockito.Mockito.reset(runs);
         }
         assertThat(plans.count()).isEqualTo(plansBefore);
         assertThat(runs.count()).isEqualTo(runsBefore);

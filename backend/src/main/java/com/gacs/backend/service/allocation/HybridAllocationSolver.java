@@ -31,7 +31,7 @@ public class HybridAllocationSolver implements AllocationSolver {
     private final EnergyCostModel costs;
     private final int sizeThreshold;
     private final Duration timeBudget;
-    private final BoundedAllocationSolver exactSolver;
+    private final ExactAllocationSolver exactSolver;
     private final AnnealingAllocationSolver heuristic;
 
     @Autowired

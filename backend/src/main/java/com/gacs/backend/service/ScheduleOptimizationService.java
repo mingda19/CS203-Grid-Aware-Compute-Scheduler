@@ -38,7 +38,8 @@ import java.util.function.Consumer;
  * ({@link #getExplanation}) - it does not re-run optimisation or regenerate anything, only reads
  * what {@link ScheduleRunRecorder} already wrote.
  *
- * <p>{@link #optimize(OptimizeRequestDto, String)} is deliberately not {@code @Transactional}:
+ * <p>{@link #optimize(OptimizeRequestDto, String, java.util.function.Consumer)} is deliberately not
+ * {@code @Transactional}:
  * {@link ScheduleRunRecorder#record} itself holds no single transaction spanning this whole call
  * (it brackets an external LLM call that must never hold a database connection - see
  * {@code ScheduleRunPersistence}'s javadoc). Adding {@code @Transactional} here would defeat that
@@ -72,16 +73,13 @@ public class ScheduleOptimizationService {
      * @throws IllegalArgumentException invalid input (400)
      * @throws com.gacs.backend.exception.UnprocessableDataException baseline hours without a price (422)
      */
-    public OptimizeResponseDto optimize(OptimizeRequestDto request, String ownerEmail) {
-        return optimize(request, ownerEmail, ignored -> { });
-    }
-
     /**
-     * Same as {@link #optimize(OptimizeRequestDto, String)}, plus a hook run inside the same
-     * transaction {@link ScheduleRunRecorder} commits the explanation in - see
-     * {@code ScheduleRunPersistence.finalizeExplanation}'s javadoc. {@code ScheduleReviewService}
-     * uses this to record its own review-plan row atomically with the explanation, instead of in a
-     * separate transaction that could leave one without the other if it failed.
+     * The {@code afterExplanationPersisted} hook runs inside the same transaction
+     * {@link ScheduleRunRecorder} commits the explanation in - see {@code
+     * ScheduleRunPersistence.finalizeExplanation}'s javadoc. {@code ScheduleReviewService} uses this
+     * to record its own review-plan row atomically with the explanation, instead of in a separate
+     * transaction that could leave one without the other if it failed. A caller with nothing to do
+     * there passes a no-op.
      */
     public OptimizeResponseDto optimize(OptimizeRequestDto request, String ownerEmail,
                                         Consumer<OptimizeResponseDto> afterExplanationPersisted) {
