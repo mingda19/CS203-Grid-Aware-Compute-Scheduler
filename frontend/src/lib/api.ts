@@ -97,6 +97,32 @@ export type ComputeJobPayload = Pick<ComputeJob,
   priority?: JobPriority
 }
 
+export interface ConstraintDraft {
+  originalStartTime: string | null
+  deadline: string | null
+  flexibilityWindowHours: number | null
+  priority: JobPriority | null
+  isExempt: boolean | null
+}
+
+export interface ConstraintParseRequest {
+  rawConstraints: string
+  draft: ConstraintDraft
+  timeZone: string
+}
+
+export interface ConstraintParseResponse {
+  status: "PARSED" | "NEEDS_CLARIFICATION" | "INVALID"
+  fields: ConstraintDraft
+  evidence: Array<{ field: keyof ConstraintDraft; value: string; phrase: string; start: number; end: number }>
+  ambiguities: Array<{ field: keyof ConstraintDraft | null; reason: string; phrase: string; message: string; start: number; end: number }>
+  conflicts: Array<{ field: keyof ConstraintDraft; phrases: string[]; message: string }>
+  unsupported: Array<{ phrase: string; start: number; end: number }>
+  validationError: string | null
+  parsedAt: string
+  timeZone: string
+}
+
 export interface FacilityConfig {
   id?: number
   ownerEmail?: string
@@ -469,6 +495,11 @@ export const workloadScheduleApi = {
 }
 
 export const jobsApi = {
+  parseConstraints(payload: ConstraintParseRequest): Promise<ApiResponse<ConstraintParseResponse>> {
+    return fetchJson<ApiResponse<ConstraintParseResponse>>("/api/jobs/parse-constraints", {
+      method: "POST", body: JSON.stringify(payload),
+    })
+  },
   list(): Promise<ApiResponse<ComputeJob[]>> {
     return fetchJson<ApiResponse<ComputeJob[]>>("/api/jobs", { cache: "no-store" })
   },
