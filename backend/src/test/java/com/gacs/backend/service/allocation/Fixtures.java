@@ -47,12 +47,18 @@ final class Fixtures {
 
     /** A problem built the way the factory builds one: every job's baseline must finish by its deadline. */
     static OptimizationProblem problem(List<OptimizerJob> jobs, PriceSeries prices, SlotCapacity capacity) {
+        return problem(jobs, prices, capacity, List.of());
+    }
+
+    /** As above, with constraints attached. */
+    static OptimizationProblem problem(List<OptimizerJob> jobs, PriceSeries prices, SlotCapacity capacity,
+                                       List<Constraint> constraints) {
         BaselineCalculator baselines = new BaselineCalculator(capacity);
         Map<OptimizerJob, JobPlan> plans = new HashMap<>();
         for (OptimizerJob job : jobs) {
             plans.put(job, baselines.baseline(job).plan().orElseThrow());
         }
-        return new OptimizationProblem(jobs, prices, capacity, plans);
+        return new OptimizationProblem(jobs, prices, capacity, plans, constraints);
     }
 
     /** {@code 20 CPU-hours = 1 kWh} under the default 0.05 kWh per CPU-hour. */

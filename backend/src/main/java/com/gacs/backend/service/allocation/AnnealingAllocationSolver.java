@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
+import java.util.Set;
 
 /**
  * Heuristic fallback for runs too large to solve exactly in time. It searches over the order in which
@@ -51,15 +52,29 @@ public final class AnnealingAllocationSolver implements AllocationSolver {
 
     @Override
     public AllocationResult solve(OptimizationProblem problem) {
-        List<OptimizerJob> order = problem.flexibleJobsInTieBreakOrder();
-        Placement current = Placement.decode(order, 0, null, problem, costs);
-        AllocationResult best = current.result(problem);
+        SynchronizedGroupPlacer.Placement groups = SynchronizedGroupPlacer.place(problem, costs);
+        ResidualCapacity baseFree = problem.residualAfterExemptJobs();
+        groups.plans().values().forEach(baseFree::reserve);
+        Map<Long, JobPlan> basePlacedSoFar = new HashMap<>();
+        groups.plans().forEach((job, plan) -> basePlacedSoFar.put(job.id(), plan));
+
+        List<OptimizerJob> order = problem.flexibleJobsInPlacementOrder().stream()
+                .filter(job -> !groups.groupedJobIds().contains(job.id()))
+                .toList();
+        List<PrecedenceConstraint> precedenceEdges = problem.constraints().stream()
+                .filter(c -> c instanceof PrecedenceConstraint)
+                .map(c -> (PrecedenceConstraint) c)
+                .toList();
+
+        Placement current = Placement.decode(order, 0, null, problem, costs, baseFree, basePlacedSoFar);
+        AllocationResult currentResult = current.result(problem);
+        AllocationResult best = mergeGroups(currentResult, groups.plans(), problem);
         if (order.size() < 2) {
             return best;
         }
         double costScale = problem.costScale(costs);
         Random random = new Random(seed(problem));
-        double currentEnergy = energy(best, problem, costScale);
+        double currentEnergy = energy(currentResult, problem, costScale);
         double temperature = START_TEMPERATURE;
         int rounds = Math.min(iterations, Math.max(MIN_ITERATIONS, WORK_LIMIT / order.size()));
 
@@ -72,15 +87,20 @@ public final class AnnealingAllocationSolver implements AllocationSolver {
             }
             Collections.swap(swapped, first, second);
 
-            Placement candidate = Placement.decode(swapped, Math.min(first, second), current, problem, costs);
-            AllocationResult result = candidate.result(problem);
-            double energy = energy(result, problem, costScale);
-            if (energy < currentEnergy || random.nextDouble() < Math.exp((currentEnergy - energy) / temperature)) {
-                current = candidate;
-                currentEnergy = energy;
-            }
-            if (AllocationResult.isBetter(result, best, problem, costs)) {
-                best = result;
+            if (respectsPrecedence(swapped, precedenceEdges)) {
+                Placement candidate = Placement.decode(swapped, Math.min(first, second), current, problem, costs,
+                        baseFree, basePlacedSoFar);
+                AllocationResult result = candidate.result(problem);
+                double energy = energy(result, problem, costScale);
+                if (energy < currentEnergy
+                        || random.nextDouble() < Math.exp((currentEnergy - energy) / temperature)) {
+                    current = candidate;
+                    currentEnergy = energy;
+                }
+                AllocationResult merged = mergeGroups(result, groups.plans(), problem);
+                if (AllocationResult.isBetter(merged, best, problem, costs)) {
+                    best = merged;
+                }
             }
             temperature *= COOLING_RATE;
         }
@@ -88,28 +108,72 @@ public final class AnnealingAllocationSolver implements AllocationSolver {
     }
 
     /**
-     * Jobs placed greedily in {@code order}, with the capacity left before each position kept so a later
-     * decode can restart part-way through.
+     * False when {@code order} would place a {@link PrecedenceConstraint}'s after-job at or before
+     * its before-job - such an order is never evaluated, let alone accepted: once placed, the
+     * after-job's {@link PrecedenceConstraint#restrict} only has anything to narrow against once the
+     * before-job is already in {@code placedSoFar}, so the before-job must always come first.
+     */
+    private static boolean respectsPrecedence(List<OptimizerJob> order, List<PrecedenceConstraint> edges) {
+        if (edges.isEmpty()) {
+            return true;
+        }
+        Map<Long, Integer> position = new HashMap<>();
+        for (int i = 0; i < order.size(); i++) {
+            position.put(order.get(i).id(), i);
+        }
+        for (PrecedenceConstraint edge : edges) {
+            Integer beforeIndex = position.get(edge.beforeJobId());
+            Integer afterIndex = position.get(edge.afterJobId());
+            if (beforeIndex != null && afterIndex != null && beforeIndex >= afterIndex) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** {@code individual}'s plans plus the fixed {@link SynchronizedGroupPlacer} group plans. */
+    private static AllocationResult mergeGroups(AllocationResult individual, Map<OptimizerJob, JobPlan> groupPlans,
+                                                 OptimizationProblem problem) {
+        if (groupPlans.isEmpty()) {
+            return individual;
+        }
+        Map<OptimizerJob, JobPlan> merged = new HashMap<>(groupPlans);
+        merged.putAll(individual.plans());
+        return AllocationResult.of(problem, merged, individual.provenOptimal());
+    }
+
+    /**
+     * Jobs placed greedily in {@code order}, with the capacity and constraint state before each
+     * position kept so a later decode can restart part-way through.
      */
     private record Placement(List<OptimizerJob> order, List<ResidualCapacity> freeBefore, List<JobPlan> plans) {
 
         static Placement decode(List<OptimizerJob> order, int from, Placement previous, OptimizationProblem problem,
-                                EnergyCostModel costs) {
+                                EnergyCostModel costs, ResidualCapacity baseFree, Map<Long, JobPlan> basePlacedSoFar) {
             List<ResidualCapacity> freeBefore = new ArrayList<>();
             List<JobPlan> plans = new ArrayList<>();
             ResidualCapacity free;
+            Map<Long, JobPlan> placedSoFar = new HashMap<>(basePlacedSoFar);
             if (from == 0) {
-                free = problem.residualAfterExemptJobs();
+                free = baseFree.copy();
             } else {
                 freeBefore.addAll(previous.freeBefore().subList(0, from));
                 plans.addAll(previous.plans().subList(0, from));
                 free = previous.freeBefore().get(from).copy();
+                for (int k = 0; k < from; k++) {
+                    if (plans.get(k) != null) {
+                        placedSoFar.put(order.get(k).id(), plans.get(k));
+                    }
+                }
             }
             for (int k = from; k < order.size(); k++) {
+                OptimizerJob job = order.get(k);
                 freeBefore.add(free.copy());
-                JobPlan plan = GreedyAllocator.cheapestPlan(order.get(k), free, problem.prices(), costs).orElse(null);
+                JobPlan plan = GreedyAllocator.cheapestPlan(job, free, problem.prices(), costs,
+                        problem.constraintsFor(job), placedSoFar).orElse(null);
                 if (plan != null) {
                     free.reserve(plan);
+                    placedSoFar.put(job.id(), plan);
                 }
                 plans.add(plan);
             }

@@ -80,7 +80,7 @@ public class ScheduleOptimizationController {
     public ResponseEntity<ApiResponse<OptimizeResponseDto>> optimize(
         @RequestBody(required = false) OptimizeRequestDto request, Principal principal
     ) {
-        OptimizeResponseDto plan = reviewService.optimize(request, principal.getName());
+        OptimizeResponseDto plan = optimizationService.optimize(request, principal.getName());
         return ResponseEntity.ok(ApiResponse.ok("Optimized schedule generated", plan));
     }
 
