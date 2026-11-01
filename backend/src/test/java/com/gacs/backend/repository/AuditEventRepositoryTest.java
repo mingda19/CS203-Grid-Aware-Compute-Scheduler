@@ -103,10 +103,18 @@ class AuditEventRepositoryTest {
 
         // Verify entity @PreRemove throws UnsupportedOperationException
         assertThatThrownBy(() -> {
-            auditEventRepository.delete(saved);
-            auditEventRepository.flush();
+            entityManager.remove(saved);
+            entityManager.flush();
         }).isInstanceOf(UnsupportedOperationException.class)
           .hasMessage("Audit events are append-only. Deletions are forbidden.");
+    }
+
+    @Test
+    @DisplayName("AC5.1 — Repository exposes no delete methods")
+    void testRepositoryHasNoDeleteMethods() {
+        assertThat(AuditEventRepository.class.getMethods())
+                .extracting(java.lang.reflect.Method::getName)
+                .noneMatch(name -> name.startsWith("delete") || name.startsWith("remove"));
     }
 
     @Test
