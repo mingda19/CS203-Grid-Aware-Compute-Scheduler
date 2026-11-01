@@ -13,8 +13,10 @@ import java.util.List;
 public class FacilityService {
 
     private final FacilityRepository facilityRepository;
+    private final ScheduleInputs inputs;
 
-    public FacilityService(FacilityRepository facilityRepository) {
+    public FacilityService(FacilityRepository facilityRepository, ScheduleInputs inputs) {
+        this.inputs = inputs;
         this.facilityRepository = facilityRepository;
     }
 
@@ -24,7 +26,9 @@ public class FacilityService {
      */
     @Transactional
     public FacilityResponseDto getOrCreateFacility(String ownerEmail) {
-        List<Facility> facilities = facilityRepository.findAllByOwnerEmail(ownerEmail);
+        inputs.lock(ownerEmail);
+        List<Facility> facilities = new java.util.ArrayList<>(facilityRepository.findAllByOwnerEmail(ownerEmail));
+        facilities.sort(java.util.Comparator.comparing(Facility::getId));
         if (facilities.isEmpty()) {
             Facility defaultFacility = Facility.builder()
                     .ownerEmail(ownerEmail)
@@ -55,7 +59,9 @@ public class FacilityService {
             throw new IllegalArgumentException("Facility must have maxCpuHours or maxGpuHours greater than 0");
         }
 
-        List<Facility> facilities = facilityRepository.findAllByOwnerEmail(ownerEmail);
+        inputs.lock(ownerEmail);
+        List<Facility> facilities = new java.util.ArrayList<>(facilityRepository.findAllByOwnerEmail(ownerEmail));
+        facilities.sort(java.util.Comparator.comparing(Facility::getId));
         Facility facility = facilities.isEmpty()
                 ? Facility.builder().ownerEmail(ownerEmail).build()
                 : facilities.get(0);
@@ -66,6 +72,13 @@ public class FacilityService {
             }
         }
 
+        boolean changed = !java.util.Objects.equals(facility.getMaxCpuHours(), request.getMaxCpuHours())
+            || !java.util.Objects.equals(facility.getMaxGpuHours(), request.getMaxGpuHours())
+            || !java.util.Objects.equals(facility.getLocation(), request.getLocation().trim());
+        if (changed) {
+            facility.setSchedulingRevision(facility.getSchedulingRevision() + 1);
+            inputs.invalidate(ownerEmail, null, "Facility scheduling inputs changed");
+        }
         facility.setName(request.getName().trim());
         facility.setMaxCpuHours(request.getMaxCpuHours());
         facility.setMaxGpuHours(request.getMaxGpuHours());
