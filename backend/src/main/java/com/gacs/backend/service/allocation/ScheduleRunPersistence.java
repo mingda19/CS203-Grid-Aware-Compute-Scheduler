@@ -1,6 +1,7 @@
 package com.gacs.backend.service.allocation;
 
 import com.gacs.backend.dto.OptimizeResponseDto;
+import com.gacs.backend.dto.ExplanationResponseDto;
 import com.gacs.backend.model.ConstraintImpact;
 import com.gacs.backend.model.ScheduleExplanation;
 import com.gacs.backend.model.ScheduleItem;
@@ -140,6 +141,18 @@ public class ScheduleRunPersistence {
                     .build());
         }
         afterPersist.accept(response);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ExplanationResponseDto.JobExplanation> jobExplanations(Long runId) {
+        return items.findByScheduleRunIdOrderByIdAsc(runId).stream().map(item ->
+                new ExplanationResponseDto.JobExplanation(item.getJobId(),
+                        item.getWhyThisPlacement(),
+                        constraintImpacts.findByScheduleItemIdOrderByIdAsc(item.getId()).stream().map(impact ->
+                                new ExplanationResponseDto.ConstraintExplanation(
+                                        impact.getConstraintType(), impact.getCode(), impact.getSlackHours(),
+                                        parseRelatedJobIds(impact.getRelatedJobIds()), impact.getNarrativeFragment()))
+                                .toList())).toList();
     }
 
     private record RecordedItem(ScheduleItem item, List<ConstraintImpact> impacts) {

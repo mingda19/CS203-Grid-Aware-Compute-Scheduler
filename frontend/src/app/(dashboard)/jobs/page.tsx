@@ -25,6 +25,7 @@ import {
   optimizerApi,
   facilityApi,
   workloadScheduleApi,
+  type JobExplanation,
   type ComputeJob,
   type ComputeJobPayload,
   type JobPriority,
@@ -46,6 +47,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
 
 type FormState = {
@@ -137,6 +139,27 @@ export default function JobsPage() {
   const [optimizeOpen, setOptimizeOpen] = React.useState(false)
   const [applyingSchedule, setApplyingSchedule] = React.useState(false)
   const [applySuccessMessage, setApplySuccessMessage] = React.useState<string | null>(null)
+
+  const [jobExplanations, setJobExplanations] = React.useState<JobExplanation[]>([])
+  const [explanationLoading, setExplanationLoading] = React.useState(false)
+  const [explanationError, setExplanationError] = React.useState("")
+  const explanationRequest = React.useRef(0)
+
+  const loadExplanations = async (runId: string) => {
+    const requestId = ++explanationRequest.current
+    setExplanationLoading(true)
+    setExplanationError("")
+    setJobExplanations([])
+    try {
+      const response = await optimizerApi.explanation(runId)
+      if (!response.success || !response.data) throw new Error(response.message || "Could not load explanations")
+      if (requestId === explanationRequest.current) setJobExplanations(response.data.items ?? [])
+    } catch {
+      if (requestId === explanationRequest.current) setExplanationError("Could not load recommendation explanations.")
+    } finally {
+      if (requestId === explanationRequest.current) setExplanationLoading(false)
+    }
+  }
 
   // Facility & Cluster Envelope state (stored in DB per user)
   const [facility, setFacility] = React.useState<FacilityConfig>({
@@ -384,6 +407,7 @@ export default function JobsPage() {
       }
       setOptimizationPlan(response.data)
       setOptimizeOpen(true)
+      void loadExplanations(response.data.runId)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Optimization failed")
     } finally {
@@ -907,7 +931,8 @@ export default function JobsPage() {
                     </thead>
                     <tbody className="divide-y divide-border/60">
                       {optimizationPlan.items.map((item: ScheduleItem) => (
-                        <tr key={item.jobId} className="hover:bg-muted/20">
+                        <React.Fragment key={item.jobId}>
+                        <tr className="hover:bg-muted/20">
                           <td className="py-2.5 px-3 font-medium text-foreground">{item.jobName}</td>
                           <td className="py-2.5 px-3">
                             <span
@@ -937,6 +962,16 @@ export default function JobsPage() {
                             {item.savingsUsd != null ? `$${item.savingsUsd.toFixed(2)}` : "—"}
                           </td>
                         </tr>
+                        <tr><td colSpan={6} className="px-3 pb-3 pt-1">
+                          <RecommendationExplanation
+                            item={item}
+                            explanation={jobExplanations.find((entry) => entry.jobId === item.jobId)}
+                            loading={explanationLoading}
+                            error={explanationError}
+                            onRetry={() => void loadExplanations(optimizationPlan.runId)}
+                          />
+                        </td></tr>
+                        </React.Fragment>
                       ))}
                     </tbody>
                   </table>

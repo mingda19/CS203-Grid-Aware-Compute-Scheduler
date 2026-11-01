@@ -947,10 +947,26 @@ The **baseline** of a job is its cost if it started at `originalStartTime` and, 
   "message": "Run explanation retrieved",
   "data": {
     "runId": "7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44",
-    "explanation": "Scheduled 1 of 1 job(s). ..."
+    "explanation": "Scheduled 1 of 1 job(s). ...",
+    "items": [{
+      "jobId": 101,
+      "whyThisPlacement": "Placed on its cheapest feasible plan.",
+      "constraints": [{
+        "constraintType": "DEADLINE",
+        "code": "DEADLINE_SLACK",
+        "slackHours": 3,
+        "relatedJobIds": [],
+        "explanation": "Finishes before its deadline with 3 hours of slack."
+      }]
+    }]
   }
 }
 ```
+
+The `items` array contains saved per-job explanations and constraint impacts, keyed by job ID.
+Unscheduled jobs have no constraint impacts; the UI must not report their constraints as satisfied.
+Explanation strings are untrusted text and must be escaped when rendered. Per-job cost differences
+come from the matching optimization result (`baselineCostUsd`, `optimizedCostUsd`, `savingsUsd`).
 
 The endpoint only reads the persisted explanation for the authenticated operator. It does not re-run the
 optimizer or invoke explanation generation again. A run belonging to another operator is returned as `404`.
