@@ -18,7 +18,7 @@ import sqlalchemy as sa
 
 import predictions as pred
 
-lstm = pred._lstm_module()  # imports torch - after xgboost, see predictions._lstm_module
+lstm = pred._lstm_module()  # imports torch - see predictions._lstm_module
 import torch  # noqa: E402
 
 TARGET_DAY = pd.Timestamp("2026-03-02")

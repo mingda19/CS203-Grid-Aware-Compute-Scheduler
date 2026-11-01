@@ -15,11 +15,18 @@ Models (--models):
                     actually known - "yesterday relative to the target" is
                     itself still in A's future once lead_hours > 24h)
   naive_w1          price at the same hour, 7 days before the target
-  xgb               XGBoost baseline, features built by
-                    predictions.assemble_xgb_features (the code that serves
-                    it): lags/rolling stats per anchor hour
+  xgb               XGBoost baseline (retired from serving, kept here as a
+                    comparison baseline - see data_scripts/predictions.py's
+                    module docstring), features built by
+                    predictions.assemble_xgb_features (the code that used to
+                    serve it): lags/rolling stats per anchor hour
   lstm              seq2seq LSTM, inputs built by lstm_model.assemble_inputs
                     (ditto); P50 is the point forecast
+  lear              LEAR (Lasso Estimated AutoRegressive) benchmark, Lago et
+                    al. 2021 - model/lear_model.py: 24 per-hour LASSO models
+                    on day-indexed lag/exogenous features, recalibrated every
+                    --lear-recal-every days (no pretrained artifact, no seed:
+                    it fits fresh from whatever history each fold allows).
   --variant NAME=col1,col2 adds "lstm_NAME": the LSTM retrained with those
             extra EXOG_COLS (e.g. battery features), compared against lstm.
 
@@ -60,6 +67,7 @@ import xgboost as xgb  # noqa: E402
 import torch  # noqa: E402
 
 import lstm_model as lm  # noqa: E402
+import lear_model as lear  # noqa: E402
 from train_lstm import EXOG_MAX_FFILL_HOURS, RAW_PRICE_COL, find_data_dir  # noqa: E402
 from train_xgboost_baseline import XGB_PARAMS, build_target, exclude_anomalies  # noqa: E402
 
@@ -109,7 +117,8 @@ LEAK_TEST_DAYS = 12
 
 # Chart identity: one fixed colour per model, never reassigned.
 INK, MUTED, GRID, SURFACE = "#0b0b0b", "#898781", "#e1e0d9", "#fcfcfb"
-MODEL_COLORS = {"lstm": "#2a78d6", "xgb": "#eb6834", "naive_last_known": "#1baf7a", "naive_w1": "#eda100"}
+MODEL_COLORS = {"lstm": "#2a78d6", "xgb": "#eb6834", "lear": "#7d3cae",
+                "naive_last_known": "#1baf7a", "naive_w1": "#eda100"}
 VARIANT_COLORS = ["#e87ba4", "#4a3aa7", "#008300"]
 MODEL_DASHES = {"naive_last_known": (4, 2), "naive_w1": (1, 2)}
 
@@ -140,17 +149,20 @@ def test_days(frame: pd.DataFrame, first: str, last: str, lead_hours: int) -> pd
     return days[counts.reindex(targets, fill_value=0).to_numpy() == 24]
 
 
-def day_history(frame: pd.DataFrame, day: pd.Timestamp, lead_hours: int, future_price=np.nan) -> pd.DataFrame:
+def day_history(frame: pd.DataFrame, day: pd.Timestamp, lead_hours: int, future_price=np.nan,
+                history_days: int = HISTORY_DAYS) -> pd.DataFrame:
     """What a model may see when forecasting the target day (anchor `day` +
     lead_hours): history through the target day's last hour, with price
     blanked from the target day's first hour on. `future_price` swaps the
     blank for a planted value - the leakage test uses it to prove nothing
     reads it. The anchor day's own price stays visible (unblanked) - it's
     production's "today," already fully settled by anchor time (model/model.md
-    S9.2); only the target day's price must never leak in."""
+    S9.2); only the target day's price must never leak in. `history_days`
+    overrides the default lookback - LEARForecaster needs far more than the
+    168h/naive-D-7 window every other model uses (see its history_days)."""
     target = day + pd.Timedelta(hours=lead_hours)
     cols = [c for c in frame.columns if c not in PRICE_DERIVED]
-    history = frame.loc[day - pd.Timedelta(days=HISTORY_DAYS):target + pd.Timedelta(hours=23), cols].copy()
+    history = frame.loc[day - pd.Timedelta(days=history_days):target + pd.Timedelta(hours=23), cols].copy()
     history.loc[target:, PRICE] = future_price
     return history
 
@@ -206,6 +218,39 @@ class XGBForecaster:
         price = history[PRICE].clip(P.WINSORIZE_LOWER, P.WINSORIZE_UPPER)
         features = P.assemble_xgb_features(price, history[XGB_EXOG].reset_index(), day_hours(day))
         return self.model.predict(features), None, None
+
+
+class LEARForecaster:
+    """Wraps lear_model.LEARForecaster - which speaks in its own "day = the
+    target day, horizon_days = how many days past the newest known price day"
+    terms (see its module docstring) - behind this file's anchor-day
+    convention (day = anchor, lead_hours = hours from anchor to target), the
+    same adapter job XGBForecaster/LSTMForecaster do for their own modules.
+    No pretrained artifact and no seed: it recalibrates from whatever history
+    day_history() hands it, deterministically, every --lear-recal-every days."""
+    id = model_version = "lear"
+    seed = None
+    # lear_model.WINDOWS runs to ~4 years - far past HISTORY_DAYS (sized for
+    # the LSTM's 168h window and the D-7 naive), so day_history() needs this
+    # override to hand LEAR enough history to use its longest window at all.
+    history_days = max(lear.WINDOWS) + 10
+
+    def __init__(self, lead_hours: int, windows=lear.WINDOWS, recal_every: int = 7, n_jobs: int = 4):
+        self.lead_hours = lead_hours
+        self.model = lear.LEARForecaster(windows=windows, horizon_days=lead_hours // 24,
+                                         recal_every=recal_every, n_jobs=n_jobs)
+
+    def fit(self, frame: pd.DataFrame, train_end: pd.Timestamp) -> None:
+        self.model_version = f"lear_w{'-'.join(map(str, self.model.windows))}_recal{self.model.recal_every}"
+
+    def predict_day(self, history: pd.DataFrame, day: pd.Timestamp):
+        target = day + pd.Timedelta(hours=self.lead_hours)
+        hourly = history.rename(columns={PRICE: lear.RAW_PRICE_COL})
+        try:
+            pred = self.model.predict_day(hourly, target)
+        except lear.MissingInputError as exc:
+            raise lm.MissingInputError(str(exc)) from exc
+        return pred, None, None
 
 
 class LSTMForecaster:
@@ -277,9 +322,10 @@ def make_forecasts(forecaster, frame: pd.DataFrame, days: pd.DatetimeIndex, fold
     represent the target day (anchor + lead_hours), so "time"/"actual" are
     keyed on the target hours, not the anchor's."""
     rows = []
+    history_days = getattr(forecaster, "history_days", HISTORY_DAYS)
     for day in days:
         try:
-            pred, p10, p90 = forecaster.predict_day(day_history(frame, day, lead_hours), day)
+            pred, p10, p90 = forecaster.predict_day(day_history(frame, day, lead_hours, history_days=history_days), day)
         except lm.MissingInputError as exc:
             print(f"  {forecaster.id} (seed {forecaster.seed}): no forecast for {day.date()} - {exc}")
             continue
@@ -299,7 +345,11 @@ def make_forecasts(forecaster, frame: pd.DataFrame, days: pd.DatetimeIndex, fold
 def keep_common_days(fc: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     """Same days, same hours for every model: a day stays only if every
     model/seed produced all 24 forecasts for it."""
-    fc = fc.assign(day=fc["time"].dt.floor("D"), run=fc["model"] + "/" + fc["seed"].astype(str))
+    # .map(str), not .astype(str): on an object column, the latter turns a
+    # None seed (every non-seeded model: naive/lear) into NaN rather than the
+    # string "None" (pandas 3.0) - which then silently drops that model's
+    # rows from the groupby below instead of comparing them.
+    fc = fc.assign(day=fc["time"].dt.floor("D"), run=fc["model"] + "/" + fc["seed"].map(str))
     ok = fc["pred"].notna() & fc["actual"].notna()
     complete = ok.groupby([fc["run"], fc["day"]]).sum().eq(24).unstack("run", fill_value=False)
     good_days = complete.index[complete.all(axis=1)]
@@ -314,9 +364,11 @@ def leakage_test(forecasters: list, frame: pd.DataFrame, days: pd.DatetimeIndex,
     sample = days[np.linspace(0, len(days) - 1, min(LEAK_TEST_DAYS, len(days))).astype(int)]
     worst = 0.0
     for forecaster in forecasters:
+        history_days = getattr(forecaster, "history_days", HISTORY_DAYS)
         for day in sample:
-            clean = forecaster.predict_day(day_history(frame, day, lead_hours), day)[0]
-            planted = forecaster.predict_day(day_history(frame, day, lead_hours, future_price=99999.0), day)[0]
+            clean = forecaster.predict_day(day_history(frame, day, lead_hours, history_days=history_days), day)[0]
+            planted = forecaster.predict_day(
+                day_history(frame, day, lead_hours, future_price=99999.0, history_days=history_days), day)[0]
             worst = max(worst, float(np.abs(np.asarray(clean) - np.asarray(planted)).max()))
     return worst
 
@@ -597,6 +649,8 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=REPORTS_DIR)
     parser.add_argument("--jobs", type=int, default=5, help="LSTM trainings to run at once")
     parser.add_argument("--max-epochs", type=int, help="cap LSTM training epochs (smoke tests only)")
+    parser.add_argument("--lear-recal-every", type=int, default=7,
+                        help="LEAR: recalibrate every N anchor days instead of daily (default: 7, weekly)")
     args = parser.parse_args()
 
     lead_hours = LEAD_HOURS[args.target]
@@ -641,6 +695,8 @@ def main() -> None:
             elif model == "xgb":
                 forecasters.append(XGBForecaster(xgb_path if args.mode == "holdout" else None,
                                                  args.target, lead_hours))
+            elif model == "lear":
+                forecasters.append(LEARForecaster(lead_hours, recal_every=args.lear_recal_every))
             else:
                 forecasters += [LSTMForecaster(model, j["seed"], j["path"], lead_hours) for j in lstm_jobs
                                 if j["fold"] == fold and j["model"] == model]
@@ -671,6 +727,8 @@ def main() -> None:
     pairs += [(m, "naive_last_known") for m in models
              if m != "naive_last_known" and "naive_last_known" in models and m != "naive_w1"]
     pairs += [(m, "lstm") for m in lstm_models if m != "lstm" and "lstm" in models]
+    pairs += [("lear", "xgb")] if "lear" in models and "xgb" in models else []
+    pairs += [("lear", "lstm")] if "lear" in models and "lstm" in models else []
     pooled = [compare(fc, a, b) for a, b in pairs]
     per_fold = {fold: [compare(df, a, b) for a, b in pairs] for fold, df in fc.groupby("fold")} if multi_fold else {}
 

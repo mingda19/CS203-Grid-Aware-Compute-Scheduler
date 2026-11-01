@@ -37,17 +37,23 @@ no-ops (each has an `if not missing.any(): continue` guard). They're still run
 defensively, in case a live fetch has a transient gap for a specific hour.
 
 Two model types are served per horizon, chosen by the model file's extension:
-  .json  XGBoost (the default) - one row of FEATURE_COLUMNS per anchor hour.
   .pt    seq2seq LSTM (model/lstm_model.py, trained by model/train_lstm.py) -
-         168h of history + the target day's known-ahead inputs. Its artifact
-         carries its own feature list, scalers, price transform and
-         lead_hours, and torch is only imported on this path.
+         the default, and the only model type in production. 168h of history
+         + the target day's known-ahead inputs. Its artifact carries its own
+         feature list, scalers, price transform and lead_hours, and torch is
+         only imported on this path.
+  .json  XGBoost - retired from serving (model/reports/eval_holdout_y0_2026-10-13.md:
+         LSTM beat it by a statistically significant margin, DM p=0.0000, at
+         every hour of the day on both targets, and XGBoost itself was worse
+         than the naive same-hour-yesterday baseline). Kept only as a
+         comparison baseline in model/evaluate.py - not retrained or improved
+         further. One row of FEATURE_COLUMNS per anchor hour.
 
 Usage:
   python predictions.py                       # both horizons, anchored on today (UTC) - the normal daily run
   python predictions.py --date 2026-03-02     # anchor on that UTC date instead of today
   python predictions.py --horizon y0          # only the 48h-ahead target
-  python predictions.py --model-y0 ../model/models/lstm_y0_full.pt   # same, with the LSTM
+  python predictions.py --model-y0 ../model/models/xgboost_y0_full.json  # same, retired XGBoost (comparison only)
 
 Or import: from predictions import run_predictions
 """
@@ -66,7 +72,6 @@ import holidays
 import numpy as np
 import pandas as pd
 import sqlalchemy as sa
-import xgboost as xgb
 
 import ingestion as ing
 
@@ -74,8 +79,8 @@ logger = logging.getLogger("predictions")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 MODEL_DIR = SCRIPT_DIR.parent / "model"
-DEFAULT_MODEL_PATH_Y0 = MODEL_DIR / "models" / "xgboost_y0_full.json"
-DEFAULT_MODEL_PATH_Y1 = MODEL_DIR / "models" / "xgboost_y1_full.json"
+DEFAULT_MODEL_PATH_Y0 = MODEL_DIR / "models" / "lstm_y0_full.pt"
+DEFAULT_MODEL_PATH_Y1 = MODEL_DIR / "models" / "lstm_y1_full.pt"
 DEFAULT_LOCATION = "LZ_NORTH"
 # Hours from the anchor day ("now") to each target day's start - model/model.md S9.
 LEAD_HOURS = {"y0": 48, "y1": 72}
@@ -483,8 +488,8 @@ def build_features(engine: sa.Engine, anchor_times: pd.DatetimeIndex, location: 
 # --------------------------------------------------------------------------- #
 
 def _lstm_module():
-    """model/lstm_model.py, imported on first use: it pulls in torch, which an
-    XGBoost-only deployment doesn't need to have installed."""
+    """model/lstm_model.py, imported on first use - same reasoning as
+    _xgb_module() below, just for the model type actually in production."""
     if str(MODEL_DIR) not in sys.path:
         sys.path.insert(0, str(MODEL_DIR))
     import lstm_model
@@ -496,13 +501,22 @@ def _lstm_module():
     return lstm_model
 
 
+def _xgb_module():
+    """xgboost, imported on first use: XGBoost is retired from serving (see
+    the module docstring), so a production deployment running only the
+    default LSTM models doesn't need the package installed at all - only
+    someone deliberately pointing --model-y0/--model-y1 at a .json file does."""
+    import xgboost
+    return xgboost
+
+
 def load_model(path: Path):
     """Returns (kind, model): ("xgb", XGBRegressor) for a .json file, or
     ("lstm", LSTMForecaster in eval mode, its artifact dict on .artifact) for
     a .pt file."""
     path = Path(path)
     if path.suffix == ".json":
-        model = xgb.XGBRegressor()
+        model = _xgb_module().XGBRegressor()
         model.load_model(path)
         return "xgb", model
     if path.suffix == ".pt":
