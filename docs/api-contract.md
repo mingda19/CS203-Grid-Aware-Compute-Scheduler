@@ -998,6 +998,33 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 
 ### 6.5 Operator decisions (GRID-11 AC2 / AC2.2)
 
+#### Browsing plans for review (GRID-55)
+
+`GET /api/schedules?page=0&size=20` returns a standard `ApiResponse<Page<PlanSummary>>`
+for the authenticated operator only, newest first by `createdAt`, then descending `runId`.
+Each summary contains `runId`, UTC `createdAt`, and `reviewState` (`PENDING`, `APPROVED`,
+`REJECTED`, `REVISION_REQUESTED`, `STALE`, or `INVALIDATED`). Page indices start at zero;
+`size` must be 1–100. Invalid pagination returns **400**. Missing authentication returns
+**403**; an authenticated email without a database user returns **401**. Administrators
+cannot list another operator's plans.
+
+The list reports stored states. Before offering decisions, the UI reads
+`GET /api/schedules/{runId}` (§6.8) to check validity and display the persisted recommendation.
+A **409** decision refusal retains its error message and requires a refresh before another
+decision. Approval, rejection, and revision each require explicit confirmation with a
+justification. The UI updates state only after a successful server response and refreshes
+decision history. It does not imply that an approval dispatched a workload.
+
+The Jobs optimization summary links to `/approvals?runId={runId}` with **Review and approve**.
+The review page selects that exact run, including runs outside the first list page. Once approval
+succeeds, **Add approved schedule to calendar** calls `POST /api/schedules/{runId}/apply` (§6.8).
+Jobs no longer creates individual calendar entries from an unapproved optimization preview.
+An already approved run does not require another approval before applying it. Application
+refusals require refreshing the plan; the backend remains authoritative if approval changes
+between reviewing and applying.
+
+#### Recording a decision
+
 All routes require JWT authentication and ownership of the persisted optimization plan. Existing users act as operators; administrator privileges do not bypass ownership. The operator's numeric database ID is resolved from the authenticated email, never from request fields or the JWT's numeric user ID claim.
 
 | Route | Recorded action | New review state |

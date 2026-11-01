@@ -24,7 +24,6 @@ import {
   jobsApi,
   optimizerApi,
   facilityApi,
-  workloadScheduleApi,
   type JobExplanation,
   type ComputeJob,
   type ComputeJobPayload,
@@ -116,8 +115,6 @@ export default function JobsPage() {
   const [optimizing, setOptimizing] = React.useState(false)
   const [optimizationPlan, setOptimizationPlan] = React.useState<OptimizeResponse | null>(null)
   const [optimizeOpen, setOptimizeOpen] = React.useState(false)
-  const [applyingSchedule, setApplyingSchedule] = React.useState(false)
-  const [applySuccessMessage, setApplySuccessMessage] = React.useState<string | null>(null)
 
   const [jobExplanations, setJobExplanations] = React.useState<JobExplanation[]>([])
   const [explanationLoading, setExplanationLoading] = React.useState(false)
@@ -361,7 +358,6 @@ export default function JobsPage() {
     }
     setError("")
     setOptimizing(true)
-    setApplySuccessMessage(null)
 
     // Build optimize payload ensuring originalStartTime is truncated to the hour
     const optimizeJobs: OptimizeJobInput[] = jobs.map((j) => {
@@ -403,37 +399,6 @@ export default function JobsPage() {
       setError(e instanceof Error ? e.message : "Optimization failed")
     } finally {
       setOptimizing(false)
-    }
-  }
-
-  // Push scheduled items to workload-schedules for Calendar and Queue view
-  const applyScheduleToCalendar = async () => {
-    if (!optimizationPlan || !optimizationPlan.items) return
-    setApplyingSchedule(true)
-    setApplySuccessMessage(null)
-    try {
-      let createdCount = 0
-      for (const item of optimizationPlan.items) {
-        if (item.scheduledStart && item.scheduledEnd) {
-          const powerEst = Math.round(item.allocatedCpuHours * 5 + item.allocatedGpuHours * 25) || 500
-          await workloadScheduleApi.create({
-            title: item.jobName,
-            type: item.allocatedGpuHours > 0 ? "ML Training" : "HPC Batch",
-            cluster: "Cluster Primary",
-            powerKw: powerEst,
-            savings: item.savingsUsd != null ? `$${item.savingsUsd.toFixed(2)}` : null,
-            startUtc: item.scheduledStart.replace("Z", ""),
-            endUtc: item.scheduledEnd.replace("Z", ""),
-            notes: item.perJobStatus + (item.reason ? `: ${item.reason}` : ""),
-          })
-          createdCount++
-        }
-      }
-      setApplySuccessMessage(`Successfully applied ${createdCount} optimized jobs to Workload Calendar!`)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not apply schedule")
-    } finally {
-      setApplyingSchedule(false)
     }
   }
 
@@ -662,23 +627,6 @@ export default function JobsPage() {
           className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
         >
           {error}
-        </div>
-      )}
-
-      {applySuccessMessage && (
-        <div
-          role="status"
-          className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300 flex items-center justify-between"
-        >
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4" />
-            {applySuccessMessage}
-          </div>
-          <Button asChild size="sm" variant="ghost" className="text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 text-xs">
-            <Link href="/workloads">
-              Open Workload Calendar →
-            </Link>
-          </Button>
         </div>
       )}
 
@@ -972,29 +920,16 @@ export default function JobsPage() {
           )}
 
           <DialogFooter className="flex flex-col sm:flex-row gap-2 justify-between">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={applyScheduleToCalendar}
-                disabled={applyingSchedule || !optimizationPlan}
-                className="gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
-              >
-                <Calendar className="h-3.5 w-3.5" />
-                {applyingSchedule ? "Applying to Calendar…" : "Apply to Workload Calendar"}
-              </Button>
-              {applySuccessMessage && (
-                <Button
-                  type="button"
-                  asChild
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5 text-xs"
-                >
-                  <Link href="/workloads">
-                    Open Calendar <ArrowRight className="h-3.5 w-3.5" />
+            {optimizationPlan && (
+              <div className="space-y-2">
+                <Button type="button" asChild className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700">
+                  <Link href={`/approvals?runId=${encodeURIComponent(optimizationPlan.runId)}`}>
+                    Review and approve <ArrowRight className="h-3.5 w-3.5" />
                   </Link>
                 </Button>
-              )}
-            </div>
+                <p className="text-xs text-muted-foreground">Approve this recommendation before adding it to the calendar.</p>
+              </div>
+            )}
             <Button type="button" onClick={() => setOptimizeOpen(false)}>
               Close
             </Button>
