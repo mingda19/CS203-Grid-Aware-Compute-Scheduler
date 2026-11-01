@@ -44,7 +44,6 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { DecisionPanel } from "./decision-panel"
-import type { OptimizationWorkloadItem } from "@/lib/decision-utils"
 import { Separator } from "@/components/ui/separator"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import {
@@ -231,8 +230,6 @@ const initialWorkloads: Workload[] = [
 export function Dashboard() {
   const [workloads, setWorkloads] = React.useState<Workload[]>(initialWorkloads)
   const [scheduleDisplayMode, setScheduleDisplayMode] = React.useState<"table" | "calendar">("calendar")
-  const [planApproved, setPlanApproved] = React.useState(false)
-  const [isRejecting, setIsRejecting] = React.useState(false)
   const [dateRange, setDateRange] = React.useState(() => {
     const end = new Date()
     const start = new Date(end)
@@ -358,30 +355,7 @@ export function Dashboard() {
 
   const dateRangeInvalid = dateRange.startDate > dateRange.endDate
 
-  const handleApprovePlan = (dispatchedItems: OptimizationWorkloadItem[]) => {
-    setPlanApproved(true)
-    setWorkloads((prev) =>
-      prev.map((w) => {
-        const item = dispatchedItems.find((d) => d.id === w.id)
-        if (item) {
-          return {
-            ...w,
-            scheduledWindow: item.proposedWindow,
-            status: item.type === "Crypto Mining" ? "Throttled" : "Running",
-          }
-        }
-        return w
-      })
-    )
-  }
-
-  const handleRejectPlan = (_reason: string, _notes: string) => {
-    setPlanApproved(false)
-    setWorkloads(initialWorkloads)
-  }
-
   const handleResetPlan = () => {
-    setPlanApproved(false)
     setWorkloads(initialWorkloads)
   }
 
@@ -440,12 +414,7 @@ export function Dashboard() {
       </div>
 
       {/* Human-in-the-Loop Primary Decision Panel (P0 Item 2, PRD Section 5) */}
-      <DecisionPanel
-        planApproved={planApproved}
-        onApprove={handleApprovePlan}
-        onReject={handleRejectPlan}
-        onReset={handleResetPlan}
-      />
+      <DecisionPanel />
 
       {/* 4 Core KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

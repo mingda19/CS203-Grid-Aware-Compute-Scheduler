@@ -382,6 +382,13 @@ export function getRefreshToken(): string | null {
   return null
 }
 
+export class ApiRequestError extends Error {
+  constructor(message: string, public readonly status: number, public readonly reason?: string) {
+    super(message)
+    this.name = "ApiRequestError"
+  }
+}
+
 async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`
   const headers: Record<string, string> = {
@@ -430,25 +437,22 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
     !endpoint.includes("/verify-otp") &&
     !endpoint.includes("/resend-otp")
   ) {
+    let refreshedAccessToken: string | undefined
     try {
-      const refreshed = await authApi.refreshToken()
-      if (refreshed.accessToken) {
-        setAccessToken(refreshed.accessToken)
-        headers["Authorization"] = `Bearer ${refreshed.accessToken}`
-        const retryResponse = await fetch(url, {
-          ...options,
-          headers,
-          credentials: "include",
-        })
-        const retryData = await retryResponse.json().catch(() => ({}))
-        if (!retryResponse.ok) {
-          const err = retryData?.message || `Request failed with status ${retryResponse.status}`
-          throw new Error(err)
-        }
-        return retryData as T
-      }
+      refreshedAccessToken = (await authApi.refreshToken()).accessToken
     } catch {
-      // Refresh failed, proceed to handle original response error
+      // Keep the original refusal if refreshing authentication fails.
+    }
+    if (refreshedAccessToken) {
+      setAccessToken(refreshedAccessToken)
+      headers["Authorization"] = `Bearer ${refreshedAccessToken}`
+      const retryResponse = await fetch(url, { ...options, headers, credentials: "include" })
+      const retryData = await retryResponse.json().catch(() => ({}))
+      if (!retryResponse.ok) {
+        const err = retryData?.message || `Request failed with status ${retryResponse.status}`
+        throw new ApiRequestError(err, retryResponse.status, retryData?.data?.reason)
+      }
+      return retryData as T
     }
   }
 
@@ -456,7 +460,7 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
 
   if (!response.ok) {
     const errorMessage = data?.message || `Request failed with status ${response.status}`
-    throw new Error(errorMessage)
+    throw new ApiRequestError(errorMessage, response.status, data?.data?.reason)
   }
 
   return data as T
@@ -527,6 +531,43 @@ export const jobsApi = {
   },
   remove(id: number): Promise<ApiResponse<void>> {
     return fetchJson<ApiResponse<void>>(`/api/jobs/${id}`, { method: "DELETE" })
+  },
+}
+
+export type PlanReviewState = "PENDING" | "APPROVED" | "REJECTED" | "REVISION_REQUESTED" | "STALE" | "INVALIDATED"
+export type ScheduleDecisionAction = "approve" | "reject" | "revise"
+export interface SchedulePlanSummary { runId: string; createdAt: string; reviewState: PlanReviewState }
+export interface SchedulePlanDetail {
+  runId: string
+  reviewState: PlanReviewState
+  invalidationReason: string | null
+  invalidatedAt: string | null
+  recommendation: OptimizeResponse | null
+}
+export interface ScheduleDecision {
+  decisionId: number
+  runId: string
+  action: "APPROVE" | "REJECT" | "REVISE"
+  operatorId: number
+  comment: string
+  decidedAt: string
+  reviewState: PlanReviewState
+}
+
+export const scheduleReviewApi = {
+  apply(runId: string): Promise<ApiResponse<WorkloadSchedule[]>> {
+    return fetchJson(`/api/schedules/${encodeURIComponent(runId)}/apply`, { method: "POST" })
+  },
+  list(page = 0): Promise<ApiResponse<Page<SchedulePlanSummary>>> {
+    return fetchJson(`/api/schedules?page=${page}&size=20`, { cache: "no-store" })
+  },
+  detail(runId: string): Promise<ApiResponse<SchedulePlanDetail>> {
+    return fetchJson(`/api/schedules/${encodeURIComponent(runId)}`, { cache: "no-store" })
+  },
+  decide(runId: string, action: ScheduleDecisionAction, comment: string): Promise<ApiResponse<ScheduleDecision>> {
+    return fetchJson(`/api/schedules/${encodeURIComponent(runId)}/${action}`, {
+      method: "POST", body: JSON.stringify({ comment }),
+    })
   },
 }
 
