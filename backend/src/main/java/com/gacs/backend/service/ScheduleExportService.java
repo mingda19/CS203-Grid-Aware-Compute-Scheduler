@@ -116,8 +116,7 @@ public class ScheduleExportService {
      */
     @Transactional(readOnly = true)
     public ExportFile export(UUID runId, Format format, String email) {
-        User owner = users.findByEmail(email)
-                .orElseThrow(() -> new BadCredentialsException("Authenticated user no longer exists"));
+        User owner = AuthenticatedOperators.resolve(users, email);
         OptimizationPlan plan = plans.findOwned(runId.toString(), owner.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Optimization plan not found"));
 
@@ -199,26 +198,43 @@ public class ScheduleExportService {
                 .collect(Collectors.toMap(Job::getId, Function.identity()));
 
         for (ScheduleItem item : scheduled) {
-            Long id = item.jobId();
-            Job job = current.get(id);
-            if (job == null) {
-                throw invalidated(runId, "job " + id + " is no longer in your jobs");
-            }
-            if (!sameHours(job.getCpuHours(), item.allocatedCpuHours())
-                    || !sameHours(job.getGpuHours(), item.allocatedGpuHours())) {
-                throw invalidated(runId, "job " + id + "'s CPU or GPU hours changed after the schedule was generated");
-            }
-            LocalDateTime earliest = job.getOriginalStartTime().truncatedTo(ChronoUnit.HOURS);
-            LocalDateTime latest = job.isExempt() ? earliest : earliest.plusHours(job.getFlexibilityWindowHours());
-            if (item.scheduledStart().isBefore(earliest) || item.scheduledStart().isAfter(latest)) {
-                throw invalidated(runId, "job " + id + " must now start between " + utc(earliest) + " and "
-                        + utc(latest) + ", but the schedule starts it at " + utc(item.scheduledStart()));
-            }
-            // The optimiser only uses slots that end by the deadline's hour.
-            if (item.scheduledEnd().isAfter(job.getDeadline().truncatedTo(ChronoUnit.HOURS))) {
-                throw invalidated(runId, "job " + id + "'s deadline " + utc(job.getDeadline())
-                        + " is now before its scheduled end " + utc(item.scheduledEnd()));
-            }
+            Job job = requireStillOwned(runId, item.jobId(), current);
+            requireHoursUnchanged(runId, job, item);
+            requireWithinCurrentStartWindow(runId, job, item);
+            requireEndsByCurrentDeadline(runId, job, item);
+        }
+    }
+
+    private static Job requireStillOwned(String runId, Long jobId, Map<Long, Job> current) {
+        Job job = current.get(jobId);
+        if (job == null) {
+            throw invalidated(runId, "job " + jobId + " is no longer in your jobs");
+        }
+        return job;
+    }
+
+    private static void requireHoursUnchanged(String runId, Job job, ScheduleItem item) {
+        if (!sameHours(job.getCpuHours(), item.allocatedCpuHours())
+                || !sameHours(job.getGpuHours(), item.allocatedGpuHours())) {
+            throw invalidated(runId, "job " + job.getId()
+                    + "'s CPU or GPU hours changed after the schedule was generated");
+        }
+    }
+
+    private static void requireWithinCurrentStartWindow(String runId, Job job, ScheduleItem item) {
+        LocalDateTime earliest = job.earliestAllowedStart();
+        LocalDateTime latest = job.latestAllowedStart();
+        if (item.scheduledStart().isBefore(earliest) || item.scheduledStart().isAfter(latest)) {
+            throw invalidated(runId, "job " + job.getId() + " must now start between " + utc(earliest) + " and "
+                    + utc(latest) + ", but the schedule starts it at " + utc(item.scheduledStart()));
+        }
+    }
+
+    /** The optimiser only uses slots that end by the deadline's hour. */
+    private static void requireEndsByCurrentDeadline(String runId, Job job, ScheduleItem item) {
+        if (item.scheduledEnd().isAfter(job.getDeadline().truncatedTo(ChronoUnit.HOURS))) {
+            throw invalidated(runId, "job " + job.getId() + "'s deadline " + utc(job.getDeadline())
+                    + " is now before its scheduled end " + utc(item.scheduledEnd()));
         }
     }
 

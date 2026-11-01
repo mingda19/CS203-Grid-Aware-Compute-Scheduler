@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * One optimisation run (docs/api-contract.md section 6.4): validate the request into a problem,
@@ -72,10 +73,22 @@ public class ScheduleOptimizationService {
      * @throws com.gacs.backend.exception.UnprocessableDataException baseline hours without a price (422)
      */
     public OptimizeResponseDto optimize(OptimizeRequestDto request, String ownerEmail) {
+        return optimize(request, ownerEmail, ignored -> { });
+    }
+
+    /**
+     * Same as {@link #optimize(OptimizeRequestDto, String)}, plus a hook run inside the same
+     * transaction {@link ScheduleRunRecorder} commits the explanation in - see
+     * {@code ScheduleRunPersistence.finalizeExplanation}'s javadoc. {@code ScheduleReviewService}
+     * uses this to record its own review-plan row atomically with the explanation, instead of in a
+     * separate transaction that could leave one without the other if it failed.
+     */
+    public OptimizeResponseDto optimize(OptimizeRequestDto request, String ownerEmail,
+                                        Consumer<OptimizeResponseDto> afterExplanationPersisted) {
         OptimizationProblem problem = problems.build(request);
         AllocationResult result = solver.solve(problem);
         OptimizeResponseDto response = buildResponse(problem, result);
-        recorder.record(result, problem.constraints(), response, ownerEmail);
+        recorder.record(result, problem.constraints(), response, ownerEmail, afterExplanationPersisted);
         return response;
     }
 
@@ -156,48 +169,66 @@ public class ScheduleOptimizationService {
     /** Operator-facing summary. Deterministic for a given result. */
     private static String explain(AllocationResult result, OptimizationProblem problem, double baselineCostUsd,
                                   double optimizedCostUsd, double savingsUsd, double savingsPercent) {
-        long total = result.outcomes().size();
-        long optimised = count(result, PerJobStatus.OPTIMISED);
-        long exempt = count(result, PerJobStatus.UNCHANGED_EXEMPT);
-        long leftOut = count(result, PerJobStatus.NO_FEASIBLE_SLOT);
-        long moved = result.outcomes().stream()
-                .filter(o -> o.status() == PerJobStatus.OPTIMISED)
-                .filter(o -> !o.plan().start().equals(o.job().originalStartTime())
-                        || !o.plan().allocations().equals(problem.baselineOf(o.job()).allocations()))
-                .count();
+        JobCounts counts = JobCounts.of(result, problem);
+        return countsSentence(counts)
+                + costSentence(baselineCostUsd, optimizedCostUsd, savingsUsd, savingsPercent)
+                + caveatsSentence(result, problem);
+    }
 
+    /** How many jobs landed in each outcome, computed once and handed to each sentence below. */
+    private record JobCounts(long total, long optimised, long exempt, long leftOut, long moved) {
+        static JobCounts of(AllocationResult result, OptimizationProblem problem) {
+            long moved = result.outcomes().stream()
+                    .filter(o -> o.status() == PerJobStatus.OPTIMISED)
+                    .filter(o -> !o.plan().start().equals(o.job().originalStartTime())
+                            || !o.plan().allocations().equals(problem.baselineOf(o.job()).allocations()))
+                    .count();
+            return new JobCounts(result.outcomes().size(), count(result, PerJobStatus.OPTIMISED),
+                    count(result, PerJobStatus.UNCHANGED_EXEMPT), count(result, PerJobStatus.NO_FEASIBLE_SLOT), moved);
+        }
+    }
+
+    private static String countsSentence(JobCounts counts) {
         StringBuilder text = new StringBuilder();
-        text.append(String.format(Locale.ROOT, "Scheduled %d of %d job(s). ", total - leftOut, total));
-        if (optimised > 0) {
+        text.append(String.format(Locale.ROOT, "Scheduled %d of %d job(s). ",
+                counts.total() - counts.leftOut(), counts.total()));
+        if (counts.optimised() > 0) {
             text.append(String.format(Locale.ROOT,
                     "%d job(s) were placed on their cheapest plan (%d moved from their original time). ",
-                    optimised, moved));
+                    counts.optimised(), counts.moved()));
         }
-        if (exempt > 0) {
+        if (counts.exempt() > 0) {
             text.append(String.format(Locale.ROOT,
-                    "%d exempt job(s) run at their original time. ", exempt));
+                    "%d exempt job(s) run at their original time. ", counts.exempt()));
         }
-        if (leftOut > 0) {
+        if (counts.leftOut() > 0) {
             text.append(String.format(Locale.ROOT,
                     "%d job(s) could not be placed because other jobs use the capacity they need before their "
-                            + "deadline; they are left out of the cost totals. ", leftOut));
+                            + "deadline; they are left out of the cost totals. ", counts.leftOut()));
         }
+        return text.toString();
+    }
 
+    private static String costSentence(double baselineCostUsd, double optimizedCostUsd, double savingsUsd,
+                                       double savingsPercent) {
         if (savingsUsd > 0) {
-            text.append(String.format(Locale.ROOT,
+            return String.format(Locale.ROOT,
                     "Projected energy cost is $%.4f against $%.4f at the original times, saving $%.4f (%.2f%%). ",
-                    optimizedCostUsd, baselineCostUsd, savingsUsd, savingsPercent));
-        } else if (savingsUsd < 0) {
-            text.append(String.format(Locale.ROOT,
+                    optimizedCostUsd, baselineCostUsd, savingsUsd, savingsPercent);
+        }
+        if (savingsUsd < 0) {
+            return String.format(Locale.ROOT,
                     "Projected energy cost is $%.4f, which is $%.4f more than the $%.4f baseline. The baseline "
                             + "prices each job alone on the cluster at its original time; these jobs cannot all "
                             + "run that way at once, so some had to use dearer hours. ",
-                    optimizedCostUsd, -savingsUsd, baselineCostUsd));
-        } else {
-            text.append(String.format(Locale.ROOT,
-                    "Projected energy cost is $%.4f, the same as at the original times. ", optimizedCostUsd));
+                    optimizedCostUsd, -savingsUsd, baselineCostUsd);
         }
+        return String.format(Locale.ROOT, "Projected energy cost is $%.4f, the same as at the original times. ",
+                optimizedCostUsd);
+    }
 
+    private static String caveatsSentence(AllocationResult result, OptimizationProblem problem) {
+        StringBuilder text = new StringBuilder();
         text.append("Every scheduled job finishes on or before its deadline.");
         if (!result.provenOptimal()) {
             text.append(" This plan comes from the heuristic search: it meets every rule but is not proven "

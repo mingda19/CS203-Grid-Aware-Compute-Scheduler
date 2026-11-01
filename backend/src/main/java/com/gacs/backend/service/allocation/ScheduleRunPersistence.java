@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.TreeSet;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -30,7 +31,9 @@ import java.util.stream.Collectors;
  * part (the LLM call, which holds no database connection at all): {@link #persist} writes the run,
  * its items, and every constraint impact with deterministic text already filled in; {@link
  * #finalizeExplanation} writes the one {@code ScheduleExplanation} row and, only on LLM success,
- * overwrites that deterministic text.
+ * overwrites that deterministic text. Callers needing to persist something else in the same
+ * transaction as {@code finalizeExplanation} (never as part of {@code persist}, which commits
+ * before the LLM call even happens) use the overload that takes a callback.
  *
  * <p>Split out of {@code ScheduleRunRecorder} deliberately, not just for naming: Spring's
  * {@code @Transactional} proxy only intercepts calls that arrive from <em>another</em> bean - a
@@ -101,6 +104,21 @@ public class ScheduleRunPersistence {
     @Transactional
     public void finalizeExplanation(Long scheduleRunId, ExplanationOutcome explanation,
                                     OptimizeResponseDto response) {
+        finalizeExplanation(scheduleRunId, explanation, response, ignored -> { });
+    }
+
+    /**
+     * Same as {@link #finalizeExplanation(Long, ExplanationOutcome, OptimizeResponseDto)}, plus a
+     * hook run last, still inside this same transaction. {@code ScheduleReviewService} uses this to
+     * record its own {@code OptimizerRun}/{@code OptimizationPlan} pair here rather than in a later,
+     * separate transaction: Spring's REQUIRED propagation makes whatever {@code @Transactional} bean
+     * the hook calls join this transaction instead of starting its own, so a failure there rolls
+     * back the explanation too, instead of leaving an explanation on record for a run whose review
+     * plan never got created.
+     */
+    @Transactional
+    public void finalizeExplanation(Long scheduleRunId, ExplanationOutcome explanation,
+                                    OptimizeResponseDto response, Consumer<OptimizeResponseDto> afterPersist) {
         List<ScheduleItem> freshItems = items.findByScheduleRunIdOrderByIdAsc(scheduleRunId);
         List<ConstraintImpact> freshImpacts = freshItems.stream()
                 .flatMap(item -> constraintImpacts.findByScheduleItemIdOrderByIdAsc(item.getId()).stream())
@@ -127,6 +145,7 @@ public class ScheduleRunPersistence {
                     .narrative(response.plainEnglishExplanation())
                     .build());
         }
+        afterPersist.accept(response);
     }
 
     private record RecordedItem(ScheduleItem item, List<ConstraintImpact> impacts) {
@@ -134,7 +153,23 @@ public class ScheduleRunPersistence {
 
     private RecordedItem recordItem(Long scheduleRunId, JobOutcome outcome, OptimizeResponseDto.ScheduleItem dtoItem,
                                     List<Constraint> constraints, Map<Long, JobOutcome> outcomesByJobId) {
-        ScheduleItem item = items.save(ScheduleItem.builder()
+        ScheduleItem item = saveItem(scheduleRunId, dtoItem, outcome);
+        if (!outcome.scheduled()) {
+            return new RecordedItem(item, List.of()); // NO_FEASIBLE_SLOT: nothing was scheduled, so there is no slack to report
+        }
+
+        List<ConstraintImpact> impacts = new ArrayList<>();
+        OptimizerJob job = outcome.job();
+        impacts.add(deadlineImpact(job, outcome, item.getId()));
+        flexibilityWindowImpact(job, outcome, item.getId()).ifPresent(impacts::add);
+        for (Constraint constraint : constraintsFor(constraints, job)) {
+            declaredConstraintImpact(constraint, job, outcome, outcomesByJobId, item.getId()).ifPresent(impacts::add);
+        }
+        return new RecordedItem(item, impacts);
+    }
+
+    private ScheduleItem saveItem(Long scheduleRunId, OptimizeResponseDto.ScheduleItem dtoItem, JobOutcome outcome) {
+        return items.save(ScheduleItem.builder()
                 .scheduleRunId(scheduleRunId)
                 .jobId(dtoItem.jobId())
                 .jobName(dtoItem.jobName())
@@ -148,43 +183,35 @@ public class ScheduleRunPersistence {
                 .savingsUsd(dtoItem.savingsUsd())
                 .whyThisPlacement(whyThisPlacement(outcome))
                 .build());
+    }
 
-        if (!outcome.scheduled()) {
-            return new RecordedItem(item, List.of()); // NO_FEASIBLE_SLOT: nothing was scheduled, so there is no slack to report
-        }
-
-        List<ConstraintImpact> impacts = new ArrayList<>();
-        OptimizerJob job = outcome.job();
-        LocalDateTime scheduledStart = outcome.plan().start();
-        LocalDateTime scheduledEnd = outcome.plan().end();
-
-        long deadlineSlack = Duration.between(scheduledEnd, job.deadline()).toHours();
-        impacts.add(constraintImpacts.save(ConstraintImpact.builder()
-                .scheduleItemId(item.getId())
+    private ConstraintImpact deadlineImpact(OptimizerJob job, JobOutcome outcome, Long scheduleItemId) {
+        long deadlineSlack = Duration.between(outcome.plan().end(), job.deadline()).toHours();
+        return constraintImpacts.save(ConstraintImpact.builder()
+                .scheduleItemId(scheduleItemId)
                 .constraintType(ConstraintType.DEADLINE.name())
                 .code("DEADLINE_SLACK")
                 .slackHours(deadlineSlack)
                 .narrativeFragment(deadlineFragment(deadlineSlack))
+                .build());
+    }
+
+    /** Exempt jobs are pinned regardless of flexibilityWindowHours - reporting a window impact for
+     *  them would be reporting a constraint that didn't actually govern anything. */
+    private Optional<ConstraintImpact> flexibilityWindowImpact(OptimizerJob job, JobOutcome outcome,
+                                                                Long scheduleItemId) {
+        if (job.exempt()) {
+            return Optional.empty();
+        }
+        long shiftHours = Duration.between(job.originalStartTime(), outcome.plan().start()).toHours();
+        long unusedWindowHours = job.flexibilityWindowHours() - shiftHours;
+        return Optional.of(constraintImpacts.save(ConstraintImpact.builder()
+                .scheduleItemId(scheduleItemId)
+                .constraintType(ConstraintType.FLEXIBILITY_WINDOW.name())
+                .code("FLEX_WINDOW_SHIFT")
+                .slackHours(unusedWindowHours)
+                .narrativeFragment(flexWindowFragment(shiftHours, job.flexibilityWindowHours()))
                 .build()));
-
-        // Exempt jobs are pinned regardless of flexibilityWindowHours - reporting a window
-        // impact for them would be reporting a constraint that didn't actually govern anything.
-        if (!job.exempt()) {
-            long shiftHours = Duration.between(job.originalStartTime(), scheduledStart).toHours();
-            long unusedWindowHours = job.flexibilityWindowHours() - shiftHours;
-            impacts.add(constraintImpacts.save(ConstraintImpact.builder()
-                    .scheduleItemId(item.getId())
-                    .constraintType(ConstraintType.FLEXIBILITY_WINDOW.name())
-                    .code("FLEX_WINDOW_SHIFT")
-                    .slackHours(unusedWindowHours)
-                    .narrativeFragment(flexWindowFragment(shiftHours, job.flexibilityWindowHours()))
-                    .build()));
-        }
-
-        for (Constraint constraint : constraintsFor(constraints, job)) {
-            declaredConstraintImpact(constraint, job, outcome, outcomesByJobId, item.getId()).ifPresent(impacts::add);
-        }
-        return new RecordedItem(item, impacts);
     }
 
     private static List<Constraint> constraintsFor(List<Constraint> constraints, OptimizerJob job) {
@@ -196,25 +223,23 @@ public class ScheduleRunPersistence {
      * FLEXIBILITY_WINDOW are handled separately above, since they are intrinsic job attributes, not
      * declared constraints. Returns empty when this constraint type has nothing to report for this
      * specific job (e.g. the before-job in a {@link PrecedenceConstraint}, whose own placement
-     * isn't actually shaped by it).
+     * isn't actually shaped by it), or when {@code constraint} is none of the four known types
+     * (the {@code default} branch only exists because {@link Constraint} cannot be {@code sealed} -
+     * a test double outside this package extends it on purpose - so the compiler cannot prove this
+     * switch is exhaustive on its own).
      */
     private Optional<ConstraintImpact> declaredConstraintImpact(Constraint constraint, OptimizerJob job,
                                                                  JobOutcome outcome,
                                                                  Map<Long, JobOutcome> outcomesByJobId,
                                                                  Long scheduleItemId) {
-        if (constraint instanceof AbsoluteTimeWindowConstraint c) {
-            return Optional.of(absoluteTimeWindowImpact(c, outcome, scheduleItemId));
-        }
-        if (constraint instanceof PrecedenceConstraint c) {
-            return precedenceImpact(c, job, outcome, outcomesByJobId, scheduleItemId);
-        }
-        if (constraint instanceof MutualExclusionConstraint c) {
-            return mutualExclusionImpact(c, job, outcome, outcomesByJobId, scheduleItemId);
-        }
-        if (constraint instanceof SynchronizedFinishConstraint c) {
-            return synchronizedFinishImpact(c, job, outcome, outcomesByJobId, scheduleItemId);
-        }
-        return Optional.empty();
+        return switch (constraint) {
+            case AbsoluteTimeWindowConstraint c -> Optional.of(absoluteTimeWindowImpact(c, outcome, scheduleItemId));
+            case PrecedenceConstraint c -> precedenceImpact(c, job, outcome, outcomesByJobId, scheduleItemId);
+            case MutualExclusionConstraint c -> mutualExclusionImpact(c, job, outcome, outcomesByJobId, scheduleItemId);
+            case SynchronizedFinishConstraint c ->
+                    synchronizedFinishImpact(c, job, outcome, outcomesByJobId, scheduleItemId);
+            default -> Optional.empty();
+        };
     }
 
     private ConstraintImpact absoluteTimeWindowImpact(AbsoluteTimeWindowConstraint constraint, JobOutcome outcome,

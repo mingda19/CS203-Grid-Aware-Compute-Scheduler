@@ -1,6 +1,8 @@
 package com.gacs.backend.exception;
 
 import com.gacs.backend.dto.ApiResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -18,9 +20,13 @@ import java.util.Map;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    private static final Logger logger = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
-    public ResponseEntity<ApiResponse<Void>> handleMalformedRequest(Exception ex) {
-        return ResponseEntity.badRequest().body(ApiResponse.fail("Malformed request body or parameter"));
+    public ResponseEntity<ApiResponse<Void>> handleMalformedRequest(MethodArgumentTypeMismatchException ex) {
+        String expectedType = ex.getRequiredType() == null ? "the expected type" : ex.getRequiredType().getSimpleName();
+        return ResponseEntity.badRequest().body(ApiResponse.fail("Parameter '" + ex.getName() + "' value '"
+                + ex.getValue() + "' could not be converted to " + expectedType));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -77,9 +83,16 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(response);
     }
 
+    /**
+     * Last resort for anything no more specific handler above caught. Logs the real exception
+     * server-side (the only place its message, cause and stack trace belong) and returns a generic
+     * body to the caller: {@code ex.getMessage()} can carry SQL text, file paths or other internals
+     * that have no business leaving the server in an HTTP response.
+     */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleGeneralException(Exception ex) {
-        ApiResponse<Void> response = ApiResponse.fail("An unexpected error occurred: " + ex.getMessage());
+        logger.error("Unhandled exception reaching GlobalExceptionHandler", ex);
+        ApiResponse<Void> response = ApiResponse.fail("An unexpected error occurred. Please try again or contact support.");
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
     }
 }

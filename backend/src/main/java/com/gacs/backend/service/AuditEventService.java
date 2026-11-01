@@ -162,15 +162,18 @@ public class AuditEventService {
             return new AuditEventDetailDto(event, run, ScheduleAvailability.NOT_STORED, null, null);
         }
         boolean hashMatches = ScheduleHashUtil.computeSha256(plan.getResultJson()).equals(event.scheduleHash());
-        boolean owner = viewerEmail != null && userRepository.findByEmail(viewerEmail)
-                .map(User::getId)
-                .filter(userId -> userId.equals(plan.getOwner().getId()))
-                .isPresent();
-        if (!owner) {
+        if (!isOwnedByViewer(plan, viewerEmail)) {
             return new AuditEventDetailDto(event, run, ScheduleAvailability.OWNER_ONLY, hashMatches, null);
         }
         return new AuditEventDetailDto(event, run, ScheduleAvailability.VISIBLE, hashMatches,
                 scheduleReader.read(plan.getResultJson()).orElse(null));
+    }
+
+    private boolean isOwnedByViewer(OptimizationPlan plan, String viewerEmail) {
+        return viewerEmail != null && userRepository.findByEmail(viewerEmail)
+                .map(User::getId)
+                .filter(userId -> userId.equals(plan.getOwner().getId()))
+                .isPresent();
     }
 
     static Specification<AuditEvent> matching(AuditEventFilter filter) {
@@ -222,7 +225,8 @@ public class AuditEventService {
         }
         String principalName = auth.getName();
         if (principalName == null || principalName.trim().isEmpty()) {
-            throw new AccessDeniedException("Principal name is empty in security context");
+            throw new AccessDeniedException(
+                    "Authenticated principal has no usable name: cannot record audit event without verified identity");
         }
         return principalName.trim();
     }

@@ -17,7 +17,6 @@ import com.gacs.backend.service.allocation.AllocationSolver;
 import com.gacs.backend.service.allocation.OptimizerProperties;
 import com.gacs.backend.util.ScheduleHashUtil;
 import org.springframework.aop.support.AopUtils;
-import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,12 +28,17 @@ import java.util.UUID;
  * (GRID-134/135/140): which user requested it (401 if the authenticated email has no database
  * user), then an {@code OptimizerRun}/{@code OptimizationPlan} pair recording it for approval.
  *
- * <p>{@link #optimize} is deliberately not {@code @Transactional}: {@code optimizer.optimize(...)}
- * makes an external LLM call partway through (see {@code ScheduleRunPersistence}'s javadoc) that
- * must never hold a database connection. Putting {@code @Transactional} here would undo that by
- * Spring's REQUIRED propagation folding {@code ScheduleRunPersistence}'s own short transactions
- * back into one spanning the whole call. {@link #decide} has no such concern - it never calls
- * anything external - so it stays {@code @Transactional} directly.
+ * <p>{@link #optimize} is deliberately not {@code @Transactional} itself: {@code
+ * optimizer.optimize(...)} makes an external LLM call partway through (see {@code
+ * ScheduleRunPersistence}'s javadoc) that must never hold a database connection. Putting {@code
+ * @Transactional} here would undo that by Spring's REQUIRED propagation folding {@code
+ * ScheduleRunPersistence}'s own short transactions back into one spanning the whole call. Instead,
+ * {@link #recordPlan} is passed down as a callback that runs <em>inside</em> {@code
+ * ScheduleRunPersistence.finalizeExplanation}'s transaction, after the LLM call has already
+ * finished - so the {@code OptimizerRun}/{@code OptimizationPlan} write is atomic with the
+ * explanation write (a failure in either rolls back both) without ever wrapping the HTTP call.
+ * {@link #decide} has no such concern - it never calls anything external - so it stays {@code
+ * @Transactional} directly.
  */
 @Service
 public class ScheduleReviewService {
@@ -64,16 +68,20 @@ public class ScheduleReviewService {
 
     public OptimizeResponseDto optimize(OptimizeRequestDto request, String email) {
         User owner = operator(email);
-        OptimizeResponseDto result = optimizer.optimize(request, email);
+        return optimizer.optimize(request, email, result -> recordPlan(result, owner));
+    }
+
+    private void recordPlan(OptimizeResponseDto result, User owner) {
         try {
             var createdAt = clock.instant();
             planRecorder.record(result.runId(), createdAt, AopUtils.getTargetClass(solver).getSimpleName(),
                 AllocationSolver.VERSION, json.writeValueAsString(properties), owner,
                 json.writeValueAsString(result), StoredScheduleReader.jobIds(result));
         } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("Unable to store optimization result", ex);
+            throw new IllegalStateException(
+                    "Failed to serialize the solver config or optimizer result for run " + result.runId()
+                            + " while recording its review plan", ex);
         }
-        return result;
     }
 
     @Transactional
@@ -89,7 +97,6 @@ public class ScheduleReviewService {
     }
 
     private User operator(String email) {
-        return users.findByEmail(email)
-            .orElseThrow(() -> new BadCredentialsException("Authenticated user no longer exists"));
+        return AuthenticatedOperators.resolve(users, email);
     }
 }

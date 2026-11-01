@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 
 /**
  * Compute workload entity representing a flexible or deadline-tolerant job.
@@ -103,5 +104,16 @@ public class Job {
     @PreUpdate
     protected void onUpdate() {
         this.updatedAt = LocalDateTime.now();
+    }
+
+    /** The earliest hour this job may start at - its original start, truncated to the hour. */
+    public LocalDateTime earliestAllowedStart() {
+        return originalStartTime.truncatedTo(ChronoUnit.HOURS);
+    }
+
+    /** The latest hour this job may start at. An exempt job may only start at its original time. */
+    public LocalDateTime latestAllowedStart() {
+        LocalDateTime earliest = earliestAllowedStart();
+        return isExempt ? earliest : earliest.plusHours(flexibilityWindowHours);
     }
 }
