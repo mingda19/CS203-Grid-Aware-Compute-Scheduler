@@ -10,6 +10,7 @@ import com.gacs.backend.repository.JobRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -176,13 +177,7 @@ public class JobService {
         if (request.getDeadline() == null) {
             throw new IllegalArgumentException("deadline is required");
         }
-        if (request.getDeadline().isBefore(request.getOriginalStartTime())) {
-            throw new IllegalArgumentException("deadline must be greater than or equal to originalStartTime");
-        }
-
-        if (request.getFlexibilityWindowHours() != null && request.getFlexibilityWindowHours() < 0) {
-            throw new IllegalArgumentException("flexibilityWindowHours must be non-negative");
-        }
+        validateTiming(request.getOriginalStartTime(), request.getDeadline(), request.getFlexibilityWindowHours());
 
         if (request.getRawConstraints() != null && request.getRawConstraints().length() > 1000) {
             throw new IllegalArgumentException("rawConstraints must not exceed 1000 characters");
@@ -195,8 +190,27 @@ public class JobService {
             }
         }
 
-        if (request.getPriority() != null && !request.getPriority().isBlank()) {
-            JobPriority.fromString(request.getPriority());
+        validatePriority(request.getPriority());
+    }
+
+    /**
+     * Timing rules shared by the job API and the constraint parser. Values that are absent are not checked
+     * here: the job API requires start and deadline before calling this, while a parse may cover only some of
+     * them.
+     */
+    public void validateTiming(LocalDateTime originalStartTime, LocalDateTime deadline, Integer flexibilityWindowHours) {
+        if (originalStartTime != null && deadline != null && deadline.isBefore(originalStartTime)) {
+            throw new IllegalArgumentException("deadline must be greater than or equal to originalStartTime");
+        }
+        if (flexibilityWindowHours != null && flexibilityWindowHours < 0) {
+            throw new IllegalArgumentException("flexibilityWindowHours must be non-negative");
+        }
+    }
+
+    /** Priority rule shared by the job API and the constraint parser. Blank means the default. */
+    public void validatePriority(String priority) {
+        if (priority != null && !priority.isBlank()) {
+            JobPriority.fromString(priority);
         }
     }
 }
