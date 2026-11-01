@@ -759,7 +759,7 @@ The **Job** entity represents a compute workload submitted for schedule optimiza
 | `parsedAt` | ISO-8601 UTC local date-time | No | `null` | Actual parser timestamp supplied by the caller, e.g. `2026-10-20T09:30:00`; never inferred from job audit timestamps. |
 | `confirmationOutcome` | String (Enum) | No | `null` | Latest parse decision: `PENDING`, `CONFIRMED`, or `REJECTED`. A supplied nonnull `parsedAt` defaults this to `PENDING` when the outcome is omitted. |
 | `status` | String | No | `"PENDING"` | Workflow status: `"PENDING"`, `"SCHEDULED"`, `"RUNNING"`, `"COMPLETED"`, `"CANCELLED"`. |
-| `priority` | String (Enum) | No | `"NORMAL"` | Workload priority level: `"CRITICAL"`, `"HIGH"`, `"NORMAL"`, `"LOW"`. Default `"NORMAL"`. Used by the optimizer for tie-breaking when jobs compete for capacity (GRID-155 / GRID-124). Unknown values are rejected with 400 Bad Request. |
+| `priority` | String (Enum) | No | `"NORMAL"` | Workload priority level: `"CRITICAL"`, `"HIGH"`, `"NORMAL"`, `"LOW"`. Default `"NORMAL"`. Used by the optimizer for tie-breaking when jobs compete for capacity - see §6.4's *Objective and tie-break order* for the exact rule (GRID-155 / GRID-124). Unknown values are rejected with 400 Bad Request. |
 | `ownerEmail` | String | Read-only | Auth user | Authenticated tenant operator email for tenancy isolation. |
 | `createdAt` | ISO-8601 UTC String | Read-only | Auto | Timestamp when record was created. |
 | `updatedAt` | ISO-8601 UTC String | Read-only | Auto | Timestamp when record was last updated. |
@@ -806,6 +806,13 @@ Evaluates jobs against forecast prices and cluster capacity and proposes a start
 * There is no per-job rate cap: a job may take whatever capacity is free in a slot. Its duration is therefore an **output** of the optimisation (the number of slots it needs), limited by the capacity left after other jobs.
 * `scheduledStart` is the start of the first slot used and `scheduledEnd` is the end of the last.
 
+**Objective and tie-break order (GRID-155 / GRID-124).** The optimiser places as many jobs as possible, then minimises total cost. When two otherwise-equal placements remain tied (jobs competing for the same capacity), ties are broken in order:
+1. Higher `priority` first (`CRITICAL` > `HIGH` > `NORMAL` > `LOW`).
+2. If `priority` ties, the job requesting fewer total resource-hours (`cpuHours + gpuHours`) first.
+3. If that ties too, the earlier `originalStartTime`, then the lower `id`.
+
+Before GRID-155, step 3 alone was the whole rule; `priority` existed on the Job schema but had no effect on the optimiser. Both solvers (the exact solver's tie-break weighting and the heuristic's placement order) apply this same order.
+
 **Request**
 ```json
 {
@@ -846,7 +853,7 @@ Evaluates jobs against forecast prices and cluster capacity and proposes a start
 | `jobs[].deadline` | ISO 8601 UTC | Yes | Job must **finish** (end of its last slot) at or before this |
 | `jobs[].flexibilityWindowHours` | integer ≥ 0 | Yes | Start may be in `[originalStartTime, originalStartTime + flexibilityWindowHours]`. Jobs never start earlier than `originalStartTime`. |
 | `jobs[].isExempt` | boolean | Yes | `true` = never moved |
-| `jobs[].priority` | string | No | Priority level (`CRITICAL`, `HIGH`, `NORMAL`, `LOW`; default `NORMAL`). Used for tie-breaking when jobs compete for capacity (GRID-155 AC1/AC3). Unknown values are rejected with `400`. |
+| `jobs[].priority` | string | No | Priority level (`CRITICAL`, `HIGH`, `NORMAL`, `LOW`; default `NORMAL`). See *Objective and tie-break order* above (GRID-155 AC1/AC3). Unknown values are rejected with `400`. |
 | `forecast[]` | array | One of `forecast` / `forecastLocation` | Explicit price per slot (`predictedPrice` in $/MWh). Makes the run fully reproducible. |
 | `forecastLocation`, `horizonHours` | string, integer | One of `forecast` / `forecastLocation` | Server resolves per-slot prices for that location from the forecast service (same data as `GET /api/prices/forecast`), starting at the earliest `originalStartTime`. `horizonHours` defaults to `48`. |
 | `clusterCapacity` | object | No | Capacity applied to every slot. Falls back to the defaults below. |
@@ -986,6 +993,7 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 | 2026-11-01 | §6.6: added `GET /api/schedules/{runId}/export.csv` and `.json` behind an approval gate (403 not approved; 409 stale or invalidated) with `schedule-run-{runId}` attachment filenames (GRID-135 AC3). | - |
 | 2026-11-01 | §6.6: the JSON export adds `run.createdAt`, `run.solver` and `approval` (GRID-135 AC2). | - |
 | 2026-11-01 | Added §6.7 documenting the audit log queries, with a new `jobId` filter backed by `optimization_plan_jobs`, and the stored schedule (owner only) in the event detail (GRID-134 AC6). | - |
+| 2026-11-01 | §6.4: added *Objective and tie-break order*, documenting the rule `priority` had been reserved for but did not yet affect - the optimiser now orders competing jobs by `priority`, then total resource-hours, then the original `originalStartTime`/`id` fallback (GRID-155). | - |
 | 2026-11-01 | Added §6.8: automatic material-input invalidation, shared backend execution gating, approved-run application, and plan detail (GRID-11 AC2.3). | - |
 
 ### 6.5 Operator decisions (GRID-11 AC2 / AC2.2)

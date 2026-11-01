@@ -1,5 +1,6 @@
 package com.gacs.backend.service.allocation;
 
+import com.gacs.backend.model.JobPriority;
 import com.gacs.backend.service.PriceSeries;
 
 import java.util.ArrayList;
@@ -46,12 +47,17 @@ public record OptimizationProblem(
     }
 
     /**
-     * The order used to break ties between plans that place the same number of jobs at the same cost:
-     * the job with the earlier originalStartTime, then the lower id, is placed. Temporary until job
-     * priority in Sprint 4.
+     * The order used to break ties between plans that place the same number of jobs at the same cost
+     * (GRID-155 / GRID-124): the higher-priority job (CRITICAL first, then HIGH, NORMAL, LOW - {@link
+     * JobPriority}'s declaration order) is placed first; if priority ties, the job asking for fewer
+     * total resource-hours is placed first, since it is the easier of the two to still fit somewhere
+     * else if it loses the contested slot; if that ties too, the earlier originalStartTime, then the
+     * lower id, same as before priority existed.
      */
     public static final Comparator<OptimizerJob> TIE_BREAK_ORDER = Comparator
-            .comparing(OptimizerJob::originalStartTime)
+            .comparing(OptimizerJob::priority)
+            .thenComparing(OptimizerJob::totalResourceHours)
+            .thenComparing(OptimizerJob::originalStartTime)
             .thenComparing(OptimizerJob::id, Comparator.nullsLast(Comparator.naturalOrder()));
 
     public OptimizationProblem {
