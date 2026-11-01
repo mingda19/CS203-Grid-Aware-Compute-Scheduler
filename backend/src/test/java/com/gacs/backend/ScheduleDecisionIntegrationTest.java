@@ -92,6 +92,11 @@ class ScheduleDecisionIntegrationTest {
         assertThat(plan.getCreatedAt()).isBetween(before.minusSeconds(1), Instant.now().plusSeconds(1));
         assertThat(json.readTree(plan.getResultJson())).isEqualTo(result);
         OptimizerRun run = runs.findById(runId.toString()).orElseThrow();
+        assertThat(run.getInputSnapshot()).isNotBlank().isNotEqualTo(plan.getInputSnapshot());
+        assertThat(run.getInputSnapshot().lines().count()).isEqualTo(3);
+        assertThat(run.getInputHash()).isEqualTo(
+            com.gacs.backend.util.ScheduleHashUtil.computeSha256(run.getInputSnapshot()));
+        assertThat(json.readTree(plan.getInputSnapshot()).path("jobs").has(currentJob.getId().toString())).isTrue();
         assertThat(run.getCreatedAt()).isEqualTo(plan.getCreatedAt());
         assertThat(plan.getRun().getId()).isEqualTo(runId.toString());
         // status/provenOptimal live on ScheduleRun now, not OptimizerRun (no longer duplicated

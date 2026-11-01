@@ -89,7 +89,7 @@ public class ScheduleInputs {
 
     private boolean matches(OptimizeRequestDto.JobInput i, Job j) {
         return Objects.equals(i.cpuHours(), j.getCpuHours()) && Objects.equals(i.gpuHours(), j.getGpuHours()) &&
-            Objects.equals(i.originalStartTime(), j.getOriginalStartTime()) && Objects.equals(i.deadline(), j.getDeadline()) &&
+            Objects.equals(i.originalStartTime(), j.earliestAllowedStart()) && Objects.equals(i.deadline(), j.getDeadline()) &&
             Objects.equals(i.flexibilityWindowHours(), j.getFlexibilityWindowHours()) &&
             Objects.equals(i.isExempt(), j.isExempt()) &&
             JobPriority.fromString(i.priority()) == j.getPriority();

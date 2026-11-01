@@ -68,16 +68,17 @@ public class ScheduleReviewService {
 
     public OptimizeResponseDto optimize(OptimizeRequestDto request, String email) {
         User owner = operator(email);
-        String snapshot = inputs.capture(request, email);
-        return optimizer.optimize(request, email, result -> recordPlan(result, owner, snapshot));
+        String provenance = inputs.capture(request, email);
+        return optimizer.optimize(request, email,
+            (result, snapshot) -> recordPlan(result, owner, snapshot, provenance));
     }
 
-    private void recordPlan(OptimizeResponseDto result, User owner, String snapshot) {
+    private void recordPlan(OptimizeResponseDto result, User owner, String snapshot, String provenance) {
         try {
             var createdAt = clock.instant();
             planRecorder.record(result.runId(), createdAt, AopUtils.getTargetClass(solver).getSimpleName(),
                 AllocationSolver.VERSION, json.writeValueAsString(properties), owner,
-                json.writeValueAsString(result), StoredScheduleReader.jobIds(result), snapshot);
+                json.writeValueAsString(result), StoredScheduleReader.jobIds(result), snapshot, provenance);
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException(
                     "Failed to serialize the solver config or optimizer result for run " + result.runId()
