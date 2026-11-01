@@ -1,6 +1,7 @@
 package com.gacs.backend.repository;
 
 import com.gacs.backend.model.Job;
+import com.gacs.backend.model.JobPriority;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -59,6 +60,7 @@ class JobRepositoryTest {
         assertThat(retrieved.isExempt()).isFalse();
         assertThat(retrieved.getRawConstraints()).isEqualTo("Can wait up to 12 hours for low price valley, finish by tomorrow evening");
         assertThat(retrieved.getStatus()).isEqualTo("PENDING");
+        assertThat(retrieved.getPriority()).isEqualTo(JobPriority.NORMAL);
     }
 
     @Test
@@ -80,7 +82,30 @@ class JobRepositoryTest {
         assertThat(saved.getCpuHours()).isEqualTo(0.0);
         assertThat(saved.getGpuHours()).isEqualTo(0.0);
         assertThat(saved.getStatus()).isEqualTo("PENDING");
+        assertThat(saved.getPriority()).isEqualTo(JobPriority.NORMAL);
         assertThat(saved.getRawConstraints()).isNull();
+    }
+
+    @Test
+    @DisplayName("Persist and retrieve Job with explicit priorities (CRITICAL, HIGH, LOW)")
+    void testSaveAndRetrieveJob_WithExplicitPriority() {
+        LocalDateTime start = LocalDateTime.of(2026, 10, 20, 10, 0);
+        LocalDateTime deadline = LocalDateTime.of(2026, 10, 21, 18, 0);
+
+        Job criticalJob = Job.builder()
+                .ownerEmail("operator@gridaware.com")
+                .name("Critical Workload")
+                .cpuHours(32.0)
+                .gpuHours(8.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .priority(JobPriority.CRITICAL)
+                .build();
+
+        Job saved = jobRepository.save(criticalJob);
+        Optional<Job> found = jobRepository.findById(saved.getId());
+        assertThat(found).isPresent();
+        assertThat(found.get().getPriority()).isEqualTo(JobPriority.CRITICAL);
     }
 
     @Test

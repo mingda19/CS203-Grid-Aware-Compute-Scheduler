@@ -2,6 +2,7 @@ package com.gacs.backend.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.gacs.backend.model.Job;
+import com.gacs.backend.model.JobPriority;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -53,6 +54,9 @@ public class JobResponseDto {
     @Schema(description = "Operational status", example = "PENDING")
     private String status;
 
+    @Schema(description = "Workload priority level", example = "NORMAL", allowableValues = {"CRITICAL", "HIGH", "NORMAL", "LOW"})
+    private JobPriority priority;
+
     @Schema(description = "Timestamp when the record was created in UTC ISO-8601", example = "2026-10-18T00:30:00")
     private LocalDateTime createdAt;
 
@@ -85,6 +89,7 @@ public class JobResponseDto {
                 .isExempt(job.isExempt())
                 .rawConstraints(job.getRawConstraints())
                 .status(job.getStatus())
+                .priority(job.getPriority() != null ? job.getPriority() : JobPriority.NORMAL)
                 .createdAt(job.getCreatedAt())
                 .updatedAt(job.getUpdatedAt())
                 .build();

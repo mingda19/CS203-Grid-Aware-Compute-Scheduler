@@ -6,6 +6,7 @@ import com.gacs.backend.controller.JobController;
 import com.gacs.backend.dto.JobRequestDto;
 import com.gacs.backend.dto.JobResponseDto;
 import com.gacs.backend.exception.GlobalExceptionHandler;
+import com.gacs.backend.model.JobPriority;
 import com.gacs.backend.exception.ResourceNotFoundException;
 import com.gacs.backend.service.JobService;
 import org.junit.jupiter.api.DisplayName;
@@ -72,6 +73,7 @@ class JobControllerTest {
                 .isExempt(true)
                 .rawConstraints("Can wait up to 12 hours for low price valley")
                 .status("PENDING")
+                .priority(JobPriority.NORMAL)
                 .createdAt(LocalDateTime.now())
                 .updatedAt(LocalDateTime.now())
                 .build();
@@ -90,7 +92,8 @@ class JobControllerTest {
                 .andExpect(jsonPath("$.data.originalStartTime").value("2026-10-20T10:00:00"))
                 .andExpect(jsonPath("$.data.deadline").value("2026-10-21T18:00:00"))
                 .andExpect(jsonPath("$.data.flexibilityWindowHours").value(12))
-                .andExpect(jsonPath("$.data.status").value("PENDING"));
+                .andExpect(jsonPath("$.data.status").value("PENDING"))
+                .andExpect(jsonPath("$.data.priority").value("NORMAL"));
     }
 
     @Test
@@ -119,6 +122,7 @@ class JobControllerTest {
                 .flexibilityWindowHours(4)
                 .isExempt(false)
                 .status("PENDING")
+                .priority(JobPriority.NORMAL)
                 .build();
 
         when(jobService.createJob(any(JobRequestDto.class), eq("operator@datacenter.io"))).thenReturn(response);
@@ -129,7 +133,76 @@ class JobControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.id").value(102))
-                .andExpect(jsonPath("$.data.isExempt").value(false));
+                .andExpect(jsonPath("$.data.isExempt").value(false))
+                .andExpect(jsonPath("$.data.priority").value("NORMAL"));
+    }
+
+    @Test
+    @WithMockUser(username = "operator@datacenter.io")
+    @DisplayName("POST /api/jobs with explicit priority returns 201 and priority value")
+    void createJob_WithExplicitPriority_Returns201() throws Exception {
+        String payload = """
+                {
+                    "name": "Critical Job",
+                    "cpuHours": 32.0,
+                    "gpuHours": 8.0,
+                    "originalStartTime": "2026-10-20T10:00:00",
+                    "deadline": "2026-10-21T18:00:00",
+                    "flexibilityWindowHours": 0,
+                    "priority": "CRITICAL"
+                }
+                """;
+
+        JobResponseDto response = JobResponseDto.builder()
+                .id(103L)
+                .ownerEmail("operator@datacenter.io")
+                .name("Critical Job")
+                .cpuHours(32.0)
+                .gpuHours(8.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .flexibilityWindowHours(0)
+                .isExempt(false)
+                .status("PENDING")
+                .priority(JobPriority.CRITICAL)
+                .build();
+
+        when(jobService.createJob(any(JobRequestDto.class), eq("operator@datacenter.io"))).thenReturn(response);
+
+        mockMvc.perform(post("/api/jobs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.id").value(103))
+                .andExpect(jsonPath("$.data.priority").value("CRITICAL"));
+    }
+
+    @Test
+    @WithMockUser(username = "operator@datacenter.io")
+    @DisplayName("POST /api/jobs rejects unknown priority with 400 and clear error message")
+    void createJob_InvalidPriority_Returns400() throws Exception {
+        when(jobService.createJob(any(JobRequestDto.class), eq("operator@datacenter.io")))
+                .thenThrow(new IllegalArgumentException("Invalid priority: 'URGENT'. Allowed priorities: CRITICAL, HIGH, NORMAL, LOW"));
+
+        String payload = """
+                {
+                    "name": "Invalid Job",
+                    "cpuHours": 10.0,
+                    "gpuHours": 0.0,
+                    "originalStartTime": "2026-10-20T10:00:00",
+                    "deadline": "2026-10-21T18:00:00",
+                    "flexibilityWindowHours": 0,
+                    "priority": "URGENT"
+                }
+                """;
+
+        mockMvc.perform(post("/api/jobs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.message").value("Invalid priority: 'URGENT'. Allowed priorities: CRITICAL, HIGH, NORMAL, LOW"));
     }
 
     @Test

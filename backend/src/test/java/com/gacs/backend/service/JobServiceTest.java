@@ -4,6 +4,7 @@ import com.gacs.backend.dto.JobRequestDto;
 import com.gacs.backend.dto.JobResponseDto;
 import com.gacs.backend.exception.ResourceNotFoundException;
 import com.gacs.backend.model.Job;
+import com.gacs.backend.model.JobPriority;
 import com.gacs.backend.repository.JobRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -151,6 +152,57 @@ class JobServiceTest {
         Job captured = captor.getValue();
         assertThat(captured.getOwnerEmail()).isEqualTo(owner);
         assertThat(captured.isExempt()).isTrue();
+        assertThat(captured.getPriority()).isEqualTo(JobPriority.NORMAL);
+    }
+
+    @Test
+    @DisplayName("createJob with explicit priority persists and returns priority")
+    void createJob_WithExplicitPriority() {
+        JobRequestDto request = JobRequestDto.builder()
+                .name("High Priority Job")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .priority("HIGH")
+                .build();
+
+        Job savedJob = Job.builder()
+                .id(105L)
+                .ownerEmail(owner)
+                .name("High Priority Job")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .priority(JobPriority.HIGH)
+                .build();
+
+        when(jobRepository.save(any(Job.class))).thenReturn(savedJob);
+
+        JobResponseDto response = jobService.createJob(request, owner);
+
+        assertThat(response.getPriority()).isEqualTo(JobPriority.HIGH);
+        ArgumentCaptor<Job> captor = ArgumentCaptor.forClass(Job.class);
+        verify(jobRepository).save(captor.capture());
+        assertThat(captor.getValue().getPriority()).isEqualTo(JobPriority.HIGH);
+    }
+
+    @Test
+    @DisplayName("validateJobConstraints throws clear error when priority is unknown")
+    void validate_ThrowsWhenInvalidPriority() {
+        JobRequestDto request = JobRequestDto.builder()
+                .name("Invalid Priority Job")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .priority("URGENT")
+                .build();
+
+        assertThatThrownBy(() -> jobService.validateJobConstraints(request))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Invalid priority: 'URGENT'. Allowed priorities: CRITICAL, HIGH, NORMAL, LOW");
     }
 
     @Test
@@ -246,6 +298,7 @@ class JobServiceTest {
                 .deadline(newDeadline)
                 .flexibilityWindowHours(8)
                 .isExempt(true)
+                .priority("CRITICAL")
                 .rawConstraints("Changed to exempt priority")
                 .status("SCHEDULED")
                 .build();
@@ -261,6 +314,7 @@ class JobServiceTest {
         assertThat(updated.getDeadline()).isEqualTo(newDeadline);
         assertThat(updated.getFlexibilityWindowHours()).isEqualTo(8);
         assertThat(updated.isExempt()).isTrue();
+        assertThat(updated.getPriority()).isEqualTo(JobPriority.CRITICAL);
         assertThat(updated.getRawConstraints()).isEqualTo("Changed to exempt priority");
         assertThat(updated.getStatus()).isEqualTo("SCHEDULED");
     }

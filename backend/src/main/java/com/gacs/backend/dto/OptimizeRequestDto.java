@@ -48,8 +48,22 @@ public record OptimizeRequestDto(
         @Schema(description = "Hard completion deadline, UTC", example = "2026-10-21T18:00:00") LocalDateTime deadline,
         @Schema(description = "Delay tolerance in hours", example = "12") Integer flexibilityWindowHours,
         @Schema(description = "When true the job is pinned to its original start", example = "false")
-        @JsonProperty("isExempt") Boolean isExempt
+        @JsonProperty("isExempt") Boolean isExempt,
+        @Schema(description = "Workload priority level", example = "NORMAL", allowableValues = {"CRITICAL", "HIGH", "NORMAL", "LOW"})
+        String priority
     ) {
+        public JobInput(
+            Long id,
+            String name,
+            Double cpuHours,
+            Double gpuHours,
+            LocalDateTime originalStartTime,
+            LocalDateTime deadline,
+            Integer flexibilityWindowHours,
+            Boolean isExempt
+        ) {
+            this(id, name, cpuHours, gpuHours, originalStartTime, deadline, flexibilityWindowHours, isExempt, "NORMAL");
+        }
     }
 
     @Schema(description = "Price for one hourly slot")

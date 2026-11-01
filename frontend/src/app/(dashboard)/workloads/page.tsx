@@ -46,7 +46,15 @@ function computeJobToWorkload(job: ComputeJob): Workload {
         ? "Running"
         : "Scheduled",
     machineCluster: `${job.cpuHours} CPU-hrs · ${job.gpuHours} GPU-hrs`,
-    priority: job.isExempt ? "Critical" : "Normal",
+    priority: job.priority === "CRITICAL"
+      ? "Critical"
+      : job.priority === "HIGH"
+      ? "High"
+      : job.priority === "LOW"
+      ? "Interruptible"
+      : job.priority === "NORMAL"
+      ? "Normal"
+      : (job.isExempt ? "Critical" : "Normal"),
     hardware: `${job.cpuHours} vCPUs · ${job.gpuHours} GPUs`,
     precedence: job.isExempt
       ? "Pinned start time (Exempt from rescheduling)"

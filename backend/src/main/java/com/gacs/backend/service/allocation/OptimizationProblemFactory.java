@@ -6,6 +6,7 @@ import com.gacs.backend.dto.OptimizeRequestDto.ClusterCapacityInput;
 import com.gacs.backend.dto.OptimizeRequestDto.ForecastPointInput;
 import com.gacs.backend.dto.OptimizeRequestDto.JobInput;
 import com.gacs.backend.exception.UnprocessableDataException;
+import com.gacs.backend.model.JobPriority;
 import com.gacs.backend.service.PriceSeries;
 import com.gacs.backend.service.PriceSeriesProvider;
 import org.springframework.stereotype.Service;
@@ -133,6 +134,13 @@ public class OptimizationProblemFactory {
             throw invalid(where + ".flexibilityWindowHours must be 0 or more");
         }
         boolean exempt = required(input.isExempt(), where + ".isExempt");
+        if (input.priority() != null && !input.priority().isBlank()) {
+            try {
+                JobPriority.valueOf(input.priority().trim().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw invalid(where + ".priority must be one of CRITICAL, HIGH, NORMAL, LOW");
+            }
+        }
         return new OptimizerJob(input.id(), input.name().trim(), cpu, gpu, start, deadline, flexibility, exempt);
     }
 

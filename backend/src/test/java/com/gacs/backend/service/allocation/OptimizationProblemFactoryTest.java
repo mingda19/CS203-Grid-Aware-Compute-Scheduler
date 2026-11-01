@@ -161,6 +161,12 @@ class OptimizationProblemFactoryTest {
     }
 
     @Test
+    @DisplayName("400: invalid job priority")
+    void invalidJobPriority() {
+        assertRejected(new JobInput(1L, "a", 1.0, 0.0, T0, at(4), 0, false, "URGENT"), "priority must be one of CRITICAL, HIGH, NORMAL, LOW");
+    }
+
+    @Test
     @DisplayName("400: duplicate job ids")
     void duplicateIds() {
         assertThatThrownBy(() -> factory.build(request(List.of(validJob(7), validJob(7)))))

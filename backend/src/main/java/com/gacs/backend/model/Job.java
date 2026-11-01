@@ -60,6 +60,11 @@ public class Job {
     @Column(nullable = false, length = 30)
     private String status = "PENDING";
 
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20, columnDefinition = "varchar(20) default 'NORMAL'")
+    private JobPriority priority = JobPriority.NORMAL;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
@@ -82,6 +87,9 @@ public class Job {
         }
         if (this.status == null || this.status.isBlank()) {
             this.status = "PENDING";
+        }
+        if (this.priority == null) {
+            this.priority = JobPriority.NORMAL;
         }
     }
 
