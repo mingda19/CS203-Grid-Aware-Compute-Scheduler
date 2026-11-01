@@ -127,8 +127,13 @@ class ApprovedScheduleJsonSerializerTest {
                 "id", "run.runId", "createdAt", "run.createdAt",
                 "solverName", "run.solver.name",
                 "solverVersion", "run.solver.version", "solverConfig", "run.solver.config");
+        // inputSnapshot/inputHash (GRID-141) are what the export gate checks the jobs against, not part of the
+        // schedule document an execution adapter reads.
+        Set<String> notExported = Set.of("inputSnapshot", "inputHash");
+        Set<String> every = new java.util.HashSet<>(carriedAs.keySet());
+        every.addAll(notExported);
 
-        assertThat(fieldNames(OptimizerRun.class)).isEqualTo(carriedAs.keySet());
+        assertThat(fieldNames(OptimizerRun.class)).isEqualTo(every);
         assertThat(componentNames(ApprovedScheduleDocument.Solver.class)).containsExactlyInAnyOrder("name", "version", "config");
     }
 

@@ -5,6 +5,7 @@ import com.gacs.backend.model.OptimizerRun;
 import com.gacs.backend.model.User;
 import com.gacs.backend.repository.OptimizationPlanRepository;
 import com.gacs.backend.repository.OptimizerRunRepository;
+import com.gacs.backend.util.ScheduleHashUtil;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,13 +36,15 @@ class OptimizationPlanRecorder {
 
     @Transactional
     void record(String runId, Instant createdAt, String solverName, String solverVersion, String solverConfig,
-               User owner, String resultJson, Collection<Long> jobIds) {
+               User owner, String resultJson, Collection<Long> jobIds, String inputSnapshot) {
         OptimizerRun run = runs.save(OptimizerRun.builder()
                 .id(runId)
                 .createdAt(createdAt)
                 .solverName(solverName)
                 .solverVersion(solverVersion)
                 .solverConfig(solverConfig)
+                .inputSnapshot(inputSnapshot)
+                .inputHash(ScheduleHashUtil.computeSha256(inputSnapshot))
                 .build());
         plans.save(new OptimizationPlan(run, owner, resultJson, jobIds, createdAt));
     }

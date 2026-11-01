@@ -29,7 +29,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-import java.util.function.Consumer;
+import java.util.function.BiConsumer;
 
 /**
  * One optimisation run (docs/api-contract.md section 6.4): validate the request into a problem,
@@ -79,15 +79,17 @@ public class ScheduleOptimizationService {
      * ScheduleRunPersistence.finalizeExplanation}'s javadoc. {@code ScheduleReviewService} uses this
      * to record its own review-plan row atomically with the explanation, instead of in a separate
      * transaction that could leave one without the other if it failed. A caller with nothing to do
-     * there passes a no-op.
+     * there passes a no-op. The hook also receives {@link OptimizationProblem#snapshot()} of the
+     * inputs this run used (GRID-141).
      */
     public OptimizeResponseDto optimize(OptimizeRequestDto request, String ownerEmail,
-                                        Consumer<OptimizeResponseDto> afterExplanationPersisted) {
+                                        BiConsumer<OptimizeResponseDto, String> afterExplanationPersisted) {
         OptimizationProblem problem = problems.build(request);
         AllocationResult result = solver.solve(problem);
         OptimizeResponseDto response = buildResponse(problem, result);
+        String snapshot = problem.snapshot();
         recorder.record(result, problem.constraints(), problem.synchronizedGroups(), response, ownerEmail,
-                afterExplanationPersisted);
+                persisted -> afterExplanationPersisted.accept(persisted, snapshot));
         return response;
     }
 

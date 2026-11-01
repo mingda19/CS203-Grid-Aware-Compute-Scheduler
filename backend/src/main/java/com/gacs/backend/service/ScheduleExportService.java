@@ -15,6 +15,7 @@ import com.gacs.backend.repository.AuditEventRepository;
 import com.gacs.backend.repository.JobRepository;
 import com.gacs.backend.repository.OptimizationPlanRepository;
 import com.gacs.backend.repository.UserRepository;
+import com.gacs.backend.service.allocation.OptimizationProblem;
 import com.gacs.backend.util.ScheduleHashUtil;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -126,6 +127,7 @@ public class ScheduleExportService {
                 .orElseThrow(() -> invalidated(plan.getRunId(), "its stored schedule cannot be read"));
         requireCurrent(plan, schedule, owner);
         requireJobsUnchanged(plan.getRunId(), schedule, owner);
+        requireInputsUnchanged(plan, StoredScheduleReader.jobIds(schedule), owner);
 
         String body = format == Format.CSV
                 ? csv.serialize(schedule)
@@ -218,6 +220,30 @@ public class ScheduleExportService {
                 throw invalidated(runId, "job " + id + "'s deadline " + utc(job.getDeadline())
                         + " is now before its scheduled end " + utc(item.scheduledEnd()));
             }
+        }
+    }
+
+    /**
+     * GRID-141: every job in the run must still be exactly as it was when the run was solved - line 1
+     * of the input snapshot the run stored. Stricter than {@link #requireJobsUnchanged}, which only
+     * checks that the plan still fits; this catches any change to a job's inputs. Runs stored before
+     * snapshots existed have none and skip this check. The start is the job's start truncated to the
+     * hour ({@link Job#earliestAllowedStart()}), because that is what the app sends to the optimiser.
+     */
+    private void requireInputsUnchanged(OptimizationPlan plan, Set<Long> jobIds, User owner) {
+        String snapshot = plan.getRun().getInputSnapshot();
+        if (snapshot == null) {
+            return;
+        }
+        String solved = snapshot.lines().findFirst().orElse("");
+        String now = jobs.findByOwnerEmailAndIdIn(owner.getEmail(), List.copyOf(jobIds)).stream()
+                .sorted(Comparator.comparing(Job::getId))
+                .map(job -> OptimizationProblem.jobEntry(job.getId(), job.getCpuHours(), job.getGpuHours(),
+                        job.earliestAllowedStart(), job.getDeadline(), job.getFlexibilityWindowHours(),
+                        job.isExempt()))
+                .collect(Collectors.joining(";"));
+        if (!solved.equals(now)) {
+            throw invalidated(plan.getRunId(), "its jobs have changed since the schedule was generated");
         }
     }
 

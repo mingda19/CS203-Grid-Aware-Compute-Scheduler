@@ -121,7 +121,8 @@ class ScheduleExportIntegrationTest {
             m.put("name", j.getName());
             m.put("cpuHours", j.getCpuHours());
             m.put("gpuHours", j.getGpuHours());
-            m.put("originalStartTime", UTC.format(j.getOriginalStartTime()));
+            // Like the app, which truncates the start to the hour before optimising.
+            m.put("originalStartTime", UTC.format(j.getOriginalStartTime().truncatedTo(ChronoUnit.HOURS)));
             m.put("deadline", UTC.format(j.getDeadline()));
             m.put("flexibilityWindowHours", j.getFlexibilityWindowHours());
             m.put("isExempt", j.isExempt());
@@ -320,7 +321,8 @@ class ScheduleExportIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"cpu-hours", "start-moved", "deadline-earlier", "made-exempt", "deleted"})
+    @ValueSource(strings = {"cpu-hours", "start-moved", "deadline-earlier", "made-exempt", "deleted",
+            "deadline-later", "more-flexible"})
     @DisplayName("AC4.3 — editing or deleting a scheduled job after approval invalidates the export (409)")
     void changedJob_Invalidated(String change) throws Exception {
         Job job = job("Train", start);
@@ -345,6 +347,15 @@ class ScheduleExportIntegrationTest {
                 job.setExempt(true);
                 yield "must now start between " + UTC.format(start) + " and " + UTC.format(start);
             }
+            // GRID-141: the plan still fits, but the job is not what the optimiser was given.
+            case "deadline-later" -> {
+                job.setDeadline(start.plusHours(10));
+                yield "its jobs have changed since the schedule was generated";
+            }
+            case "more-flexible" -> {
+                job.setFlexibilityWindowHours(4);
+                yield "its jobs have changed since the schedule was generated";
+            }
             default -> "is no longer in your jobs";
         };
         if (change.equals("deleted")) {
@@ -357,7 +368,16 @@ class ScheduleExportIntegrationTest {
     }
 
     @Test
-    @DisplayName("Edits that the approved plan still satisfies keep it exportable")
+    @DisplayName("GRID-141 — a job start with minutes, truncated to the hour when optimising, still exports")
+    void startWithMinutes_StillExportable() throws Exception {
+        String runId = optimize(start, job("Train", start.plusMinutes(30)));
+        decide(runId, "approve");
+
+        export(runId, "csv").andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("Edits to what the optimiser does not use (name, priority, status) keep it exportable")
     void harmlessJobEdits_StillExportable() throws Exception {
         Job job = job("Train", start);
         String runId = optimize(start, job);
@@ -366,8 +386,6 @@ class ScheduleExportIntegrationTest {
         job.setName("Train (renamed)");
         job.setPriority(JobPriority.CRITICAL);
         job.setStatus("SCHEDULED");
-        job.setDeadline(start.plusHours(10));
-        job.setFlexibilityWindowHours(4);
         jobs.save(job);
 
         export(runId, "csv").andExpect(status().isOk());
