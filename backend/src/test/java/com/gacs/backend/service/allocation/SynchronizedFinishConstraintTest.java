@@ -20,7 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** {@code SynchronizedFinishConstraint} / {@link SynchronizedGroupPlacer}: "every member finishes together." */
 class SynchronizedFinishConstraintTest {
 
-    private static final ExactAllocationSolver EXACT = new ExactAllocationSolver(COSTS, Duration.ofSeconds(10));
+    private static final Duration BUDGET = Duration.ofSeconds(10);
+    private static final ExactAllocationSolver EXACT = new ExactAllocationSolver(COSTS);
     private static final AnnealingAllocationSolver HEURISTIC = new AnnealingAllocationSolver(COSTS, 200);
 
     @Test
@@ -53,9 +54,9 @@ class SynchronizedFinishConstraintTest {
         SynchronizedFinishConstraint group = new SynchronizedFinishConstraint(List.of(1L, 2L, 3L));
         OptimizationProblem problem = problem(
                 List.of(job(1, 20.0, 0.0, 0, 3, 4), job(2, 20.0, 0.0, 1, 2, 4), job(3, 20.0, 0.0, 0, 4, 5)),
-                prices(10, 10, 1, 10, 10), cpuCapacity(256.0), List.of(group));
+                prices(10, 10, 1, 10, 10), cpuCapacity(256.0), List.of(), List.of(group));
 
-        AllocationResult exactResult = EXACT.solve(problem).orElseThrow();
+        AllocationResult exactResult = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, exactResult)).isEmpty();
         assertThat(exactResult.scheduledCount()).isEqualTo(3);
         assertThat(endsOf(exactResult, 1, 2, 3)).hasSize(1);
@@ -74,9 +75,9 @@ class SynchronizedFinishConstraintTest {
         SynchronizedFinishConstraint group = new SynchronizedFinishConstraint(List.of(1L, 2L));
         OptimizationProblem problem = problem(
                 List.of(job(1, 20.0, 0.0, 0, 0, 1), job(2, 20.0, 0.0, 2, 0, 3)),
-                prices(10, 10, 10), cpuCapacity(256.0), List.of(group));
+                prices(10, 10, 10), cpuCapacity(256.0), List.of(), List.of(group));
 
-        AllocationResult exactResult = EXACT.solve(problem).orElseThrow();
+        AllocationResult exactResult = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, exactResult)).isEmpty();
         assertThat(exactResult.scheduledCount()).isEqualTo(0);
         assertThat(outcomeFor(exactResult, 1).status()).isEqualTo(PerJobStatus.NO_FEASIBLE_SLOT);
@@ -95,9 +96,9 @@ class SynchronizedFinishConstraintTest {
         SynchronizedFinishConstraint group = new SynchronizedFinishConstraint(List.of(1L, 2L));
         OptimizationProblem problem = problem(
                 List.of(job(1, 128.0, 0.0, 0, 0, 1), job(2, 128.0, 0.0, 0, 0, 1), job(3, 20.0, 0.0, 0, 1, 2)),
-                prices(1, 2), cpuCapacity(256.0), List.of(group));
+                prices(1, 2), cpuCapacity(256.0), List.of(), List.of(group));
 
-        AllocationResult result = EXACT.solve(problem).orElseThrow();
+        AllocationResult result = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, result)).isEmpty();
         assertThat(result.scheduledCount()).isEqualTo(3);
         assertThat(planFor(result, 3).start()).isEqualTo(at(1));
@@ -109,9 +110,9 @@ class SynchronizedFinishConstraintTest {
         SynchronizedFinishConstraint group = new SynchronizedFinishConstraint(List.of(1L, 2L));
         OptimizationProblem problem = problem(
                 List.of(job(1, 20.0, 0.0, 0, 2, 3), exempt(2, 20.0, 0.0, 0, 1)),
-                prices(1, 9), cpuCapacity(256.0), List.of(group));
+                prices(1, 9), cpuCapacity(256.0), List.of(), List.of(group));
 
-        AllocationResult result = EXACT.solve(problem).orElseThrow();
+        AllocationResult result = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, result)).isEmpty();
         assertThat(outcomeFor(result, 1).status()).isEqualTo(PerJobStatus.OPTIMISED);
         assertThat(outcomeFor(result, 2).status()).isEqualTo(PerJobStatus.UNCHANGED_EXEMPT);

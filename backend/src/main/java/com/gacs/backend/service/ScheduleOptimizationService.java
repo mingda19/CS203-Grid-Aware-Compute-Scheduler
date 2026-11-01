@@ -88,7 +88,8 @@ public class ScheduleOptimizationService {
         OptimizationProblem problem = problems.build(request);
         AllocationResult result = solver.solve(problem);
         OptimizeResponseDto response = buildResponse(problem, result);
-        recorder.record(result, problem.constraints(), response, ownerEmail, afterExplanationPersisted);
+        recorder.record(result, problem.constraints(), problem.synchronizedGroups(), response, ownerEmail,
+                afterExplanationPersisted);
         return response;
     }
 

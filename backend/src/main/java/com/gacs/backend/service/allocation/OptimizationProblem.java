@@ -16,23 +16,33 @@ import java.util.Set;
  * every {@link AllocationSolver} consumes. Every job's baseline finishes by its deadline and every
  * baseline slot is priced, so baselines can always be costed.
  *
- * @param jobs        in request order; ids are unique
- * @param baselines   each job's baseline plan; exempt jobs run exactly as theirs
- * @param constraints every {@link Constraint} declared for this run (today always empty: the
- *                    factory does not yet parse constraint declarations from a request - see
- *                    docs/schedule-explanation-design.md section 2.6)
+ * @param jobs             in request order; ids are unique
+ * @param baselines        each job's baseline plan; exempt jobs run exactly as theirs
+ * @param constraints      every {@link PlacementConstraint} declared for this run (today always
+ *                         empty: the factory does not yet parse constraint declarations from a
+ *                         request - see docs/schedule-explanation-design.md section 2.6)
+ * @param synchronizedGroups every {@link SynchronizedFinishConstraint} declared for this run, kept
+ *                         separate from {@code constraints} since it is not a {@link
+ *                         PlacementConstraint} (see that interface's javadoc for why)
  */
 public record OptimizationProblem(
         List<OptimizerJob> jobs,
         PriceSeries prices,
         SlotCapacity capacity,
         Map<OptimizerJob, JobPlan> baselines,
-        List<Constraint> constraints) {
+        List<PlacementConstraint> constraints,
+        List<SynchronizedFinishConstraint> synchronizedGroups) {
 
-    /** Convenience for the common case of no constraints. */
+    /** Convenience for the common case of no constraints or synchronized-finish groups. */
     public OptimizationProblem(List<OptimizerJob> jobs, PriceSeries prices, SlotCapacity capacity,
                                Map<OptimizerJob, JobPlan> baselines) {
-        this(jobs, prices, capacity, baselines, List.of());
+        this(jobs, prices, capacity, baselines, List.of(), List.of());
+    }
+
+    /** Convenience for runs with placement constraints but no synchronized-finish groups. */
+    public OptimizationProblem(List<OptimizerJob> jobs, PriceSeries prices, SlotCapacity capacity,
+                               Map<OptimizerJob, JobPlan> baselines, List<PlacementConstraint> constraints) {
+        this(jobs, prices, capacity, baselines, constraints, List.of());
     }
 
     /**
@@ -48,6 +58,7 @@ public record OptimizationProblem(
         jobs = List.copyOf(jobs);
         baselines = Map.copyOf(baselines);
         constraints = List.copyOf(constraints);
+        synchronizedGroups = List.copyOf(synchronizedGroups);
         Objects.requireNonNull(prices, "prices");
         Objects.requireNonNull(capacity, "capacity");
         for (OptimizerJob job : jobs) {
@@ -61,8 +72,8 @@ public record OptimizationProblem(
         return baselines.get(job);
     }
 
-    /** Every declared constraint that governs {@code job}, in declaration order. */
-    public List<Constraint> constraintsFor(OptimizerJob job) {
+    /** Every declared placement constraint that governs {@code job}, in declaration order. */
+    public List<PlacementConstraint> constraintsFor(OptimizerJob job) {
         return constraints.stream().filter(c -> c.jobIds().contains(job.id())).toList();
     }
 

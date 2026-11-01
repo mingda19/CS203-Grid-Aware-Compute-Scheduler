@@ -23,10 +23,11 @@ import static org.assertj.core.api.Assertions.within;
 /** The exact solver on the hand-checked cases from {@link BruteForceAllocatorTest}. */
 class ExactAllocationSolverTest {
 
-    private static final ExactAllocationSolver SOLVER = new ExactAllocationSolver(COSTS, Duration.ofSeconds(10));
+    private static final Duration BUDGET = Duration.ofSeconds(10);
+    private static final ExactAllocationSolver SOLVER = new ExactAllocationSolver(COSTS);
 
     private static AllocationResult solve(OptimizationProblem problem) {
-        AllocationResult result = SOLVER.solve(problem).orElseThrow();
+        AllocationResult result = SOLVER.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, result)).isEmpty();
         assertThat(result.provenOptimal()).isTrue();
         return result;

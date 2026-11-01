@@ -9,12 +9,12 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Places one job at a time on its cheapest plan in the capacity (and, with {@link Constraint}s
- * attached, the placement) earlier jobs left. Every plan it makes meets the window, deadline,
- * price, capacity and constraint rules, so any order gives a valid schedule. The heuristic solver
- * ({@link AnnealingAllocationSolver}) searches over orders by calling {@link #cheapestPlan}
- * directly; {@link SynchronizedGroupPlacer} calls {@link #cheapestPlanEndingAt} for its dedicated
- * pre-pass.
+ * Places one job at a time on its cheapest plan in the capacity (and, with {@link
+ * PlacementConstraint}s attached, the placement) earlier jobs left. Every plan it makes meets the
+ * window, deadline, price, capacity and constraint rules, so any order gives a valid schedule. The
+ * heuristic solver ({@link AnnealingAllocationSolver}) searches over orders by calling
+ * {@link #cheapestPlan} directly; {@link SynchronizedGroupPlacer} calls {@link #cheapestPlanEndingAt}
+ * for its dedicated pre-pass.
  */
 final class GreedyAllocator {
 
@@ -25,10 +25,11 @@ final class GreedyAllocator {
 
     /**
      * The cheapest plan for one job given the capacity left and the jobs already placed for any
-     * {@link Constraint} this job carries. For each allowed start and each run length, every hour
-     * gets {@link AllocationSolver#MIN_SHARE} and the rest of the work goes to the cheapest hours
-     * first, up to what each hour has free. That is optimal for one job over a fixed set of hours,
-     * because cost is linear in the shares. Ties keep the earlier start, then the shorter run.
+     * {@link PlacementConstraint} this job carries. For each allowed start and each run length,
+     * every hour gets {@link AllocationSolver#MIN_SHARE} and the rest of the work goes to the
+     * cheapest hours first, up to what each hour has free. That is optimal for one job over a fixed
+     * set of hours, because cost is linear in the shares. Ties keep the earlier start, then the
+     * shorter run.
      *
      * @param constraints this job's own constraints ({@code problem.constraintsFor(job)}), not every
      *                    constraint in the problem
@@ -36,10 +37,10 @@ final class GreedyAllocator {
      *                    to consult
      */
     static Optional<JobPlan> cheapestPlan(OptimizerJob job, ResidualCapacity free, PriceSeries prices,
-                                          EnergyCostModel costs, List<Constraint> constraints,
+                                          EnergyCostModel costs, List<PlacementConstraint> constraints,
                                           Map<Long, JobPlan> placedSoFar) {
         JobWindow window = new JobWindow(job, prices);
-        for (Constraint constraint : constraints) {
+        for (PlacementConstraint constraint : constraints) {
             window = constraint.restrict(job, window, placedSoFar);
         }
         double kwh = costs.slotCostUsd(job, 1.0, 1.0); // cost of all the work at $1/MWh
@@ -89,8 +90,8 @@ final class GreedyAllocator {
     /**
      * The cheapest plan for {@code job} whose last slot starts exactly at {@code endHour} - the
      * building block {@link SynchronizedGroupPlacer} tries one common end hour at a time with.
-     * Ignores this job's own {@link Constraint}s: a synchronized-finish group is placed before any
-     * other constraint on its members would have anything to consult yet.
+     * Ignores this job's own {@link PlacementConstraint}s: a synchronized-finish group is placed
+     * before any other constraint on its members would have anything to consult yet.
      */
     static Optional<JobPlan> cheapestPlanEndingAt(OptimizerJob job, LocalDateTime endHour, ResidualCapacity free,
                                                    PriceSeries prices, EnergyCostModel costs) {
@@ -143,9 +144,9 @@ final class GreedyAllocator {
         return Optional.ofNullable(best);
     }
 
-    private static boolean satisfiesAll(List<Constraint> constraints, OptimizerJob job, JobPlan candidate,
+    private static boolean satisfiesAll(List<PlacementConstraint> constraints, OptimizerJob job, JobPlan candidate,
                                         Map<Long, JobPlan> placedSoFar) {
-        for (Constraint constraint : constraints) {
+        for (PlacementConstraint constraint : constraints) {
             if (!constraint.isSatisfiedBy(job, candidate, placedSoFar)) {
                 return false;
             }

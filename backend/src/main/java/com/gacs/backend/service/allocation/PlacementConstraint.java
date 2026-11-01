@@ -6,9 +6,18 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * A hard constraint over one or more jobs (docs/schedule-explanation-design.md section 2). Every
- * constraint, when attached to a job, is hard: a job this constraint cannot be satisfied for is
+ * A hard constraint over one or more jobs that the solvers enforce by calling these hooks while
+ * placing jobs (docs/schedule-explanation-design.md section 2). Every constraint, when attached to
+ * a job, is hard: a job this constraint cannot be satisfied for is
  * {@link PerJobStatus#NO_FEASIBLE_SLOT}, never a soft trade-off.
+ *
+ * <p>{@link SynchronizedFinishConstraint} deliberately does not implement this interface: a
+ * synchronized-finish group cannot be resolved by placing jobs one at a time or added to the exact
+ * model as per-job expressions, so both solvers run {@link SynchronizedGroupPlacer} as a dedicated
+ * pre-pass instead of ever calling these hooks for it (see that class's javadoc). Keeping it out of
+ * this interface, rather than giving it no-op overrides of hooks it can never honor, is what lets
+ * every real behavioral consumer below trust that any {@code PlacementConstraint} it is handed
+ * actually participates in the hooks it calls.
  *
  * <p>The two solvers use these hooks differently:
  * <ul>
@@ -22,12 +31,12 @@ import java.util.Map;
  * </ul>
  * A concrete type overrides only the hooks it actually needs; the rest keep these no-op defaults.
  */
-public abstract class Constraint {
+public interface PlacementConstraint {
 
-    public abstract ConstraintType type();
+    ConstraintType type();
 
     /** The job(s) this constraint governs. */
-    public abstract List<Long> jobIds();
+    List<Long> jobIds();
 
     /**
      * Narrows {@code window} for {@code job}, given what has already been placed for the other
@@ -35,7 +44,7 @@ public abstract class Constraint {
      * for a job not yet placed - including, for the exact solver, every job, since nothing is placed
      * incrementally there). Must never widen the window.
      */
-    public JobWindow restrict(OptimizerJob job, JobWindow window, Map<Long, JobPlan> placedSoFar) {
+    default JobWindow restrict(OptimizerJob job, JobWindow window, Map<Long, JobPlan> placedSoFar) {
         return window;
     }
 
@@ -44,7 +53,7 @@ public abstract class Constraint {
      * what has already been placed. Used by the greedy/heuristic solver as a final accept/reject
      * check after {@link #restrict} has already narrowed the window.
      */
-    public boolean isSatisfiedBy(OptimizerJob job, JobPlan candidate, Map<Long, JobPlan> placedSoFar) {
+    default boolean isSatisfiedBy(OptimizerJob job, JobPlan candidate, Map<Long, JobPlan> placedSoFar) {
         return true;
     }
 
@@ -52,6 +61,6 @@ public abstract class Constraint {
      * Adds this constraint's linear expressions directly into the exact solver's model, using
      * {@code runningVariableOf} to look up each governed job's per-hour "running" variable.
      */
-    public void applyToExactModel(ExpressionsBasedModel model, RunningVariableLookup runningVariableOf) {
+    default void applyToExactModel(ExpressionsBasedModel model, RunningVariableLookup runningVariableOf) {
     }
 }

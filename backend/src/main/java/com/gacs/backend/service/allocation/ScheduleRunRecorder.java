@@ -36,20 +36,23 @@ public class ScheduleRunRecorder {
         this.explanationGenerator = explanationGenerator;
     }
 
-    public void record(AllocationResult result, List<Constraint> constraints, OptimizeResponseDto response,
+    public void record(AllocationResult result, List<PlacementConstraint> constraints,
+                       List<SynchronizedFinishConstraint> synchronizedGroups, OptimizeResponseDto response,
                        String ownerEmail) {
-        record(result, constraints, response, ownerEmail, ignored -> { });
+        record(result, constraints, synchronizedGroups, response, ownerEmail, ignored -> { });
     }
 
     /**
-     * Same as {@link #record(AllocationResult, List, OptimizeResponseDto, String)}, plus a hook run
-     * inside the same transaction as {@link ScheduleRunPersistence#finalizeExplanation} - see that
-     * method's javadoc for why a caller would want this instead of just doing its own persistence
-     * after {@code record} returns.
+     * Same as {@link #record(AllocationResult, List, List, OptimizeResponseDto, String)}, plus a
+     * hook run inside the same transaction as {@link ScheduleRunPersistence#finalizeExplanation} -
+     * see that method's javadoc for why a caller would want this instead of just doing its own
+     * persistence after {@code record} returns.
      */
-    public void record(AllocationResult result, List<Constraint> constraints, OptimizeResponseDto response,
+    public void record(AllocationResult result, List<PlacementConstraint> constraints,
+                       List<SynchronizedFinishConstraint> synchronizedGroups, OptimizeResponseDto response,
                        String ownerEmail, Consumer<OptimizeResponseDto> afterExplanationPersisted) {
-        ScheduleRunPersistence.Persisted persisted = persistence.persist(result, constraints, response, ownerEmail);
+        ScheduleRunPersistence.Persisted persisted = persistence.persist(result, constraints, synchronizedGroups,
+                response, ownerEmail);
 
         ScheduleRun run = persisted.run();
         List<ScheduleItem> items = persisted.items();

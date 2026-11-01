@@ -11,10 +11,10 @@ import static com.gacs.backend.service.allocation.Fixtures.job;
 import static com.gacs.backend.service.allocation.Fixtures.prices;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** {@link JobWindow#restrictedTo} and {@link Constraint}'s no-op defaults. */
+/** {@link JobWindow#restrictedTo} and {@link PlacementConstraint}'s no-op defaults. */
 class ConstraintTest {
 
-    private static final class NoOpConstraint extends Constraint {
+    private static final class NoOpConstraint implements PlacementConstraint {
         @Override
         public ConstraintType type() {
             return ConstraintType.ABSOLUTE_TIME_WINDOW;
@@ -55,9 +55,9 @@ class ConstraintTest {
     }
 
     @Test
-    @DisplayName("A bare Constraint subclass changes nothing: every hook keeps its default")
+    @DisplayName("A bare PlacementConstraint implementation changes nothing: every hook keeps its default")
     void defaultsAreNoOps() {
-        Constraint constraint = new NoOpConstraint();
+        PlacementConstraint constraint = new NoOpConstraint();
         OptimizerJob theJob = job(1, 20.0, 0.0, 0, 0, 1);
         JobWindow window = new JobWindow(theJob, prices(1));
         JobPlan plan = new JobPlan(theJob, List.of(new SlotAllocation(at(0), 1.0)));

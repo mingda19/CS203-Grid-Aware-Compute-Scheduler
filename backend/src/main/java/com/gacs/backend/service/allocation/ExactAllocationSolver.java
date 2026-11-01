@@ -46,7 +46,7 @@ import java.util.TreeMap;
  * </ol>
  * Each pass is time-boxed. The result is proven optimal only when both passes finish optimal.
  */
-public final class ExactAllocationSolver {
+public final class ExactAllocationSolver implements BoundedAllocationSolver {
 
     /** Tie-break weight per rank step, as a fraction of the run's cost scale. */
     private static final double RANK_WEIGHT = 1e-7;
@@ -54,21 +54,20 @@ public final class ExactAllocationSolver {
     private static final double START_WEIGHT = 1e-11;
 
     private final EnergyCostModel costs;
-    private final Duration timeBudget;
 
-    public ExactAllocationSolver(EnergyCostModel costs, Duration timeBudget) {
+    public ExactAllocationSolver(EnergyCostModel costs) {
         this.costs = costs;
-        this.timeBudget = timeBudget;
     }
 
     /**
-     * The best plan found within the time budget, or empty if no feasible plan was found in time.
+     * The best plan found within {@code budget}, or empty if no feasible plan was found in time.
      * {@code provenOptimal} only covers this call's own model: when the problem has a
      * {@link SynchronizedFinishConstraint}, that group's placement comes from a separate,
      * independently-greedy pre-pass ({@link SynchronizedGroupPlacer}), so a proven-optimal result is
      * optimal given the group's placement, not jointly optimal across it and the rest of the run.
      */
-    public Optional<AllocationResult> solve(OptimizationProblem problem) {
+    @Override
+    public Optional<AllocationResult> solve(OptimizationProblem problem, Duration budget) {
         SynchronizedGroupPlacer.Placement groups = SynchronizedGroupPlacer.place(problem, costs);
         List<OptimizerJob> flexible = problem.flexibleJobsInTieBreakOrder().stream()
                 .filter(job -> !groups.groupedJobIds().contains(job.id()))
@@ -76,7 +75,7 @@ public final class ExactAllocationSolver {
         if (flexible.isEmpty()) {
             return Optional.of(AllocationResult.of(problem, groups.plans(), true));
         }
-        long deadline = System.nanoTime() + timeBudget.toNanos();
+        long deadline = System.nanoTime() + budget.toNanos();
 
         Model countPass = new Model(problem, flexible, OptionalInt.empty(), groups.plans());
         Optimisation.Result counted = countPass.minimise(remainingMillis(deadline));
@@ -133,92 +132,109 @@ public final class ExactAllocationSolver {
             Expression count = costPass ? expression().level(fixedCount.getAsInt()) : null;
 
             for (int rank = 0; rank < flexible.size(); rank++) {
-                OptimizerJob job = flexible.get(rank);
-                JobWindow window = new JobWindow(job, prices);
-                for (Constraint constraint : problem.constraintsFor(job)) {
-                    window = constraint.restrict(job, window, Map.of());
-                }
-                Set<LocalDateTime> starts = new HashSet<>(window.startSlots());
-                List<LocalDateTime> hours = new ArrayList<>();
-                for (LocalDateTime t = job.originalStartTime(); !t.isAfter(window.lastSlot()); t = t.plusHours(1)) {
-                    hours.add(t);
-                }
-
-                Variable p = model.newVariable("p" + rank).binary()
-                        .weight(costPass ? -RANK_WEIGHT * costScale * (flexible.size() - rank) : -1.0);
-                if (count != null) {
-                    count.set(p, 1);
-                }
-                if (hours.isEmpty() || starts.isEmpty()) {
-                    p.level(0);
-                    vars.add(new JobVars(job, hours, p, List.of(), List.of()));
-                    continue;
-                }
-
-                Expression startSum = expression().level(0).set(p, -1);
-                Expression endSum = expression().level(0).set(p, -1);
-                Expression shareSum = expression().level(0).set(p, -1);
-                List<Variable> running = new ArrayList<>();
-                List<Variable> shares = new ArrayList<>();
-                Variable previousRunning = null;
-                Variable previousEnd = null;
-
-                for (int k = 0; k < hours.size(); k++) {
-                    LocalDateTime t = hours.get(k);
-                    Optional<Double> price = prices.priceAt(t);
-                    boolean usable = window.isUsable(t);
-                    String id = rank + "_" + k;
-                    Variable s = model.newVariable("s" + id).binary();
-                    Variable e = model.newVariable("e" + id).binary();
-                    Variable a = model.newVariable("a" + id).binary();
-                    Variable x = model.newVariable("x" + id).lower(0.0).upper(1.0);
-
-                    if (!starts.contains(t)) {
-                        s.level(0);
-                    }
-                    if (!usable) {
-                        a.level(0);
-                        e.level(0);
-                        x.level(0);
-                    } else if (costPass) {
-                        x.weight(costs.slotCostUsd(job, 1.0, price.get()));
-                        s.weight(START_WEIGHT * costScale * k);
-                    }
-
-                    // a[t] = a[t-1] + s[t] - e[t-1]: a run is one consecutive block.
-                    Expression flow = expression().level(0).set(a, 1).set(s, -1);
-                    if (previousRunning != null) {
-                        flow.set(previousRunning, -1).set(previousEnd, 1);
-                    }
-                    expression().upper(0).set(e, 1).set(a, -1);                                  // e <= a
-                    expression().upper(0).set(x, 1).set(a, -1);                                  // x <= a
-                    expression().lower(0).set(x, 1).set(a, -AllocationSolver.MIN_SHARE);         // x >= MIN_SHARE * a
-
-                    startSum.set(s, 1);
-                    endSum.set(e, 1);
-                    shareSum.set(x, 1);
-                    if (price.isPresent()) {
-                        CapacityLimit limit = free.freeAt(t);
-                        if (job.cpuHours() > 0.0) {
-                            cpuAt.computeIfAbsent(t, slot -> expression().upper(limit.cpuHours())).set(x, job.cpuHours());
-                        }
-                        if (job.gpuHours() > 0.0) {
-                            gpuAt.computeIfAbsent(t, slot -> expression().upper(limit.gpuHours())).set(x, job.gpuHours());
-                        }
-                    }
-                    if (usable) {
-                        runningByJob.computeIfAbsent(job.id(), key -> new TreeMap<>()).put(t, a);
-                    }
-                    running.add(a);
-                    shares.add(x);
-                    previousRunning = a;
-                    previousEnd = e;
-                }
-                // Still running in the last allowed hour means it must end there, not run past the deadline.
-                expression().level(0).set(previousRunning, 1).set(previousEnd, -1);
-                vars.add(new JobVars(job, hours, p, running, shares));
+                addJobVariables(flexible.get(rank), rank, flexible.size(), costPass, costScale, prices, free,
+                        cpuAt, gpuAt, count);
             }
 
+            applyDeclaredConstraints();
+        }
+
+        /**
+         * Builds job {@code rank}'s MIP variables and expressions: its "scheduled" binary {@code p},
+         * then one {@code s}/{@code e}/{@code a}/{@code x} group per candidate hour, wired into the
+         * flow constraint and into the capacity-at-hour ({@code cpuAt}/{@code gpuAt}) and
+         * running-variable ({@code runningByJob}) state shared across every job in this pass.
+         */
+        private void addJobVariables(OptimizerJob job, int rank, int flexibleCount, boolean costPass,
+                                     double costScale, PriceSeries prices, ResidualCapacity free,
+                                     Map<LocalDateTime, Expression> cpuAt, Map<LocalDateTime, Expression> gpuAt,
+                                     Expression count) {
+            JobWindow window = new JobWindow(job, prices);
+            for (PlacementConstraint constraint : problem.constraintsFor(job)) {
+                window = constraint.restrict(job, window, Map.of());
+            }
+            Set<LocalDateTime> starts = new HashSet<>(window.startSlots());
+            List<LocalDateTime> hours = new ArrayList<>();
+            for (LocalDateTime t = job.originalStartTime(); !t.isAfter(window.lastSlot()); t = t.plusHours(1)) {
+                hours.add(t);
+            }
+
+            Variable p = model.newVariable("p" + rank).binary()
+                    .weight(costPass ? -RANK_WEIGHT * costScale * (flexibleCount - rank) : -1.0);
+            if (count != null) {
+                count.set(p, 1);
+            }
+            if (hours.isEmpty() || starts.isEmpty()) {
+                p.level(0);
+                vars.add(new JobVars(job, hours, p, List.of(), List.of()));
+                return;
+            }
+
+            Expression startSum = expression().level(0).set(p, -1);
+            Expression endSum = expression().level(0).set(p, -1);
+            Expression shareSum = expression().level(0).set(p, -1);
+            List<Variable> running = new ArrayList<>();
+            List<Variable> shares = new ArrayList<>();
+            Variable previousRunning = null;
+            Variable previousEnd = null;
+
+            for (int k = 0; k < hours.size(); k++) {
+                LocalDateTime t = hours.get(k);
+                Optional<Double> price = prices.priceAt(t);
+                boolean usable = window.isUsable(t);
+                String id = rank + "_" + k;
+                Variable s = model.newVariable("s" + id).binary();
+                Variable e = model.newVariable("e" + id).binary();
+                Variable a = model.newVariable("a" + id).binary();
+                Variable x = model.newVariable("x" + id).lower(0.0).upper(1.0);
+
+                if (!starts.contains(t)) {
+                    s.level(0);
+                }
+                if (!usable) {
+                    a.level(0);
+                    e.level(0);
+                    x.level(0);
+                } else if (costPass) {
+                    x.weight(costs.slotCostUsd(job, 1.0, price.get()));
+                    s.weight(START_WEIGHT * costScale * k);
+                }
+
+                // a[t] = a[t-1] + s[t] - e[t-1]: a run is one consecutive block.
+                Expression flow = expression().level(0).set(a, 1).set(s, -1);
+                if (previousRunning != null) {
+                    flow.set(previousRunning, -1).set(previousEnd, 1);
+                }
+                expression().upper(0).set(e, 1).set(a, -1);                                  // e <= a
+                expression().upper(0).set(x, 1).set(a, -1);                                  // x <= a
+                expression().lower(0).set(x, 1).set(a, -AllocationSolver.MIN_SHARE);         // x >= MIN_SHARE * a
+
+                startSum.set(s, 1);
+                endSum.set(e, 1);
+                shareSum.set(x, 1);
+                if (price.isPresent()) {
+                    CapacityLimit limit = free.freeAt(t);
+                    if (job.cpuHours() > 0.0) {
+                        cpuAt.computeIfAbsent(t, slot -> expression().upper(limit.cpuHours())).set(x, job.cpuHours());
+                    }
+                    if (job.gpuHours() > 0.0) {
+                        gpuAt.computeIfAbsent(t, slot -> expression().upper(limit.gpuHours())).set(x, job.gpuHours());
+                    }
+                }
+                if (usable) {
+                    runningByJob.computeIfAbsent(job.id(), key -> new TreeMap<>()).put(t, a);
+                }
+                running.add(a);
+                shares.add(x);
+                previousRunning = a;
+                previousEnd = e;
+            }
+            // Still running in the last allowed hour means it must end there, not run past the deadline.
+            expression().level(0).set(previousRunning, 1).set(previousEnd, -1);
+            vars.add(new JobVars(job, hours, p, running, shares));
+        }
+
+        private void applyDeclaredConstraints() {
             RunningVariableLookup lookup = new RunningVariableLookup() {
                 @Override
                 public Optional<Variable> runningAt(long jobId, LocalDateTime hour) {
@@ -230,7 +246,7 @@ public final class ExactAllocationSolver {
                     return List.copyOf(runningByJob.getOrDefault(jobId, new TreeMap<>()).keySet());
                 }
             };
-            for (Constraint constraint : problem.constraints()) {
+            for (PlacementConstraint constraint : problem.constraints()) {
                 constraint.applyToExactModel(model, lookup);
             }
         }

@@ -20,7 +20,7 @@ import java.util.Optional;
  *
  * <p>Exact solver: one linear expression per hour either job could possibly run in.
  */
-public final class MutualExclusionConstraint extends Constraint {
+public final class MutualExclusionConstraint implements PlacementConstraint {
 
     private final long jobIdA;
     private final long jobIdB;

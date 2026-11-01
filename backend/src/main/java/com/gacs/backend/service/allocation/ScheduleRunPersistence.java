@@ -63,7 +63,8 @@ public class ScheduleRunPersistence {
     }
 
     @Transactional
-    public Persisted persist(AllocationResult result, List<Constraint> constraints, OptimizeResponseDto response,
+    public Persisted persist(AllocationResult result, List<PlacementConstraint> constraints,
+                             List<SynchronizedFinishConstraint> synchronizedGroups, OptimizeResponseDto response,
                              String ownerEmail) {
         ScheduleRun run = runs.save(ScheduleRun.builder()
                 .runId(response.runId())
@@ -86,7 +87,7 @@ public class ScheduleRunPersistence {
         List<ConstraintImpact> savedImpacts = new ArrayList<>();
         for (int i = 0; i < outcomes.size(); i++) {
             RecordedItem recorded = recordItem(run.getId(), outcomes.get(i), dtoItems.get(i), constraints,
-                    outcomesByJobId);
+                    synchronizedGroups, outcomesByJobId);
             savedItems.add(recorded.item());
             savedImpacts.addAll(recorded.impacts());
         }
@@ -152,7 +153,9 @@ public class ScheduleRunPersistence {
     }
 
     private RecordedItem recordItem(Long scheduleRunId, JobOutcome outcome, OptimizeResponseDto.ScheduleItem dtoItem,
-                                    List<Constraint> constraints, Map<Long, JobOutcome> outcomesByJobId) {
+                                    List<PlacementConstraint> constraints,
+                                    List<SynchronizedFinishConstraint> synchronizedGroups,
+                                    Map<Long, JobOutcome> outcomesByJobId) {
         ScheduleItem item = saveItem(scheduleRunId, dtoItem, outcome);
         if (!outcome.scheduled()) {
             return new RecordedItem(item, List.of()); // NO_FEASIBLE_SLOT: nothing was scheduled, so there is no slack to report
@@ -162,8 +165,11 @@ public class ScheduleRunPersistence {
         OptimizerJob job = outcome.job();
         impacts.add(deadlineImpact(job, outcome, item.getId()));
         flexibilityWindowImpact(job, outcome, item.getId()).ifPresent(impacts::add);
-        for (Constraint constraint : constraintsFor(constraints, job)) {
+        for (PlacementConstraint constraint : constraintsFor(constraints, job)) {
             declaredConstraintImpact(constraint, job, outcome, outcomesByJobId, item.getId()).ifPresent(impacts::add);
+        }
+        for (SynchronizedFinishConstraint group : groupsFor(synchronizedGroups, job)) {
+            synchronizedFinishImpact(group, job, outcome, outcomesByJobId, item.getId()).ifPresent(impacts::add);
         }
         return new RecordedItem(item, impacts);
     }
@@ -214,21 +220,29 @@ public class ScheduleRunPersistence {
                 .build()));
     }
 
-    private static List<Constraint> constraintsFor(List<Constraint> constraints, OptimizerJob job) {
+    private static List<PlacementConstraint> constraintsFor(List<PlacementConstraint> constraints,
+                                                             OptimizerJob job) {
         return constraints.stream().filter(c -> c.jobIds().contains(job.id())).toList();
     }
 
+    private static List<SynchronizedFinishConstraint> groupsFor(List<SynchronizedFinishConstraint> groups,
+                                                                 OptimizerJob job) {
+        return groups.stream().filter(g -> g.jobIds().contains(job.id())).toList();
+    }
+
     /**
-     * Builds the impact row for one of the four declared {@link Constraint} types - DEADLINE and
-     * FLEXIBILITY_WINDOW are handled separately above, since they are intrinsic job attributes, not
-     * declared constraints. Returns empty when this constraint type has nothing to report for this
+     * Builds the impact row for one of the three declared {@link PlacementConstraint} types -
+     * DEADLINE and FLEXIBILITY_WINDOW are handled separately above, since they are intrinsic job
+     * attributes, not declared constraints; SYNCHRONIZED_FINISH is handled separately too, since
+     * {@link SynchronizedFinishConstraint} is not a {@code PlacementConstraint} (see that
+     * interface's javadoc). Returns empty when this constraint type has nothing to report for this
      * specific job (e.g. the before-job in a {@link PrecedenceConstraint}, whose own placement
-     * isn't actually shaped by it), or when {@code constraint} is none of the four known types
-     * (the {@code default} branch only exists because {@link Constraint} cannot be {@code sealed} -
-     * a test double outside this package extends it on purpose - so the compiler cannot prove this
-     * switch is exhaustive on its own).
+     * isn't actually shaped by it), or when {@code constraint} is none of the three known types
+     * (the {@code default} branch only exists because {@link PlacementConstraint} cannot be
+     * {@code sealed} - a test double outside this package implements it on purpose - so the
+     * compiler cannot prove this switch is exhaustive on its own).
      */
-    private Optional<ConstraintImpact> declaredConstraintImpact(Constraint constraint, OptimizerJob job,
+    private Optional<ConstraintImpact> declaredConstraintImpact(PlacementConstraint constraint, OptimizerJob job,
                                                                  JobOutcome outcome,
                                                                  Map<Long, JobOutcome> outcomesByJobId,
                                                                  Long scheduleItemId) {
@@ -236,8 +250,6 @@ public class ScheduleRunPersistence {
             case AbsoluteTimeWindowConstraint c -> Optional.of(absoluteTimeWindowImpact(c, outcome, scheduleItemId));
             case PrecedenceConstraint c -> precedenceImpact(c, job, outcome, outcomesByJobId, scheduleItemId);
             case MutualExclusionConstraint c -> mutualExclusionImpact(c, job, outcome, outcomesByJobId, scheduleItemId);
-            case SynchronizedFinishConstraint c ->
-                    synchronizedFinishImpact(c, job, outcome, outcomesByJobId, scheduleItemId);
             default -> Optional.empty();
         };
     }

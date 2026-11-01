@@ -16,7 +16,8 @@ import java.util.Optional;
  * ones. Used on the brute-force checker now, and on the real solvers in Phase 5.
  * Shape rules (consecutive slots, shares add up to 1) are already enforced by {@link JobPlan}.
  * {@link #violations(OptimizationProblem, AllocationResult)} additionally checks every attached
- * {@link Constraint} (section 2) against the result.
+ * {@link PlacementConstraint} and every {@link SynchronizedFinishConstraint} group (section 2)
+ * against the result.
  */
 final class ContractRules {
 
@@ -71,16 +72,16 @@ final class ContractRules {
                 problem.capacity()));
         Map<Long, JobPlan> plansById = new HashMap<>();
         result.plans().forEach((job, plan) -> plansById.put(job.id(), plan));
-        for (Constraint constraint : problem.constraints()) {
-            if (constraint instanceof AbsoluteTimeWindowConstraint c) {
-                checkAbsoluteWindow(c, plansById, problems);
-            } else if (constraint instanceof PrecedenceConstraint c) {
-                checkPrecedence(c, plansById, problems);
-            } else if (constraint instanceof MutualExclusionConstraint c) {
-                checkMutualExclusion(c, plansById, problems);
-            } else if (constraint instanceof SynchronizedFinishConstraint c) {
-                checkSynchronizedFinish(c, plansById, problems);
+        for (PlacementConstraint constraint : problem.constraints()) {
+            switch (constraint) {
+                case AbsoluteTimeWindowConstraint c -> checkAbsoluteWindow(c, plansById, problems);
+                case PrecedenceConstraint c -> checkPrecedence(c, plansById, problems);
+                case MutualExclusionConstraint c -> checkMutualExclusion(c, plansById, problems);
+                default -> { }
             }
+        }
+        for (SynchronizedFinishConstraint group : problem.synchronizedGroups()) {
+            checkSynchronizedFinish(group, plansById, problems);
         }
         return problems;
     }

@@ -17,7 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** {@code MutualExclusionConstraint}: "jobs A and B may never run in the same hour." */
 class MutualExclusionConstraintTest {
 
-    private static final ExactAllocationSolver EXACT = new ExactAllocationSolver(COSTS, Duration.ofSeconds(10));
+    private static final Duration BUDGET = Duration.ofSeconds(10);
+    private static final ExactAllocationSolver EXACT = new ExactAllocationSolver(COSTS);
     private static final AnnealingAllocationSolver HEURISTIC = new AnnealingAllocationSolver(COSTS, 200);
 
     @Test
@@ -28,7 +29,7 @@ class MutualExclusionConstraintTest {
                 List.of(job(1, 20.0, 0.0, 0, 2, 3), job(2, 20.0, 0.0, 0, 2, 3)),
                 prices(1, 9, 9), cpuCapacity(256.0), List.of(constraint));
 
-        AllocationResult result = EXACT.solve(problem).orElseThrow();
+        AllocationResult result = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, result)).isEmpty();
         assertThat(result.provenOptimal()).isTrue();
         assertThat(result.scheduledCount()).isEqualTo(2);
@@ -77,7 +78,7 @@ class MutualExclusionConstraintTest {
                 List.of(job(1, 20.0, 0.0, 0, 0, 1), job(2, 20.0, 0.0, 0, 0, 1)),
                 prices(10), cpuCapacity(256.0), List.of(constraint));
 
-        AllocationResult exactResult = EXACT.solve(problem).orElseThrow();
+        AllocationResult exactResult = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, exactResult)).isEmpty();
         assertThat(exactResult.scheduledCount()).isEqualTo(1);
 
@@ -103,7 +104,7 @@ class MutualExclusionConstraintTest {
             OptimizationProblem randomProblem = problem(List.of(jobA, jobB), prices(perHour), cpuCapacity(500.0),
                     List.of(constraint));
 
-            AllocationResult exactResult = EXACT.solve(randomProblem).orElseThrow();
+            AllocationResult exactResult = EXACT.solve(randomProblem, BUDGET).orElseThrow();
             assertThat(ContractRules.violations(randomProblem, exactResult)).as("exact case %d", checked).isEmpty();
             AllocationResult heuristicResult = HEURISTIC.solve(randomProblem);
             assertThat(ContractRules.violations(randomProblem, heuristicResult)).as("heuristic case %d", checked)

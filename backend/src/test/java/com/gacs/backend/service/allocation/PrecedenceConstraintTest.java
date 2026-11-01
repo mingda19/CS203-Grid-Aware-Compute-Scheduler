@@ -17,7 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** {@code PrecedenceConstraint}: "job A must finish before job B starts." */
 class PrecedenceConstraintTest {
 
-    private static final ExactAllocationSolver EXACT = new ExactAllocationSolver(COSTS, Duration.ofSeconds(10));
+    private static final Duration BUDGET = Duration.ofSeconds(10);
+    private static final ExactAllocationSolver EXACT = new ExactAllocationSolver(COSTS);
     private static final AnnealingAllocationSolver HEURISTIC = new AnnealingAllocationSolver(COSTS, 200);
 
     @Test
@@ -29,7 +30,7 @@ class PrecedenceConstraintTest {
                 List.of(job(1, 20.0, 0.0, 0, 2, 2), job(2, 20.0, 0.0, 0, 3, 4)),
                 prices(10, 1, 1, 9), cpuCapacity(256.0), List.of(constraint));
 
-        AllocationResult result = EXACT.solve(problem).orElseThrow();
+        AllocationResult result = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, result)).isEmpty();
         assertThat(result.provenOptimal()).isTrue();
         JobPlan beforePlan = planFor(result, 1);
@@ -64,7 +65,7 @@ class PrecedenceConstraintTest {
                 List.of(job(1, 20.0, 0.0, 0, 0, 1), job(2, 20.0, 0.0, 0, 0, 1)),
                 prices(10), cpuCapacity(256.0), List.of(constraint));
 
-        AllocationResult exactResult = EXACT.solve(problem).orElseThrow();
+        AllocationResult exactResult = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, exactResult)).isEmpty();
         assertThat(outcomeFor(exactResult, 1).status()).isEqualTo(PerJobStatus.OPTIMISED);
         assertThat(outcomeFor(exactResult, 2).status()).isEqualTo(PerJobStatus.NO_FEASIBLE_SLOT);
@@ -78,12 +79,12 @@ class PrecedenceConstraintTest {
     @Test
     @DisplayName("Chained precedence (A -> B -> C) resolves correctly in both solvers")
     void chainedPrecedenceResolves() {
-        List<Constraint> constraints = List.of(new PrecedenceConstraint(1, 2), new PrecedenceConstraint(2, 3));
+        List<PlacementConstraint> constraints = List.of(new PrecedenceConstraint(1, 2), new PrecedenceConstraint(2, 3));
         OptimizationProblem problem = problem(
                 List.of(job(1, 20.0, 0.0, 0, 5, 1), job(2, 20.0, 0.0, 0, 5, 2), job(3, 20.0, 0.0, 0, 5, 3)),
                 prices(1, 1, 1, 1, 1, 1), cpuCapacity(256.0), constraints);
 
-        AllocationResult exactResult = EXACT.solve(problem).orElseThrow();
+        AllocationResult exactResult = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, exactResult)).isEmpty();
         assertThat(exactResult.scheduledCount()).as("all 3 chained jobs scheduled, exact").isEqualTo(3);
         AllocationResult heuristicResult = HEURISTIC.solve(problem);
@@ -109,7 +110,7 @@ class PrecedenceConstraintTest {
             OptimizationProblem randomProblem = problem(List.of(beforeJob, afterJob), prices(perHour),
                     cpuCapacity(500.0), List.of(constraint));
 
-            AllocationResult exactResult = EXACT.solve(randomProblem).orElseThrow();
+            AllocationResult exactResult = EXACT.solve(randomProblem, BUDGET).orElseThrow();
             assertThat(ContractRules.violations(randomProblem, exactResult)).as("exact case %d", checked).isEmpty();
             AllocationResult heuristicResult = HEURISTIC.solve(randomProblem);
             assertThat(ContractRules.violations(randomProblem, heuristicResult)).as("heuristic case %d", checked)
