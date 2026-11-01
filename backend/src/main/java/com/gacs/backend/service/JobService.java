@@ -1,5 +1,6 @@
 package com.gacs.backend.service;
 
+import com.gacs.backend.model.ConfirmationOutcome;
 import com.gacs.backend.dto.JobRequestDto;
 import com.gacs.backend.dto.JobResponseDto;
 import com.gacs.backend.exception.ResourceNotFoundException;
@@ -10,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 @Service
@@ -72,6 +74,7 @@ public class JobService {
                 .priority(priority)
                 .build();
 
+        applyParseMetadata(job, request);
         Job saved = jobRepository.save(job);
         return JobResponseDto.fromEntity(saved);
     }
@@ -86,6 +89,8 @@ public class JobService {
 
         validateJobConstraints(request);
 
+        applyParseMetadata(existing, request);
+
         existing.setName(request.getName().trim());
         existing.setCpuHours(request.getCpuHours() != null ? request.getCpuHours() : 0.0);
         existing.setGpuHours(request.getGpuHours() != null ? request.getGpuHours() : 0.0);
@@ -93,7 +98,6 @@ public class JobService {
         existing.setDeadline(request.getDeadline());
         existing.setFlexibilityWindowHours(request.getFlexibilityWindowHours() != null ? request.getFlexibilityWindowHours() : 0);
         existing.setExempt(request.isExempt());
-        existing.setRawConstraints(request.getRawConstraints());
 
         if (request.getStatus() != null && !request.getStatus().isBlank()) {
             existing.setStatus(request.getStatus().trim().toUpperCase());
@@ -105,6 +109,31 @@ public class JobService {
 
         Job updated = jobRepository.save(existing);
         return JobResponseDto.fromEntity(updated);
+    }
+
+    /** Resolve and validate provenance before changing the managed entity. */
+    private void applyParseMetadata(Job job, JobRequestDto request) {
+        String source = request.hasRawConstraints() ? request.getRawConstraints() : job.getRawConstraints();
+        boolean sourceChanged = !Objects.equals(source, job.getRawConstraints());
+        var parsedAt = sourceChanged ? null : job.getParsedAt();
+        var outcome = sourceChanged ? null : job.getConfirmationOutcome();
+        if (request.hasParsedAt()) {
+            parsedAt = request.getParsedAt();
+        }
+        if (request.hasConfirmationOutcome()) {
+            outcome = request.getConfirmationOutcome();
+        } else if (request.hasParsedAt() && parsedAt != null) {
+            outcome = ConfirmationOutcome.PENDING;
+        }
+        if ((parsedAt != null || outcome != null) && (source == null || source.isBlank())) {
+            throw new IllegalArgumentException("Parse metadata requires nonblank rawConstraints");
+        }
+        if (outcome != null && parsedAt == null) {
+            throw new IllegalArgumentException("confirmationOutcome requires parsedAt");
+        }
+        job.setRawConstraints(source);
+        job.setParsedAt(parsedAt);
+        job.setConfirmationOutcome(outcome);
     }
 
     /**
