@@ -43,6 +43,9 @@ class JobExemptionIntegrationTest {
     @Autowired
     private JobRepository jobRepository;
 
+    @Autowired
+    private com.gacs.backend.repository.UserRepository users;
+
     private final ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
 
     private final String operator = "operator@datacenter.io";
@@ -54,6 +57,10 @@ class JobExemptionIntegrationTest {
     @BeforeEach
     void setUp() {
         jobRepository.deleteAll();
+        for (String email : List.of(operator, otherOperator)) {
+            if (users.findByEmail(email).isEmpty())
+                users.save(new com.gacs.backend.model.User(email, "password", "Operator", "ROLE_USER"));
+        }
     }
 
     @Test

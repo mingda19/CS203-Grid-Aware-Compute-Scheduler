@@ -12,7 +12,9 @@ public record WorkloadScheduleDto(
     String status,
     LocalDateTime startUtc,
     LocalDateTime endUtc,
-    String notes
+    String notes,
+    String runId,
+    Long jobId
 ) {
     public record CreateRequest(
         String title,

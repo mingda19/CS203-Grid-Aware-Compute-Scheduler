@@ -759,7 +759,7 @@ The **Job** entity represents a compute workload submitted for schedule optimiza
 | `parsedAt` | ISO-8601 UTC local date-time | No | `null` | Actual parser timestamp supplied by the caller, e.g. `2026-10-20T09:30:00`; never inferred from job audit timestamps. |
 | `confirmationOutcome` | String (Enum) | No | `null` | Latest parse decision: `PENDING`, `CONFIRMED`, or `REJECTED`. A supplied nonnull `parsedAt` defaults this to `PENDING` when the outcome is omitted. |
 | `status` | String | No | `"PENDING"` | Workflow status: `"PENDING"`, `"SCHEDULED"`, `"RUNNING"`, `"COMPLETED"`, `"CANCELLED"`. |
-| `priority` | String (Enum) | No | `"NORMAL"` | Workload priority level: `"CRITICAL"`, `"HIGH"`, `"NORMAL"`, `"LOW"`. Default `"NORMAL"`. Used by the optimizer for tie-breaking when jobs compete for capacity (GRID-155 / GRID-124). Unknown values are rejected with 400 Bad Request. |
+| `priority` | String (Enum) | No | `"NORMAL"` | Workload priority level: `"CRITICAL"`, `"HIGH"`, `"NORMAL"`, `"LOW"`. Default `"NORMAL"`. Used by the optimizer for tie-breaking when jobs compete for capacity - see §6.4's *Objective and tie-break order* for the exact rule (GRID-155 / GRID-124). Unknown values are rejected with 400 Bad Request. |
 | `ownerEmail` | String | Read-only | Auth user | Authenticated tenant operator email for tenancy isolation. |
 | `createdAt` | ISO-8601 UTC String | Read-only | Auto | Timestamp when record was created. |
 | `updatedAt` | ISO-8601 UTC String | Read-only | Auto | Timestamp when record was last updated. |
@@ -806,6 +806,13 @@ Evaluates jobs against forecast prices and cluster capacity and proposes a start
 * There is no per-job rate cap: a job may take whatever capacity is free in a slot. Its duration is therefore an **output** of the optimisation (the number of slots it needs), limited by the capacity left after other jobs.
 * `scheduledStart` is the start of the first slot used and `scheduledEnd` is the end of the last.
 
+**Objective and tie-break order (GRID-155 / GRID-124).** The optimiser places as many jobs as possible, then minimises total cost. When two otherwise-equal placements remain tied (jobs competing for the same capacity), ties are broken in order:
+1. Higher `priority` first (`CRITICAL` > `HIGH` > `NORMAL` > `LOW`).
+2. If `priority` ties, the job requesting fewer total resource-hours (`cpuHours + gpuHours`) first.
+3. If that ties too, the earlier `originalStartTime`, then the lower `id`.
+
+Before GRID-155, step 3 alone was the whole rule; `priority` existed on the Job schema but had no effect on the optimiser. Both solvers (the exact solver's tie-break weighting and the heuristic's placement order) apply this same order.
+
 **Request**
 ```json
 {
@@ -846,7 +853,7 @@ Evaluates jobs against forecast prices and cluster capacity and proposes a start
 | `jobs[].deadline` | ISO 8601 UTC | Yes | Job must **finish** (end of its last slot) at or before this |
 | `jobs[].flexibilityWindowHours` | integer ≥ 0 | Yes | Start may be in `[originalStartTime, originalStartTime + flexibilityWindowHours]`. Jobs never start earlier than `originalStartTime`. |
 | `jobs[].isExempt` | boolean | Yes | `true` = never moved |
-| `jobs[].priority` | string | No | Priority level (`CRITICAL`, `HIGH`, `NORMAL`, `LOW`; default `NORMAL`). Used for tie-breaking when jobs compete for capacity (GRID-155 AC1/AC3). Unknown values are rejected with `400`. |
+| `jobs[].priority` | string | No | Priority level (`CRITICAL`, `HIGH`, `NORMAL`, `LOW`; default `NORMAL`). See *Objective and tie-break order* above (GRID-155 AC1/AC3). Unknown values are rejected with `400`. |
 | `forecast[]` | array | One of `forecast` / `forecastLocation` | Explicit price per slot (`predictedPrice` in $/MWh). Makes the run fully reproducible. |
 | `forecastLocation`, `horizonHours` | string, integer | One of `forecast` / `forecastLocation` | Server resolves per-slot prices for that location from the forecast service (same data as `GET /api/prices/forecast`), starting at the earliest `originalStartTime`. `horizonHours` defaults to `48`. |
 | `clusterCapacity` | object | No | Capacity applied to every slot. Falls back to the defaults below. |
@@ -986,6 +993,8 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 | 2026-11-01 | §6.6: added `GET /api/schedules/{runId}/export.csv` and `.json` behind an approval gate (403 not approved; 409 stale or invalidated) with `schedule-run-{runId}` attachment filenames (GRID-135 AC3). | - |
 | 2026-11-01 | §6.6: the JSON export adds `run.createdAt`, `run.solver` and `approval` (GRID-135 AC2). | - |
 | 2026-11-01 | Added §6.7 documenting the audit log queries, with a new `jobId` filter backed by `optimization_plan_jobs`, and the stored schedule (owner only) in the event detail (GRID-134 AC6). | - |
+| 2026-11-01 | §6.4: added *Objective and tie-break order*, documenting the rule `priority` had been reserved for but did not yet affect - the optimiser now orders competing jobs by `priority`, then total resource-hours, then the original `originalStartTime`/`id` fallback (GRID-155). | - |
+| 2026-11-01 | Added §6.8: automatic material-input invalidation, shared backend execution gating, approved-run application, and plan detail (GRID-11 AC2.3). | - |
 
 ### 6.5 Operator decisions (GRID-11 AC2 / AC2.2)
 
@@ -1021,13 +1030,13 @@ All three return **200 OK** in the standard envelope:
 }
 ```
 
-Decisions use `audit_events` as their only immutable history; there is no separate `schedule_decisions` table. `decisionId` is the audit event ID. The audit actor comes from the authenticated security context, and `operatorRationale` stores the trimmed comment. `scheduleHash` is the lowercase SHA-256 hex digest of the stored `resultJson` encoded as UTF-8. Each audit event insert and review-state update commits atomically under a per-plan database write lock; the last committed decision determines current review state. Repeated requests, including retries, create additional history entries. The original optimizer result never changes.
+Decisions use `audit_events` as their only immutable history; there is no separate `schedule_decisions` table. `decisionId` is the audit event ID. The audit actor comes from the authenticated security context, and `operatorRationale` stores the trimmed comment. `scheduleHash` is the lowercase SHA-256 hex digest of the stored `resultJson` encoded as UTF-8. Each audit event insert and review-state update commits atomically under an operator-row lock followed by a plan write lock; decisions and automatic invalidation determine current review state. Repeated requests, including retries, create additional history entries. The original optimizer result never changes.
 
 Errors: **400** for malformed UUIDs/JSON, a missing or non-object body, missing, null, blank, non-string, or oversized comments; **403** for missing/invalid JWTs (existing security behavior); **401** for an authenticated email without a database user; **404** with `Optimization plan not found` for both missing and unowned plans.
 
 Audit history can be read through the existing audit log endpoints.
 
-Approval records intent only and does **not** dispatch or export workloads. Revision does not edit or rerun a plan: a later optimization creates a new immutable version with a new `runId`. Frontend integration, dispatch gating, and expiry/material-change policies are separate work; export gating and its staleness rules are defined in §6.6. Run IDs created before plan persistence was introduced cannot be reviewed; optimize again to obtain a persisted plan.
+Approval records intent only and does **not** dispatch or export workloads. Revision does not edit or rerun a plan: a later optimization creates a new immutable version with a new `runId`. Backend dispatch gating and expiry/material-change policies are defined in §6.8; frontend integration is separate work. Export formats are defined in §6.6. Run IDs created before plan persistence was introduced cannot be reviewed; optimize again to obtain a persisted plan.
 
 ### 6.6 Approved Schedule Export (GRID-135)
 
@@ -1047,14 +1056,14 @@ Both require JWT authentication and ownership of the plan, with the same identit
 | # | Requirement | On failure |
 |---|---|---|
 | 1 | The plan exists and the caller owns it | **404** `Optimization plan not found` (missing and unowned plans look the same) |
-| 2 | Its review state is `APPROVED` | **403**, `data.reason = "NOT_APPROVED"` (`PENDING`, `REJECTED` or `REVISION_REQUESTED`) |
+| 2 | Its review state is not terminal (`INVALIDATED`/`STALE` return **409** with the matching reason), and is `APPROVED` | **403**, `data.reason = "NOT_APPROVED"` (`PENDING`, `REJECTED` or `REVISION_REQUESTED`) |
 | 3 | Its latest `APPROVE` / `REJECT` / `REVISE` event in `audit_events` is an `APPROVE` whose `scheduleHash` equals the SHA-256 of the stored `resultJson` | **409**, `data.reason = "INVALIDATED"` |
 | 4 | At least one of its slots has not ended: now (UTC) is before the latest `scheduledEnd` | **409**, `data.reason = "STALE"` |
-| 5 | No later-created `APPROVED` plan of the same owner lists any of the same `jobId`s | **409**, `data.reason = "STALE"` |
+| 5 | No later-approved `APPROVED` plan of the same owner lists any of the same `jobId`s | **409**, `data.reason = "STALE"` |
 | 6 | Every scheduled job is still in the owner's jobs (§6.3) and the plan still fits it, by the §6.4 window rules: its CPU and GPU hours equal the job's `allocatedCpuHours` / `allocatedGpuHours`; `scheduledStart` lies in [`originalStartTime` truncated to the hour, that + `flexibilityWindowHours`] (exactly `originalStartTime` when `isExempt`); and `scheduledEnd` is no later than `deadline` truncated to the hour | **409**, `data.reason = "INVALIDATED"` |
 | 7 | (GRID-141) Every job in the run is exactly as the optimiser was given it: the run stores a snapshot of its inputs (`optimizer_runs.input_snapshot`, jobs sorted by id, then prices, then capacity) and its SHA-256 (`input_hash`); the jobs line is rebuilt from the owner's jobs now (id, CPU and GPU hours, `originalStartTime` truncated to the hour, `deadline`, `flexibilityWindowHours`, `isExempt`; name, priority and status are ignored). Runs stored before snapshots existed skip this check | **409**, `data.reason = "INVALIDATED"` |
 
-`NO_FEASIBLE_SLOT` jobs have no slots, so checks 4 and 6 ignore them. Edits the plan still satisfies, such as a new name, priority or status, a later deadline or a wider window, keep it exportable. Withdrawing the newer approval in check 5 (rejecting it or requesting revision) makes the older plan exportable again. Exporting is read-only: it records no audit event and does not change the review state. The message explains the refusal, for example:
+`NO_FEASIBLE_SLOT` jobs do not contribute to elapsed-slot detection, but all input jobs participate in provenance validation (§6.8). Current job and facility scheduling revisions must match the stored input snapshot. Material changes invalidate the plan even when its original slots remain feasible. Cosmetic edits and ordinary execution status changes do not invalidate it. Invalidation and staleness are permanent for a run; withdrawing a superseding approval does not revive earlier plans. Export refusals persist detected invalidation/staleness, without adding operator decision events. The message explains the refusal, for example:
 
 ```json
 {
@@ -1285,3 +1294,47 @@ The Next.js frontend interacts with the backend using the helper module `fronten
    * `PATCH`: Bug fixes, documentation clarifications, and internal optimizations.
 2. **Deprecation Notice**: Any endpoint scheduled for deprecation will return the `Deprecation: true` and `Sunset: <date>` HTTP headers at least one sprint prior to removal.
 3. **Backward Compatibility Guarantee**: All public auth endpoints support legacy aliases (`/login`, `/register`, `/verify-otp`, `/resend-otp`, `/refresh`, `/me`, `/logout`) alongside standard `/api/auth/*` namespaces.
+
+
+### 6.8 Approval lifecycle and gated application (GRID-11 AC2.3)
+
+**Backend enforcement.** Frontend integration is a separate task. Until it adopts this contract, existing direct calendar-create calls will return **403** `NOT_APPROVED`.
+
+#### Material inputs and lifecycle
+
+New plans retain an immutable input snapshot containing the submitted optimization request, owned job scheduling revisions and values, and the facility scheduling revision and values. Snapshot capture uses a short transaction before solving; solver and explanation calls hold no operator lock or database transaction. A submitted request may still be optimized as a preview, but approval is refused if its jobs are missing/unowned or scheduling inputs do not match persisted jobs, its capacity differs from the facility (including omitted solver defaults), its per-slot override exceeds facility capacity, or its forecast location differs from the facility when no explicit forecast was supplied. For an unconfigured facility, defaults are 256 CPU-hours, 64 GPU-hours, and `LZ_NORTH`.
+
+Job CPU/GPU hours, original start, deadline, flexibility, exemption, priority, cancellation/reinstatement, raw constraint source, and confirmation outcome are material. A timestamp-only parser edit is not material unless it changes confirmation. Facility CPU/GPU capacity and grid location are material. Every actual material change increments a monotonic scheduling revision, including changes subsequently reverted. Job updates/deletions invalidate that owner's approved plans containing the job. Facility changes invalidate all of that owner's approved plans. Input updates and invalidation commit atomically. New unrelated jobs, names, identical updates, and ordinary job execution statuses do not invalidate plans.
+
+Before approval, the backend checks current ownership, revisions, input values, cancellation and confirmation (`PENDING`/`REJECTED` structured constraints cannot be approved). Missing, unreadable, or incomplete provenance fails closed. Changes during solving or while a recommendation awaits review therefore prevent approval. No stale/invalidated run can receive another decision; generate a new recommendation instead. Immutable schedule JSON and prior audit records remain intact.
+
+A successful approval permanently transitions other approved plans containing overlapping jobs to `STALE`. The order is approval order, not optimization creation time. A plan also becomes stale when all scheduled slots have ended. A scheduled check runs every 60 seconds (`gacs.schedule.expiry-check-ms`); synchronous gates enforce expiry immediately without waiting for that check. Forecast refreshes and solver configuration changes are outside this policy.
+
+#### Application and plan detail
+
+| Route | Success | Behavior |
+|---|---|---|
+| `POST /api/schedules/{runId}/apply` | **200**, `data: WorkloadScheduleDto[]` | Creates calendar entries atomically from the stored approved schedule; no request payload is required or used. |
+| `GET /api/schedules/{runId}` | **200**, `data: PlanDetail` | Returns the immutable recommendation and current lifecycle state; detects and persists outdated inputs/expiry. |
+
+Both routes require JWT authentication and ownership. Missing/unowned plans return **404** `Optimization plan not found`; an authenticated email without a database user returns **401**. Administrator privileges do not bypass ownership.
+
+`PlanDetail` contains `runId`, `reviewState` (`PENDING`, `APPROVED`, `REJECTED`, `REVISION_REQUESTED`, `INVALIDATED`, `STALE`), `invalidationReason` (string/null), `invalidatedAt` (UTC instant/null), and `recommendation` (the §6.4 optimizer response; null only if the stored result is unreadable). Detail requests succeed for unapproved/terminal plans so clients can explain the state.
+
+Application accepts only a run ID: allocations, job identities, and timings come from the stored result. Jobs without executable slots are skipped; a run with no executable entries returns **400**. Entries retain existing calendar display fields and add nullable `runId` and `jobId` fields. `(run_id, job_id)` is unique; application is idempotent, with a persisted application timestamp preventing recreation even after entries are deleted. A successful first application appends one `DISPATCH` audit event atomically with all entries. Retries add no events. The run remains `APPROVED` and can still be invalidated or rejected afterward.
+
+`POST /api/workload-schedules` always refuses direct creation with **403** `data.reason = "NOT_APPROVED"`, directing clients to `/api/schedules/{runId}/apply`. Frontend callers on Jobs, Workloads, and the manual calendar must migrate to optimize → review/approve → apply.
+
+#### Execution boundaries and errors
+
+Exports, application, and `PATCH /api/workload-schedules/{id}/status` transitions into `Scheduled` or `Running` share the same gate: current approval, matching latest decision and schedule hash, unexpired/non-superseded schedule, and matching input provenance. A resume from `Throttled` to `Running` rechecks approval. Operator input changes, decisions, application, and execution transitions acquire the same operator-row write lock, followed by plan locks where needed, preventing concurrent edits from bypassing the gate. Invalidation detected during a refusal commits even though no entries or decision events are created.
+
+| Condition | HTTP / `data.reason` |
+|---|---|
+| Pending, rejected, revision requested, or unlinked legacy calendar entry | **403** / `NOT_APPROVED` |
+| Material inputs changed, approval hash mismatched, missing provenance, cancelled/unconfirmed job | **409** / `INVALIDATED` |
+| Expired slots or superseded approval | **409** / `STALE` |
+
+Already running work is not interrupted by invalidation; completion remains permitted. Legacy calendar entries remain readable/deletable but cannot start or resume without a freshly generated and applied approved run. This backend does not control external execution systems or revoke files previously exported; external adapters must check current approval immediately before starting work.
+
+**Rollout.** Apply `V5__schedule_approval_lifecycle.sql` explicitly before deployment for managed PostgreSQL schemas; no migration runner is configured. It adds revisions, provenance/lifecycle/application fields, nullable entry linkage, and uniqueness, expands the review-state check, and invalidates existing plans missing provenance. Hibernate `ddl-auto=update` adds model columns in development; old approved plans also fail closed at the next gate or expiry check. Historical decisions and legacy calendar entries are preserved. Do not infer provenance for old schedules.

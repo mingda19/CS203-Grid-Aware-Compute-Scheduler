@@ -8,13 +8,19 @@ import lombok.Setter;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "workload_schedules", indexes = {
+@Table(name = "workload_schedules", uniqueConstraints = @UniqueConstraint(name = "uq_workload_run_job", columnNames = {"run_id", "job_id"}), indexes = {
     @Index(name = "idx_workload_schedules_owner_start", columnList = "owner_email, start_utc")
 })
 @Getter
 @Setter
 @NoArgsConstructor
 public class WorkloadSchedule {
+
+    @Column(name = "run_id", length = 36)
+    private String runId;
+
+    @Column(name = "job_id")
+    private Long jobId;
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

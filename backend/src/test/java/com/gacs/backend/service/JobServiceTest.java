@@ -37,7 +37,7 @@ class JobServiceTest {
 
     @BeforeEach
     void setUp() {
-        jobService = new JobService(jobRepository);
+        jobService = new JobService(jobRepository, org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class));
     }
 
     @Test

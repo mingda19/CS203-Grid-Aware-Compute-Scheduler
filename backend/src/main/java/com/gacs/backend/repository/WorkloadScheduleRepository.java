@@ -9,6 +9,7 @@ import java.util.Optional;
 
 @Repository
 public interface WorkloadScheduleRepository extends JpaRepository<WorkloadSchedule, Long> {
+    List<WorkloadSchedule> findByRunIdOrderByIdAsc(String runId);
     List<WorkloadSchedule> findByOwnerEmailOrderByStartUtcAsc(String ownerEmail);
     Optional<WorkloadSchedule> findByIdAndOwnerEmail(Long id, String ownerEmail);
 }

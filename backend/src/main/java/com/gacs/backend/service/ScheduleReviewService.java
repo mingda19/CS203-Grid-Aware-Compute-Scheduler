@@ -7,11 +7,9 @@ import com.gacs.backend.dto.AuditEventResponseDto;
 import com.gacs.backend.dto.OptimizeRequestDto;
 import com.gacs.backend.dto.OptimizeResponseDto;
 import com.gacs.backend.dto.ScheduleDecisionDto;
-import com.gacs.backend.exception.ResourceNotFoundException;
 import com.gacs.backend.model.AuditActionType;
 import com.gacs.backend.model.OptimizationPlan;
 import com.gacs.backend.model.User;
-import com.gacs.backend.repository.OptimizationPlanRepository;
 import com.gacs.backend.repository.UserRepository;
 import com.gacs.backend.service.allocation.AllocationSolver;
 import com.gacs.backend.service.allocation.OptimizerProperties;
@@ -43,40 +41,44 @@ import java.util.UUID;
 @Service
 public class ScheduleReviewService {
     private final ScheduleOptimizationService optimizer;
-    private final OptimizationPlanRepository plans;
     private final OptimizationPlanRecorder planRecorder;
     private final AuditEventService audit;
     private final AllocationSolver solver;
     private final OptimizerProperties properties;
     private final UserRepository users;
     private final Clock clock;
+    private final ScheduleInputs inputs;
+    private final ScheduleGate gate;
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
 
-    public ScheduleReviewService(ScheduleOptimizationService optimizer, OptimizationPlanRepository plans,
+    public ScheduleReviewService(ScheduleOptimizationService optimizer,
                                  OptimizationPlanRecorder planRecorder, AuditEventService audit,
                                  AllocationSolver solver, OptimizerProperties properties,
-                                 UserRepository users, Clock clock) {
+                                 UserRepository users, Clock clock, ScheduleInputs inputs, ScheduleGate gate) {
         this.optimizer = optimizer;
-        this.plans = plans;
         this.planRecorder = planRecorder;
         this.audit = audit;
         this.solver = solver;
         this.properties = properties;
         this.users = users;
         this.clock = clock;
+        this.inputs = inputs;
+        this.gate = gate;
     }
 
     public OptimizeResponseDto optimize(OptimizeRequestDto request, String email) {
         User owner = operator(email);
-        return optimizer.optimize(request, email, (result, snapshot) -> recordPlan(result, owner, snapshot));
+        String provenance = inputs.capture(request, email);
+        return optimizer.optimize(request, email,
+            (result, snapshot) -> recordPlan(result, owner, snapshot, provenance));
     }
 
-    private void recordPlan(OptimizeResponseDto result, User owner, String snapshot) {
+    private void recordPlan(OptimizeResponseDto result, User owner, String snapshot, String provenance) {
         try {
             var createdAt = clock.instant();
             planRecorder.record(result.runId(), createdAt, AopUtils.getTargetClass(solver).getSimpleName(),
                 AllocationSolver.VERSION, json.writeValueAsString(properties), owner,
-                json.writeValueAsString(result), StoredScheduleReader.jobIds(result), snapshot);
+                json.writeValueAsString(result), StoredScheduleReader.jobIds(result), snapshot, provenance);
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException(
                     "Failed to serialize the solver config or optimizer result for run " + result.runId()
@@ -84,14 +86,16 @@ public class ScheduleReviewService {
         }
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = com.gacs.backend.exception.ScheduleExportRejectedException.class)
     public ScheduleDecisionDto decide(UUID runId, AuditActionType action, String comment, String email) {
-        User operator = operator(email);
-        OptimizationPlan plan = plans.findOwnedForUpdate(runId.toString(), operator.getId())
-            .orElseThrow(() -> new ResourceNotFoundException("Optimization plan not found"));
+        OptimizationPlan plan = gate.owned(runId, email);
+        User operator = plan.getOwner();
+        if (action == AuditActionType.APPROVE || plan.getReviewState() == com.gacs.backend.model.ReviewState.INVALIDATED
+            || plan.getReviewState() == com.gacs.backend.model.ReviewState.STALE) gate.check(plan, email, false);
         plan.recordDecision(action);
         AuditEventResponseDto event = audit.recordEvent(new AuditEventRequestDto(action,
             runId.toString(), ScheduleHashUtil.computeSha256(plan.getResultJson()), comment));
+        if (action == AuditActionType.APPROVE) gate.supersede(plan);
         return new ScheduleDecisionDto(event.id(), runId, event.actionType(), operator.getId(),
             event.operatorRationale(), event.timestamp(), plan.getReviewState());
     }

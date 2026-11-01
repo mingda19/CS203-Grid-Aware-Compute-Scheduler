@@ -46,6 +46,8 @@ class OptimizationPlanRecorder {
                 .inputSnapshot(inputSnapshot)
                 .inputHash(ScheduleHashUtil.computeSha256(inputSnapshot))
                 .build());
-        plans.save(new OptimizationPlan(run, owner, resultJson, jobIds, createdAt));
+        var plan = new OptimizationPlan(run, owner, resultJson, jobIds, createdAt);
+        plan.recordInputs(inputSnapshot);
+        plans.save(plan);
     }
 }

@@ -37,6 +37,27 @@ public class OptimizationPlan {
     @Column(nullable = false, length = 30)
     private ReviewState reviewState = ReviewState.PENDING;
 
+    @Column(columnDefinition = "text", updatable = false)
+    private String inputSnapshot;
+
+    @Column(columnDefinition = "text")
+    private String invalidationReason;
+
+    private Instant invalidatedAt;
+
+    private Instant appliedAt;
+
+    public void markApplied(Instant now) { appliedAt = now; }
+
+    public void recordInputs(String snapshot) { this.inputSnapshot = snapshot; }
+
+    public void invalidate(ReviewState state, String reason, Instant now) {
+        if (reviewState == ReviewState.INVALIDATED || reviewState == ReviewState.STALE) return;
+        reviewState = state;
+        invalidationReason = reason;
+        invalidatedAt = now;
+    }
+
     /** IDs of the jobs in {@link #resultJson}, so audit queries can find the runs that include a job (GRID-134 AC6.1a). */
     @ElementCollection
     @CollectionTable(name = "optimization_plan_jobs", joinColumns = @JoinColumn(name = "run_id"),
@@ -61,6 +82,8 @@ public class OptimizationPlan {
     }
 
     public void recordDecision(AuditActionType action) {
+        if (reviewState == ReviewState.INVALIDATED || reviewState == ReviewState.STALE)
+            throw new IllegalArgumentException("Generate a new recommendation for an invalidated or stale run");
         reviewState = switch (action) {
             case APPROVE -> ReviewState.APPROVED;
             case REJECT -> ReviewState.REJECTED;

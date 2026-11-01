@@ -273,11 +273,11 @@ class ScheduleExportIntegrationTest {
         export(older, "csv").andExpect(status().isOk());
 
         decide(newer, "approve");
-        expectRejected(older, 409, "STALE", "run " + newer + " was approved later and also schedules job(s) [" + shared.getId() + "]");
+        expectRejected(older, 409, "STALE", "Superseded by approved run " + newer);
         export(newer, "csv").andExpect(status().isOk());
 
         decide(newer, "reject");
-        export(older, "csv").andExpect(status().isOk());
+        expectRejected(older, 409, "STALE", "Superseded by approved run " + newer);
     }
 
     @Test
@@ -285,8 +285,9 @@ class ScheduleExportIntegrationTest {
     void elapsedPlan_Stale() throws Exception {
         LocalDateTime past = start.minusDays(5);
         String runId = optimize(past, job("Yesterday", past));
-        decide(runId, "approve");
-
+        mvc.perform(post("/api/schedules/" + runId + "/approve").with(user(owner.getEmail()))
+            .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
+            .andExpect(status().isConflict());
         expectRejected(runId, 409, "STALE", "all of its slots ended by " + UTC.format(past.plusHours(2)));
     }
 
@@ -333,19 +334,19 @@ class ScheduleExportIntegrationTest {
         String expected = switch (change) {
             case "cpu-hours" -> {
                 job.setCpuHours(8.0);
-                yield "CPU or GPU hours changed";
+                yield "Scheduling inputs changed";
             }
             case "start-moved" -> {
                 job.setOriginalStartTime(start.plusHours(2));
-                yield "must now start between " + UTC.format(start.plusHours(2));
+                yield "Scheduling inputs changed";
             }
             case "deadline-earlier" -> {
                 job.setDeadline(start.plusHours(1).plusMinutes(30));
-                yield "is now before its scheduled end " + UTC.format(start.plusHours(2));
+                yield "Scheduling inputs changed";
             }
             case "made-exempt" -> {
                 job.setExempt(true);
-                yield "must now start between " + UTC.format(start) + " and " + UTC.format(start);
+                yield "Scheduling inputs changed";
             }
             // GRID-141: the plan still fits, but the job is not what the optimiser was given.
             case "deadline-later" -> {
@@ -384,7 +385,6 @@ class ScheduleExportIntegrationTest {
         decide(runId, "approve");
 
         job.setName("Train (renamed)");
-        job.setPriority(JobPriority.CRITICAL);
         job.setStatus("SCHEDULED");
         jobs.save(job);
 
