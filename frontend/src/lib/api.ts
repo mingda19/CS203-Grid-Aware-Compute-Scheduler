@@ -20,6 +20,8 @@ export interface AuthResponse {
   refreshExpiresIn?: number
 }
 
+import { filenameFromContentDisposition } from "./download-utils"
+
 export interface ApiResponse<T = any> {
   success: boolean
   message: string
@@ -207,6 +209,87 @@ export interface DataFreshnessResponse {
   datasets: DatasetFreshness[]
   notifications: FreshnessNotification[]
   checkedAt: string
+}
+
+export type AuditActionType = "APPROVE" | "REJECT" | "REVISE" | "OVERRIDE" | "DISPATCH"
+
+export interface AuditEvent {
+  id: number
+  actor: string
+  actionType: AuditActionType
+  timestamp: string
+  runId: string
+  scheduleHash: string
+  operatorRationale: string
+}
+
+export type OptimizerRunStatus = "SCHEDULED" | "NEEDS_ATTENTION" | "INFEASIBLE" | "TIMEOUT" | "FAILED"
+
+export interface OptimizerRunSnapshot {
+  id: string
+  createdAt: string
+  solverName: string
+  solverVersion: string
+  solverConfig: string
+  status: OptimizerRunStatus
+  provenOptimal: boolean | null
+}
+
+/** VISIBLE: you own the run and `schedule` is set; OWNER_ONLY: stored, but only its owner sees it; NOT_STORED: none. */
+export type ScheduleAvailability = "VISIBLE" | "OWNER_ONLY" | "NOT_STORED"
+
+export interface AuditEventDetail {
+  event: AuditEvent
+  run: OptimizerRunSnapshot | null
+  scheduleAvailability: ScheduleAvailability
+  /** Whether the stored schedule still matches the event's scheduleHash; null when NOT_STORED. */
+  scheduleHashMatches: boolean | null
+  /** The stored optimiser result; only when scheduleAvailability is VISIBLE. */
+  schedule: OptimizeResponse | null
+}
+
+export interface AuditEventQuery {
+  from?: string
+  to?: string
+  actor?: string
+  actionType?: AuditActionType
+  runId?: string
+  jobId?: number
+  page?: number
+  size?: number
+}
+
+export interface Page<T> {
+  content: T[]
+  totalElements: number
+  totalPages: number
+  number: number
+  size: number
+}
+
+export type ScheduleExportFormat = "csv" | "json"
+
+/** Why the approval gate refused an export: 403 for NOT_APPROVED, 409 for STALE or INVALIDATED. */
+export type ScheduleExportRejectionReason = "NOT_APPROVED" | "STALE" | "INVALIDATED"
+
+const EXPORT_REJECTION_REASONS: ScheduleExportRejectionReason[] = ["NOT_APPROVED", "STALE", "INVALIDATED"]
+
+/** A refused schedule export. `reason` is set when the approval gate refused it, rather than auth or lookup. */
+export class ScheduleExportError extends Error {
+  readonly status: number
+  readonly reason?: ScheduleExportRejectionReason
+
+  constructor(message: string, status: number, reason?: ScheduleExportRejectionReason) {
+    super(message)
+    this.name = "ScheduleExportError"
+    this.status = status
+    this.reason = reason
+  }
+}
+
+export interface DownloadedFile {
+  blob: Blob
+  filename: string
 }
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080").replace(/\/+$/, "")
@@ -441,6 +524,97 @@ export const freshnessApi = {
     return fetchJson<ApiResponse<void>>(`/api/health/data-freshness/notifications/${notificationId}/read`, {
       method: "POST",
     })
+  },
+}
+
+export const auditApi = {
+  list(query: AuditEventQuery = {}): Promise<ApiResponse<Page<AuditEvent>>> {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== "") params.set(key, String(value))
+    }
+    const qs = params.toString()
+    return fetchJson<ApiResponse<Page<AuditEvent>>>(`/api/audit-events${qs ? `?${qs}` : ""}`, { cache: "no-store" })
+  },
+  get(id: number): Promise<ApiResponse<AuditEventDetail>> {
+    return fetchJson<ApiResponse<AuditEventDetail>>(`/api/audit-events/${id}`, { cache: "no-store" })
+  },
+}
+
+const EXPORT_ACCEPT: Record<ScheduleExportFormat, string> = {
+  // JSON as a fallback so refusals can come back in the standard error envelope.
+  csv: "text/csv, application/json;q=0.9",
+  json: "application/json",
+}
+
+/** The message and gate reason from an error envelope, or null when the body is not one (e.g. empty). */
+async function readExportError(
+  response: Response,
+): Promise<{ message?: string; reason?: ScheduleExportRejectionReason } | null> {
+  try {
+    const body = await response.clone().json()
+    const reason = body?.data?.reason
+    return {
+      message: typeof body?.message === "string" ? body.message : undefined,
+      reason: EXPORT_REJECTION_REASONS.includes(reason) ? reason : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** GET a file with the JWT attached, refreshing the access token once if the security layer rejects it. */
+async function fetchFileWithAuth(endpoint: string, accept: string): Promise<Response> {
+  const url = `${API_BASE_URL}${endpoint}`
+  if (!getAccessToken() && typeof window !== "undefined") {
+    try {
+      await authApi.refreshToken()
+    } catch {
+      // No valid refresh token; the request below reports the auth failure.
+    }
+  }
+  const send = () => {
+    const headers: Record<string, string> = { Accept: accept }
+    const token = getAccessToken()
+    if (token) headers["Authorization"] = `Bearer ${token}`
+    return fetch(url, { headers, credentials: "include", cache: "no-store" })
+  }
+
+  const response = await send()
+  // A 403 that names a gate reason is the approval gate's answer, which a new token would not change.
+  const authRejected =
+    response.status === 401 || (response.status === 403 && !(await readExportError(response))?.reason)
+  if (!authRejected) return response
+  try {
+    const refreshed = await authApi.refreshToken()
+    if (refreshed.accessToken) return await send()
+  } catch {
+    // Refresh failed; report the original response.
+  }
+  return response
+}
+
+export const scheduleExportApi = {
+  /**
+   * Downloads an approved schedule (contract section 6.6). Resolves with the file and the name from
+   * Content-Disposition; rejects with a ScheduleExportError carrying the server's explanation.
+   */
+  async download(runId: string, format: ScheduleExportFormat): Promise<DownloadedFile> {
+    const response = await fetchFileWithAuth(
+      `/api/schedules/${encodeURIComponent(runId)}/export.${format}`,
+      EXPORT_ACCEPT[format],
+    )
+    if (!response.ok) {
+      const error = await readExportError(response)
+      const fallback =
+        response.status === 401 || response.status === 403
+          ? "Your session has expired. Sign in again to download this schedule."
+          : `Export failed with status ${response.status}`
+      throw new ScheduleExportError(error?.message || fallback, response.status, error?.reason)
+    }
+    const filename =
+      filenameFromContentDisposition(response.headers.get("Content-Disposition")) ?? `schedule-run-${runId}.${format}`
+    return { blob: await response.blob(), filename }
   },
 }
 

@@ -16,6 +16,7 @@ import com.gacs.backend.service.allocation.JobPlan;
 import com.gacs.backend.service.allocation.OptimizationProblem;
 import com.gacs.backend.service.allocation.OptimizationProblemFactory;
 import com.gacs.backend.service.allocation.PerJobStatus;
+import com.gacs.backend.service.allocation.ScheduleRunRecorder;
 import com.gacs.backend.service.allocation.SlotAllocation;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,8 +30,16 @@ import java.util.Locale;
 import java.util.UUID;
 
 /**
- * One optimisation run (docs/api-contract.md section 6.4): validate the request into a problem, solve it,
- * and price the result against each job's baseline. The operator-facing explanation is stored by run ID.
+ * One optimisation run (docs/api-contract.md section 6.4): validate the request into a problem,
+ * solve it, price the result against each job's baseline, then persist it via
+ * {@link ScheduleRunRecorder}.
+ *
+ * <p>Deliberately not {@code @Transactional}: {@link ScheduleRunRecorder#record} itself holds no
+ * single transaction spanning this whole call (it brackets an external LLM call that must never
+ * hold a database connection - see {@code ScheduleRunPersistence}'s javadoc). Adding
+ * {@code @Transactional} here would defeat that by Spring's REQUIRED propagation folding both of
+ * {@code ScheduleRunPersistence}'s short transactions back into one that spans the HTTP call again.
+ * Nothing else in this method touches the database in a way that needs transactional wrapping.
  */
 @Service
 public class ScheduleOptimizationService {
@@ -38,6 +47,14 @@ public class ScheduleOptimizationService {
     private final OptimizationProblemFactory problems;
     private final AllocationSolver solver;
     private final EnergyCostModel costs;
+    private final ScheduleRunRecorder recorder;
+
+    public ScheduleOptimizationService(OptimizationProblemFactory problems, AllocationSolver solver,
+                                       EnergyCostModel costs, ScheduleRunRecorder recorder) {
+        this.problems = problems;
+        this.solver = solver;
+        this.costs = costs;
+        this.recorder = recorder;
     private final ScheduleExplanationRepository explanations;
 
     public ScheduleOptimizationService(OptimizationProblemFactory problems, AllocationSolver solver,
@@ -68,6 +85,8 @@ public class ScheduleOptimizationService {
         OptimizationProblem problem = problems.build(request);
         AllocationResult result = solver.solve(problem);
         OptimizeResponseDto response = buildResponse(problem, result);
+        recorder.record(result, problem.constraints(), response, ownerEmail);
+        return response;
         if (ownerEmail != null && explanations != null) {
             ScheduleExplanation explanation = new ScheduleExplanation();
             explanation.setRunId(response.runId());

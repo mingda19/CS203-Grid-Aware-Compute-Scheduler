@@ -917,7 +917,7 @@ The **baseline** of a job is its cost if it started at `originalStartTime` and, 
   }
 }
 ```
-* `runId`: UUID v4 generated per request and used to persist the run's explanation for later views. The explanation is scoped to the authenticated operator.
+* `runId`: UUID v4 generated per request. Successful API runs atomically persist an `OptimizerRun` (configured solver name, version, configuration snapshot, outcome and optimality) and a linked `OptimizationPlan` with a shared `VARCHAR(36)` run ID enforced by a foreign key. The plan stores the immutable result, authenticated owner's database user ID, UTC creation time, and a separate review state initially `PENDING`. Decision routes reference this ID; the optimizer response shape and optimization `status` are unchanged. Failed optimization requests create neither row. Each call stores the complete result as unbounded `text`; storage growth and retention need review before large-scale use. Authenticated principals without a database user receive `401`. The run's persisted explanation remains scoped to the authenticated operator.
 * `status` (run level): `SCHEDULED` when every job is scheduled or exempt; `NEEDS_ATTENTION` when at least one job is `NO_FEASIBLE_SLOT`.
 * `provenOptimal` (run level): `true` when the solver proved that no cheaper schedule exists; `false` when a heuristic fallback produced the plan. A `false` plan still satisfies every window, deadline and capacity rule. Informational only.
 * `optimizedCostUsd` (run level) is the total cost of the proposed schedule. `scheduledStart` is the start of the job's first slot and `scheduledEnd` the end of its last.
@@ -965,19 +965,279 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 | 2026-10-20 | AC5: a job with no feasible slot is no longer returned at its original time; it has null times, status `NO_FEASIBLE_SLOT` (was `UNCHANGED_NO_FEASIBLE_SLOT`) and a `reason`. | - |
 | 2026-10-20 | Errors split into invalid input (`400`), invalid or missing data (`422`) and no capacity (`200`). Baseline defined as the job alone on an empty cluster. | - |
 | 2026-10-28 | Added `priority` (`CRITICAL`, `HIGH`, `NORMAL`, `LOW`; default `NORMAL`) to Job schema, CRUD API, and optimizer contract (GRID-155 AC1 / AC1.1 / GRID-124). | - |
+| 2026-11-01 | Added §6.6: deterministic CSV format for approved schedules (columns, row order, timestamp and number format) for execution adapters (GRID-135 AC1). | - |
+| 2026-11-01 | §6.6: added the approved-schedule JSON format with complete run metadata and per-job slots (GRID-135 AC2). | - |
+| 2026-11-01 | §6.6: added `GET /api/schedules/{runId}/export.csv` and `.json` behind an approval gate (403 not approved; 409 stale or invalidated) with `schedule-run-{runId}` attachment filenames (GRID-135 AC3). | - |
+| 2026-11-01 | §6.6: the JSON export adds `run.createdAt`, `run.solver` and `approval` (GRID-135 AC2). | - |
+| 2026-11-01 | Added §6.7 documenting the audit log queries, with a new `jobId` filter backed by `optimization_plan_jobs`, and the stored schedule (owner only) in the event detail (GRID-134 AC6). | - |
 
-#### `POST /api/schedules/{id}/approve`
-**Mandatory Human Gate**: Explicit approval by an authorized operator prior to schedule dispatch.
-* **Request Body**:
-  ```json
-  {
-    "comment": "Approved schedule after verifying cooling margin."
+### 6.5 Operator decisions (GRID-11 AC2 / AC2.2)
+
+All routes require JWT authentication and ownership of the persisted optimization plan. Existing users act as operators; administrator privileges do not bypass ownership. The operator's numeric database ID is resolved from the authenticated email, never from request fields or the JWT's numeric user ID claim.
+
+| Route | Recorded action | New review state |
+|---|---|---|
+| `POST /api/schedules/{runId}/approve` | `APPROVE` | `APPROVED` |
+| `POST /api/schedules/{runId}/reject` | `REJECT` | `REJECTED` |
+| `POST /api/schedules/{runId}/revise` | `REVISE` | `REVISION_REQUESTED` |
+
+Each route requires a JSON object with a nonblank string `comment`, limited to 2,000 characters before trimming. Missing, null, empty, whitespace-only, and non-string comments return `400` before plan lookup or locking. This follows the approved audit log requirement for operator rationale. Identity fields are ignored. Example:
+
+```json
+{"comment":"Approved schedule after verifying cooling margin."}
+```
+
+All three return **200 OK** in the standard envelope:
+
+```json
+{
+  "success": true,
+  "message": "Schedule decision recorded",
+  "data": {
+    "decisionId": 42,
+    "runId": "7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44",
+    "action": "APPROVE",
+    "operatorId": 7,
+    "comment": "Approved schedule after verifying cooling margin.",
+    "decidedAt": "2026-10-30T09:00:00Z",
+    "reviewState": "APPROVED"
   }
-  ```
-* **Success Response (200 OK)**: Updates status to `APPROVED`, records immutable audit log, and delivers plan to execution adapter.
+}
+```
 
-#### `POST /api/schedules/{id}/reject`
-Rejects the proposed plan. Status transitions to `REJECTED`, leaving the facility on the fixed-schedule baseline.
+Decisions use `audit_events` as their only immutable history; there is no separate `schedule_decisions` table. `decisionId` is the audit event ID. The audit actor comes from the authenticated security context, and `operatorRationale` stores the trimmed comment. `scheduleHash` is the lowercase SHA-256 hex digest of the stored `resultJson` encoded as UTF-8. Each audit event insert and review-state update commits atomically under a per-plan database write lock; the last committed decision determines current review state. Repeated requests, including retries, create additional history entries. The original optimizer result never changes.
+
+Errors: **400** for malformed UUIDs/JSON, a missing or non-object body, missing, null, blank, non-string, or oversized comments; **403** for missing/invalid JWTs (existing security behavior); **401** for an authenticated email without a database user; **404** with `Optimization plan not found` for both missing and unowned plans.
+
+Audit history can be read through the existing audit log endpoints.
+
+Approval records intent only and does **not** dispatch or export workloads. Revision does not edit or rerun a plan: a later optimization creates a new immutable version with a new `runId`. Frontend integration, dispatch gating, and expiry/material-change policies are separate work; export gating and its staleness rules are defined in §6.6. Run IDs created before plan persistence was introduced cannot be reviewed; optimize again to obtain a persisted plan.
+
+### 6.6 Approved Schedule Export (GRID-135)
+
+An approved schedule is handed to execution adapters as CSV (`ApprovedScheduleCsvSerializer`) or JSON (`ApprovedScheduleJsonSerializer`). Both take the §6.4 optimise response the operator approved (JSON also takes the stored run record and the approving audit event) and apply the same rules: jobs sorted by `jobId` ascending and slots by `intervalStartUtc` ascending, timestamps in the §2.4 `YYYY-MM-DDTHH:mm:ssZ` format, one slot = 1 hour, and numbers rounded half-up to a fixed number of decimal places independent of server locale. The same schedule therefore always produces byte-identical output. Both reject a blank `runId`, a missing or repeated `jobId`, an allocation without `intervalStartUtc`, or a non-finite number instead of producing a file. The files are served by the export endpoints below, only while the plan's approval stands.
+
+#### Export endpoints and approval gate (GRID-135 AC3)
+
+| Route | `Content-Type` | Download name |
+|---|---|---|
+| `GET /api/schedules/{runId}/export.csv` | `text/csv;charset=UTF-8` | `schedule-run-{runId}.csv` |
+| `GET /api/schedules/{runId}/export.json` | `application/json` | `schedule-run-{runId}.json` |
+
+Both require JWT authentication and ownership of the plan, with the same identity rules as the §6.5 decision routes: administrators do not bypass ownership. A successful response is **200 OK** with the file as the body, `Content-Disposition: attachment; filename="schedule-run-{runId}.csv"` (or `.json`) and `Cache-Control: no-store`. CORS exposes `Content-Disposition` so the browser app can read the filename. Refusals are JSON error envelopes, so clients should accept `application/json` as well as the file type.
+
+**Approval gate.** Checks run in this order and the first failure is returned:
+
+| # | Requirement | On failure |
+|---|---|---|
+| 1 | The plan exists and the caller owns it | **404** `Optimization plan not found` (missing and unowned plans look the same) |
+| 2 | Its review state is `APPROVED` | **403**, `data.reason = "NOT_APPROVED"` (`PENDING`, `REJECTED` or `REVISION_REQUESTED`) |
+| 3 | Its latest `APPROVE` / `REJECT` / `REVISE` event in `audit_events` is an `APPROVE` whose `scheduleHash` equals the SHA-256 of the stored `resultJson` | **409**, `data.reason = "INVALIDATED"` |
+| 4 | At least one of its slots has not ended: now (UTC) is before the latest `scheduledEnd` | **409**, `data.reason = "STALE"` |
+| 5 | No later-created `APPROVED` plan of the same owner lists any of the same `jobId`s | **409**, `data.reason = "STALE"` |
+| 6 | Every scheduled job is still in the owner's jobs (§6.3) and the plan still fits it, by the §6.4 window rules: its CPU and GPU hours equal the job's `allocatedCpuHours` / `allocatedGpuHours`; `scheduledStart` lies in [`originalStartTime` truncated to the hour, that + `flexibilityWindowHours`] (exactly `originalStartTime` when `isExempt`); and `scheduledEnd` is no later than `deadline` truncated to the hour | **409**, `data.reason = "INVALIDATED"` |
+
+`NO_FEASIBLE_SLOT` jobs have no slots, so checks 4 and 6 ignore them. Edits the plan still satisfies, such as a new name, priority or status, a later deadline or a wider window, keep it exportable. Withdrawing the newer approval in check 5 (rejecting it or requesting revision) makes the older plan exportable again. Exporting is read-only: it records no audit event and does not change the review state. The message explains the refusal, for example:
+
+```json
+{
+  "success": false,
+  "message": "Schedule run 7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44 is stale: run 2b1d9f04-6c3e-4a57-9e8f-0d2c4b6a8e13 was approved later and also schedules job(s) [101]",
+  "data": { "reason": "STALE" }
+}
+```
+
+Other errors: **400** for a malformed run ID; **401** for an authenticated email without a database user; **403** for a missing or invalid JWT, with Spring's default error body (`timestamp`, `status`, `error`, `path`). That 403 is told apart from `NOT_APPROVED` by the absent `data.reason`.
+
+#### CSV format (GRID-135 AC1)
+
+**Format.** RFC 4180, UTF-8 without BOM, comma-separated, CRLF after every record including the last. The header row is always present. A field is wrapped in double quotes only when it contains a comma, double quote, CR or LF, and embedded double quotes are doubled. Values are otherwise written verbatim.
+
+**Columns**, in this order:
+
+| Column | Source (§6.4) | Format |
+|---|---|---|
+| `runId` | `runId` | UUID string, repeated on every row |
+| `jobId` | `items[].jobId` | Integer |
+| `jobName` | `items[].jobName` | Text; empty if null |
+| `perJobStatus` | `items[].perJobStatus` | `OPTIMISED`, `UNCHANGED_EXEMPT` or `NO_FEASIBLE_SLOT` |
+| `intervalStartUtc` | `items[].allocations[].intervalStartUtc` | `YYYY-MM-DDTHH:mm:ssZ` (§2.4) |
+| `intervalEndUtc` | slot start + 1 hour | `YYYY-MM-DDTHH:mm:ssZ` |
+| `cpuHours` | `items[].allocations[].cpuHours` | Exactly 4 decimal places, half-up, `.` separator, no exponent |
+| `gpuHours` | `items[].allocations[].gpuHours` | As `cpuHours` |
+| `reason` | `items[].reason` | Text; empty unless `NO_FEASIBLE_SLOT` |
+
+**Rows.** One row per job per slot it uses. A `NO_FEASIBLE_SLOT` job has no slots, so it gets one row with `intervalStartUtc`, `intervalEndUtc`, `cpuHours` and `gpuHours` empty and the `reason` filled in; adapters must not dispatch rows without a slot. A schedule with no items is the header row alone.
+
+**Rounding.** Hours are rounded to 4 places per slot, so a job's rows may differ from `allocatedCpuHours` / `allocatedGpuHours` by up to 0.00005 per slot.
+
+Example (a two-slot job, a job with no feasible slot, and an exempt job):
+```csv
+runId,jobId,jobName,perJobStatus,intervalStartUtc,intervalEndUtc,cpuHours,gpuHours,reason
+7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44,101,LLM Fine-Tuning Run #42,OPTIMISED,2026-10-21T01:00:00Z,2026-10-21T02:00:00Z,21.3333,5.3333,
+7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44,101,LLM Fine-Tuning Run #42,OPTIMISED,2026-10-21T02:00:00Z,2026-10-21T03:00:00Z,42.6667,10.6667,
+7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44,150,Render batch,NO_FEASIBLE_SLOT,,,,,cluster full between 10:00 and 18:00
+7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44,205,Nightly ETL,UNCHANGED_EXEMPT,2026-10-20T10:00:00Z,2026-10-20T11:00:00Z,8.0000,0.0000,
+```
+
+#### JSON format (GRID-135 AC2)
+
+**Format.** UTF-8, compact (no whitespace between tokens, no trailing newline). Keys always appear in the order listed below, and every key is always present: a missing value is `null`, never an omitted key. Numbers are JSON numbers written in plain notation with a fixed number of decimal places, so `8.0000` keeps its trailing zeros. `formatVersion` is incremented if the shape changes incompatibly.
+
+**Document.**
+
+| Key | Type | Notes |
+|---|---|---|
+| `formatVersion` | integer | `1` |
+| `run` | object | Run metadata, below |
+| `approval` | object \| null | The decision that approved the schedule, below |
+| `jobs` | array | Every job in the run exactly once, sorted by `jobId`; `[]` when the run has no jobs |
+
+**`run`**: every run-level field of the §6.4 response, plus the stored `OptimizerRun` record (§6.5).
+
+| Key | Type | Notes |
+|---|---|---|
+| `runId` | string | UUID |
+| `status` | string | `SCHEDULED` or `NEEDS_ATTENTION` |
+| `provenOptimal` | boolean | |
+| `usedSeededFallbackPrices` | boolean | `true` when the history-based fallback price curve was used |
+| `baselineCostUsd` | number | 4 decimal places |
+| `optimizedCostUsd` | number | 4 decimal places |
+| `projectedSavingsUsd` | number | 4 decimal places; may be negative |
+| `projectedSavingsPercent` | number | 2 decimal places; may be negative |
+| `plainEnglishExplanation` | string \| null | |
+| `createdAt` | string \| null | When the run was stored; UTC timestamp, whole seconds |
+| `solver` | object \| null | `name` (string), `version` (string) and `config`: the `gacs.optimiser.*` settings stored with the run, as a JSON object (or the stored text, if it is not valid JSON) |
+
+**`approval`**: the latest decision on the run, which the gate has checked is an `APPROVE` of exactly this schedule.
+
+| Key | Type | Notes |
+|---|---|---|
+| `decisionId` | integer | Audit event ID |
+| `approvedBy` | string | The approving operator's email |
+| `approvedAt` | string | UTC timestamp, whole seconds |
+| `comment` | string | The operator's rationale |
+| `scheduleHash` | string | SHA-256 of the stored schedule recorded with the approval |
+
+The export endpoints always fill `run.createdAt`, `run.solver` and `approval`; they are `null` only when the serializer is used without a run record or approval.
+
+**`jobs[]`**: every field of a §6.4 `items[]` entry, with `allocations` replaced by `slots`.
+
+| Key | Type | Notes |
+|---|---|---|
+| `jobId` | integer | |
+| `jobName` | string \| null | |
+| `perJobStatus` | string | `OPTIMISED`, `UNCHANGED_EXEMPT` or `NO_FEASIBLE_SLOT` |
+| `reason` | string \| null | Set only for `NO_FEASIBLE_SLOT` |
+| `baselineStart` | string | UTC timestamp |
+| `scheduledStart` | string \| null | Start of the first slot; `null` for `NO_FEASIBLE_SLOT` |
+| `scheduledEnd` | string \| null | End of the last slot; `null` for `NO_FEASIBLE_SLOT` |
+| `allocatedCpuHours` | number | 4 decimal places; `0.0000` for `NO_FEASIBLE_SLOT` |
+| `allocatedGpuHours` | number | 4 decimal places; `0.0000` for `NO_FEASIBLE_SLOT` |
+| `baselineCostUsd` | number \| null | 4 decimal places; `null` for `NO_FEASIBLE_SLOT` |
+| `optimizedCostUsd` | number \| null | 4 decimal places; `null` for `NO_FEASIBLE_SLOT` |
+| `savingsUsd` | number \| null | 4 decimal places; may be negative; `null` for `NO_FEASIBLE_SLOT` |
+| `slots` | array | Approved slots sorted by start; `[]` for `NO_FEASIBLE_SLOT` |
+
+**`jobs[].slots[]`**
+
+| Key | Type | Notes |
+|---|---|---|
+| `intervalStartUtc` | string | UTC timestamp |
+| `intervalEndUtc` | string | Slot start + 1 hour |
+| `cpuHours` | number | 4 decimal places |
+| `gpuHours` | number | 4 decimal places |
+
+Example (the schedule from the CSV example; shown indented here for reading, but the actual output is a single line):
+```json
+{
+  "formatVersion": 1,
+  "run": {
+    "runId": "7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44",
+    "status": "NEEDS_ATTENTION",
+    "provenOptimal": true,
+    "usedSeededFallbackPrices": false,
+    "baselineCostUsd": 1.5752,
+    "optimizedCostUsd": 0.7304,
+    "projectedSavingsUsd": 0.8448,
+    "projectedSavingsPercent": 53.63,
+    "plainEnglishExplanation": "Scheduled 2 of 3 job(s).",
+    "createdAt": "2026-10-20T09:00:00Z",
+    "solver": {
+      "name": "HybridAllocationSolver",
+      "version": "1",
+      "config": { "cpuKwhPerHour": 0.05, "gpuKwhPerHour": 0.4 }
+    }
+  },
+  "approval": {
+    "decisionId": 42,
+    "approvedBy": "operator@gacs.internal",
+    "approvedAt": "2026-10-20T09:30:15Z",
+    "comment": "Approved after verifying cooling margin.",
+    "scheduleHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "jobs": [
+    {
+      "jobId": 101, "jobName": "LLM Fine-Tuning Run #42", "perJobStatus": "OPTIMISED", "reason": null,
+      "baselineStart": "2026-10-20T10:00:00Z", "scheduledStart": "2026-10-21T01:00:00Z", "scheduledEnd": "2026-10-21T03:00:00Z",
+      "allocatedCpuHours": 64.0000, "allocatedGpuHours": 16.0000,
+      "baselineCostUsd": 1.0752, "optimizedCostUsd": 0.2304, "savingsUsd": 0.8448,
+      "slots": [
+        { "intervalStartUtc": "2026-10-21T01:00:00Z", "intervalEndUtc": "2026-10-21T02:00:00Z", "cpuHours": 21.3333, "gpuHours": 5.3333 },
+        { "intervalStartUtc": "2026-10-21T02:00:00Z", "intervalEndUtc": "2026-10-21T03:00:00Z", "cpuHours": 42.6667, "gpuHours": 10.6667 }
+      ]
+    },
+    {
+      "jobId": 150, "jobName": "Render batch", "perJobStatus": "NO_FEASIBLE_SLOT", "reason": "cluster full between 10:00 and 18:00",
+      "baselineStart": "2026-10-20T12:00:00Z", "scheduledStart": null, "scheduledEnd": null,
+      "allocatedCpuHours": 0.0000, "allocatedGpuHours": 0.0000,
+      "baselineCostUsd": null, "optimizedCostUsd": null, "savingsUsd": null,
+      "slots": []
+    },
+    {
+      "jobId": 205, "jobName": "Nightly ETL", "perJobStatus": "UNCHANGED_EXEMPT", "reason": null,
+      "baselineStart": "2026-10-20T10:00:00Z", "scheduledStart": "2026-10-20T10:00:00Z", "scheduledEnd": "2026-10-20T11:00:00Z",
+      "allocatedCpuHours": 8.0000, "allocatedGpuHours": 0.0000,
+      "baselineCostUsd": 0.5000, "optimizedCostUsd": 0.5000, "savingsUsd": 0.0000,
+      "slots": [
+        { "intervalStartUtc": "2026-10-20T10:00:00Z", "intervalEndUtc": "2026-10-20T11:00:00Z", "cpuHours": 8.0000, "gpuHours": 0.0000 }
+      ]
+    }
+  ]
+}
+```
+
+### 6.7 Audit Log Queries (GRID-134 AC6)
+
+Both routes require `ROLE_USER` or `ROLE_ADMIN`; every such user can read every audit event.
+
+#### `GET /api/audit-events`
+Returns audit events newest first, a page at a time, in the standard envelope (`data.content`, `data.totalElements`, `data.totalPages`, `data.number`, `data.size`). Every filter is optional, and filters combine with AND.
+
+| Parameter | Matches |
+|---|---|
+| `from` | Events at or after this ISO-8601 UTC time |
+| `to` | Events before this ISO-8601 UTC time (exclusive) |
+| `actor` | Operator email, case-insensitive substring |
+| `actionType` | `APPROVE`, `REJECT`, `REVISE`, `OVERRIDE` or `DISPATCH` |
+| `runId` | Run ID, case-insensitive substring |
+| `jobId` | Events on runs whose stored plan (§6.5) lists this job |
+| `page`, `size` | Zero-based page and page size (default 20) |
+
+Each plan's job IDs are kept in `optimization_plan_jobs`, written when the plan is created. Plans stored before that table existed are filled in at application startup. **400** for a malformed value or `from` not before `to`.
+
+#### `GET /api/audit-events/{id}`
+Returns `{ event, run, scheduleAvailability, scheduleHashMatches, schedule }`:
+
+| Field | Meaning |
+|---|---|
+| `event` | The audit event |
+| `run` | The stored `OptimizerRun` for the event's `runId` (solver, version, configuration, status, optimality); `null` if none |
+| `scheduleAvailability` | `VISIBLE` when the caller owns the run's plan; `OWNER_ONLY` when a plan is stored but belongs to someone else; `NOT_STORED` when there is none |
+| `scheduleHashMatches` | Whether the stored plan still hashes to the event's `scheduleHash`; `null` when `NOT_STORED` |
+| `schedule` | The stored §6.4 optimise result, only when `VISIBLE` |
+
+As with decisions and exports, administrators do not bypass ownership of the stored schedule. **404** when the event does not exist.
 
 ---
 
@@ -993,7 +1253,9 @@ The Next.js frontend interacts with the backend using the helper module `fronten
    ```
 2. **Transparent Silent Refresh (401 Interceptor)**:
    When an authenticated request returns 401 Unauthorized, `fetchJson` intercepts the response, invokes `POST /api/auth/refresh` using the `HttpOnly` cookie, updates `inMemoryAccessToken`, and retries the original request seamlessly.
-3. **Route Protection & Next.js Middleware**:
+3. **Authenticated File Downloads**:
+   `scheduleExportApi.download(runId, "csv" | "json")` fetches a §6.6 export with the bearer token and returns the file with its `Content-Disposition` name. It refreshes the token once on 401, or on a 403 without `data.reason`. A gate refusal (`NOT_APPROVED`, `STALE`, `INVALIDATED`) is not retried and is raised as a `ScheduleExportError` carrying the server's message and reason.
+4. **Route Protection & Next.js Middleware**:
    Protected routes (`/admin`, `/dashboard`) check the lightweight session synchronization cookie (`gacs_logged_in=true`) in Next.js `middleware.ts`. If unauthenticated, the user is redirected to `/login`.
 
 ---
