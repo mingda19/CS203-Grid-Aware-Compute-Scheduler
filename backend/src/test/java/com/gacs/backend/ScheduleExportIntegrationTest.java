@@ -1,0 +1,376 @@
+package com.gacs.backend;
+
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gacs.backend.dto.OptimizeResponseDto;
+import com.gacs.backend.model.AuditActionType;
+import com.gacs.backend.model.AuditEvent;
+import com.gacs.backend.model.Job;
+import com.gacs.backend.model.JobPriority;
+import com.gacs.backend.model.User;
+import com.gacs.backend.repository.AuditEventRepository;
+import com.gacs.backend.repository.JobRepository;
+import com.gacs.backend.repository.OptimizationPlanRepository;
+import com.gacs.backend.repository.OptimizerRunRepository;
+import com.gacs.backend.repository.UserRepository;
+import com.gacs.backend.service.ApprovedScheduleCsvSerializer;
+import com.gacs.backend.service.ApprovedScheduleJsonSerializer;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
+
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
+import static org.springframework.http.MediaType.APPLICATION_JSON;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * GRID-135 AC3 / AC4.3 — the export approval gate, end to end: real jobs, optimiser runs and decisions
+ * (docs/api-contract.md section 6.6).
+ */
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+class ScheduleExportIntegrationTest {
+
+    private static final DateTimeFormatter UTC = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
+
+    @Autowired MockMvc mvc;
+    @Autowired UserRepository users;
+    @Autowired JobRepository jobs;
+    @Autowired OptimizationPlanRepository plans;
+    @Autowired OptimizerRunRepository runs;
+    @Autowired AuditEventRepository auditEvents;
+    @Autowired ApprovedScheduleCsvSerializer csvSerializer;
+    @Autowired ApprovedScheduleJsonSerializer jsonSerializer;
+    @Autowired JdbcTemplate jdbc;
+
+    private final ObjectMapper json = new ObjectMapper().findAndRegisterModules()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+    private final List<String> createdRuns = new ArrayList<>();
+    private final List<Long> createdJobs = new ArrayList<>();
+    private User owner;
+
+    /** Two days ahead, on the hour, so plans are not stale by time. */
+    private final LocalDateTime start = LocalDateTime.now(ZoneOffset.UTC).truncatedTo(ChronoUnit.HOURS).plusDays(2);
+
+    @BeforeEach
+    void setup() {
+        owner = users.save(new User(UUID.randomUUID() + "@test.io", "test-password", "Operator", "ROLE_USER"));
+    }
+
+    @AfterEach
+    void cleanup() {
+        // Audit records remain append-only; each test uses fresh run IDs.
+        for (String runId : createdRuns) {
+            plans.deleteById(runId);
+            runs.deleteById(runId);
+        }
+        jobs.deleteAllById(createdJobs);
+        users.deleteById(owner.getId());
+    }
+
+    /** A 4 CPU-hour job that may start at {@code from} or an hour later and must finish within 3 hours. */
+    private Job job(String name, LocalDateTime from) {
+        Job saved = jobs.save(Job.builder()
+                .ownerEmail(owner.getEmail()).name(name).cpuHours(4.0).gpuHours(0.0)
+                .originalStartTime(from).deadline(from.plusHours(3)).flexibilityWindowHours(1).isExempt(false)
+                .build());
+        createdJobs.add(saved.getId());
+        return saved;
+    }
+
+    /**
+     * Optimises the jobs against prices that make the second hour cheapest, so each job is moved an hour later
+     * than its original start.
+     */
+    private String optimize(LocalDateTime from, Job... jobList) throws Exception {
+        List<Map<String, Object>> jobsJson = new ArrayList<>();
+        for (Job j : jobList) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", j.getId());
+            m.put("name", j.getName());
+            m.put("cpuHours", j.getCpuHours());
+            m.put("gpuHours", j.getGpuHours());
+            m.put("originalStartTime", UTC.format(j.getOriginalStartTime()));
+            m.put("deadline", UTC.format(j.getDeadline()));
+            m.put("flexibilityWindowHours", j.getFlexibilityWindowHours());
+            m.put("isExempt", j.isExempt());
+            jobsJson.add(m);
+        }
+        List<Map<String, Object>> forecast = List.of(
+                Map.of("intervalStartUtc", UTC.format(from), "predictedPrice", 100),
+                Map.of("intervalStartUtc", UTC.format(from.plusHours(1)), "predictedPrice", 10),
+                Map.of("intervalStartUtc", UTC.format(from.plusHours(2)), "predictedPrice", 50));
+        String response = mvc.perform(post("/api/schedules/optimize").with(user(owner.getEmail()))
+                        .contentType(APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("jobs", jobsJson, "forecast", forecast))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String runId = json.readTree(response).path("data").path("runId").asText();
+        createdRuns.add(runId);
+        return runId;
+    }
+
+    private void decide(String runId, String action) throws Exception {
+        mvc.perform(post("/api/schedules/" + runId + "/" + action).with(user(owner.getEmail()))
+                        .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
+                .andExpect(status().isOk());
+    }
+
+    private ResultActions export(String runId, String extension) throws Exception {
+        return mvc.perform(get("/api/schedules/" + runId + "/export." + extension).with(user(owner.getEmail())));
+    }
+
+    private void expectRejected(String runId, int status, String reason, String messagePart) throws Exception {
+        for (String extension : List.of("csv", "json")) {
+            export(runId, extension)
+                    .andExpect(status().is(status))
+                    .andExpect(content().contentTypeCompatibleWith(APPLICATION_JSON))
+                    .andExpect(header().doesNotExist("Content-Disposition"))
+                    .andExpect(jsonPath("$.success").value(false))
+                    .andExpect(jsonPath("$.data.reason").value(reason))
+                    .andExpect(jsonPath("$.message").value(containsString(messagePart)));
+        }
+    }
+
+    private OptimizeResponseDto storedPlan(String runId) throws Exception {
+        return json.readValue(plans.findById(runId).orElseThrow().getResultJson(), OptimizeResponseDto.class);
+    }
+
+    @Test
+    @DisplayName("AC4.3b — an approved plan downloads as CSV and JSON attachments named schedule-run-<id>")
+    void approvedPlan_DownloadsAsAttachments() throws Exception {
+        Job train = job("Train", start);
+        String runId = optimize(start, train);
+        decide(runId, "approve");
+        OptimizeResponseDto plan = storedPlan(runId);
+
+        String csv = export(runId, "csv")
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("text/csv;charset=UTF-8"))
+                .andExpect(header().string("Content-Disposition", "attachment; filename=\"schedule-run-" + runId + ".csv\""))
+                .andExpect(header().string("Cache-Control", containsString("no-store")))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(csv).isEqualTo(csvSerializer.serialize(plan));
+        assertThat(csv).contains(runId + "," + train.getId() + ",Train,OPTIMISED," + UTC.format(start.plusHours(1)));
+
+        String body = export(runId, "json")
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(APPLICATION_JSON))
+                .andExpect(header().string("Content-Disposition", "attachment; filename=\"schedule-run-" + runId + ".json\""))
+                .andReturn().getResponse().getContentAsString();
+        AuditEvent approval = auditEvents.findFirstByRunIdAndActionTypeInOrderByIdDesc(runId,
+                EnumSet.of(AuditActionType.APPROVE, AuditActionType.REJECT, AuditActionType.REVISE)).orElseThrow();
+        assertThat(body).isEqualTo(jsonSerializer.serialize(plan, runs.findById(runId).orElseThrow(), approval));
+        assertThat(body)
+                .contains("\"solver\":{\"name\":\"HybridAllocationSolver\",\"version\":\"1\",\"config\":{")
+                .contains("\"approval\":{\"decisionId\":" + approval.getId() + ",\"approvedBy\":\"" + owner.getEmail() + "\"");
+    }
+
+    @Test
+    @DisplayName("AC4.3a — the browser app can read the download filename across origins")
+    void crossOriginDownload_ExposesContentDisposition() throws Exception {
+        String runId = optimize(start, job("Train", start));
+        decide(runId, "approve");
+
+        mvc.perform(get("/api/schedules/" + runId + "/export.csv").with(user(owner.getEmail()))
+                        .header("Origin", "http://localhost:3000"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Access-Control-Allow-Origin", "http://localhost:3000"))
+                .andExpect(header().string("Access-Control-Expose-Headers", containsString("Content-Disposition")));
+    }
+
+    @Test
+    @DisplayName("AC4.3 — pending, rejected and revision-requested plans are refused with 403 until approved again")
+    void unapprovedPlans_Forbidden() throws Exception {
+        String runId = optimize(start, job("Train", start));
+        expectRejected(runId, 403, "NOT_APPROVED", "is PENDING, not APPROVED");
+
+        decide(runId, "approve");
+        export(runId, "csv").andExpect(status().isOk());
+
+        decide(runId, "reject");
+        expectRejected(runId, 403, "NOT_APPROVED", "is REJECTED");
+
+        decide(runId, "revise");
+        expectRejected(runId, 403, "NOT_APPROVED", "is REVISION_REQUESTED");
+
+        decide(runId, "approve");
+        export(runId, "json").andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("Missing and unowned plans look the same (404); bad IDs, tokens and users are refused")
+    void missingUnownedAndUnauthenticated() throws Exception {
+        String runId = optimize(start, job("Train", start));
+        decide(runId, "approve");
+
+        User other = users.save(new User(UUID.randomUUID() + "@test.io", "password", "Other", "ROLE_ADMIN"));
+        try {
+            String hidden = mvc.perform(get("/api/schedules/" + runId + "/export.csv").with(user(other.getEmail()).roles("ADMIN")))
+                    .andExpect(status().isNotFound()).andReturn().getResponse().getContentAsString();
+            String missing = mvc.perform(get("/api/schedules/" + UUID.randomUUID() + "/export.csv").with(user(other.getEmail()).roles("ADMIN")))
+                    .andExpect(status().isNotFound()).andReturn().getResponse().getContentAsString();
+            assertThat(hidden).isEqualTo(missing);
+        } finally {
+            users.deleteById(other.getId());
+        }
+        mvc.perform(get("/api/schedules/not-a-uuid/export.csv").with(user(owner.getEmail())))
+                .andExpect(status().isBadRequest());
+        // Auth failures carry no gate reason, which is how clients tell them apart from NOT_APPROVED.
+        mvc.perform(get("/api/schedules/" + runId + "/export.csv"))
+                .andExpect(status().isForbidden())
+                .andExpect(content().string(not(containsString("reason"))));
+        mvc.perform(get("/api/schedules/" + runId + "/export.json").header("Authorization", "Bearer invalid-token"))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/schedules/" + runId + "/export.json").with(user("missing@test.io")))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("AC4.3 — a later approval that schedules the same job makes the older plan stale (409)")
+    void newerApprovalOfSameJob_Stale() throws Exception {
+        Job shared = job("Shared", start);
+        String older = optimize(start, shared);
+        decide(older, "approve");
+
+        String unrelated = optimize(start, job("Unrelated", start));
+        decide(unrelated, "approve");
+        export(older, "csv").andExpect(status().isOk());
+
+        String newer = optimize(start, shared);
+        export(older, "csv").andExpect(status().isOk());
+
+        decide(newer, "approve");
+        expectRejected(older, 409, "STALE", "run " + newer + " was approved later and also schedules job(s) [" + shared.getId() + "]");
+        export(newer, "csv").andExpect(status().isOk());
+
+        decide(newer, "reject");
+        export(older, "csv").andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("AC4.3 — a plan whose slots have all ended is stale (409)")
+    void elapsedPlan_Stale() throws Exception {
+        LocalDateTime past = start.minusDays(5);
+        String runId = optimize(past, job("Yesterday", past));
+        decide(runId, "approve");
+
+        expectRejected(runId, 409, "STALE", "all of its slots ended by " + UTC.format(past.plusHours(2)));
+    }
+
+    @Test
+    @DisplayName("AC4.3 — a stored plan changed after approval is invalidated (409)")
+    void tamperedPlan_Invalidated() throws Exception {
+        String runId = optimize(start, job("Train", start));
+        decide(runId, "approve");
+        String stored = plans.findById(runId).orElseThrow().getResultJson();
+
+        jdbc.update("update optimization_plans set result_json = ? where run_id = ?",
+                stored.replace("\"jobName\":\"Train\"", "\"jobName\":\"Tampered\""), runId);
+        assertThat(plans.findById(runId).orElseThrow().getResultJson()).isNotEqualTo(stored);
+
+        expectRejected(runId, 409, "INVALIDATED", "no longer matches the hash recorded when it was approved");
+    }
+
+    @Test
+    @DisplayName("AC4.3 — an approval record that does not match the plan invalidates the export (409)")
+    void mismatchedApprovalRecord_Invalidated() throws Exception {
+        String forged = optimize(start, job("Forged", start));
+        decide(forged, "approve");
+        auditEvents.save(AuditEvent.builder().actor(owner.getEmail()).actionType(AuditActionType.APPROVE)
+                .timestamp(Instant.now()).runId(forged).scheduleHash("0".repeat(64))
+                .operatorRationale("approval of a different schedule").build());
+        expectRejected(forged, 409, "INVALIDATED", "no longer matches the hash");
+
+        String flipped = optimize(start, job("Flipped", start));
+        decide(flipped, "reject");
+        jdbc.update("update optimization_plans set review_state = 'APPROVED' where run_id = ?", flipped);
+        expectRejected(flipped, 409, "INVALIDATED", "latest recorded decision is REJECT");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"cpu-hours", "start-moved", "deadline-earlier", "made-exempt", "deleted"})
+    @DisplayName("AC4.3 — editing or deleting a scheduled job after approval invalidates the export (409)")
+    void changedJob_Invalidated(String change) throws Exception {
+        Job job = job("Train", start);
+        String runId = optimize(start, job);
+        decide(runId, "approve");
+        export(runId, "csv").andExpect(status().isOk());
+
+        String expected = switch (change) {
+            case "cpu-hours" -> {
+                job.setCpuHours(8.0);
+                yield "CPU or GPU hours changed";
+            }
+            case "start-moved" -> {
+                job.setOriginalStartTime(start.plusHours(2));
+                yield "must now start between " + UTC.format(start.plusHours(2));
+            }
+            case "deadline-earlier" -> {
+                job.setDeadline(start.plusHours(1).plusMinutes(30));
+                yield "is now before its scheduled end " + UTC.format(start.plusHours(2));
+            }
+            case "made-exempt" -> {
+                job.setExempt(true);
+                yield "must now start between " + UTC.format(start) + " and " + UTC.format(start);
+            }
+            default -> "is no longer in your jobs";
+        };
+        if (change.equals("deleted")) {
+            jobs.deleteById(job.getId());
+        } else {
+            jobs.save(job);
+        }
+
+        expectRejected(runId, 409, "INVALIDATED", expected);
+    }
+
+    @Test
+    @DisplayName("Edits that the approved plan still satisfies keep it exportable")
+    void harmlessJobEdits_StillExportable() throws Exception {
+        Job job = job("Train", start);
+        String runId = optimize(start, job);
+        decide(runId, "approve");
+
+        job.setName("Train (renamed)");
+        job.setPriority(JobPriority.CRITICAL);
+        job.setStatus("SCHEDULED");
+        job.setDeadline(start.plusHours(10));
+        job.setFlexibilityWindowHours(4);
+        jobs.save(job);
+
+        export(runId, "csv").andExpect(status().isOk());
+        export(runId, "json").andExpect(status().isOk());
+    }
+}

@@ -3,6 +3,8 @@ package com.gacs.backend;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gacs.backend.config.SecurityConfig;
 import com.gacs.backend.controller.AuditEventController;
+import com.gacs.backend.dto.AuditEventDetailDto;
+import com.gacs.backend.dto.AuditEventFilter;
 import com.gacs.backend.dto.AuditEventRequestDto;
 import com.gacs.backend.dto.AuditEventResponseDto;
 import com.gacs.backend.exception.GlobalExceptionHandler;
@@ -23,6 +25,8 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verifyNoInteractions;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -188,7 +192,7 @@ class AuditEventControllerTest {
     @WithMockUser(username = "operator@gacs.internal")
     @DisplayName("GET /api/audit-events/{id} returns 404 when event does not exist")
     void getEventById_NotFound() throws Exception {
-        when(auditEventService.getEventById(999L))
+        when(auditEventService.getEventDetail(eq(999L), any()))
                 .thenThrow(new ResourceNotFoundException("Audit event not found with id: 999"));
 
         mockMvc.perform(get("/api/audit-events/999"))
@@ -227,10 +231,11 @@ class AuditEventControllerTest {
     @ParameterizedTest
     @ValueSource(strings = {"USER", "ADMIN"})
     void reads_AllowedRoles(String role) throws Exception {
-        when(auditEventService.getEvents(any(Pageable.class))).thenReturn(Page.empty());
+        when(auditEventService.getEvents(any(AuditEventFilter.class), any(Pageable.class))).thenReturn(Page.empty());
         when(auditEventService.getEventsByRunId("run-1")).thenReturn(List.of());
-        when(auditEventService.getEventById(1L)).thenReturn(new AuditEventResponseDto(
-                1L, "admin", AuditActionType.APPROVE, Instant.now(), validRunId, validHash, validRationale));
+        when(auditEventService.getEventDetail(eq(1L), any())).thenReturn(new AuditEventDetailDto(new AuditEventResponseDto(
+                1L, "admin", AuditActionType.APPROVE, Instant.now(), validRunId, validHash, validRationale), null,
+                AuditEventDetailDto.ScheduleAvailability.NOT_STORED, null, null));
         for (String path : List.of("/api/audit-events", "/api/audit-events/run/run-1", "/api/audit-events/1")) {
             mockMvc.perform(get(path).with(
                     org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors
@@ -257,5 +262,91 @@ class AuditEventControllerTest {
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest());
         verifyNoInteractions(auditEventService);
+    }
+
+    @Test
+    @WithMockUser(roles = "USER")
+    @DisplayName("AC6.1a — GET /api/audit-events binds date, operator, outcome and run filters")
+    void getEvents_BindsFilters() throws Exception {
+        when(auditEventService.getEvents(any(AuditEventFilter.class), any(Pageable.class))).thenReturn(Page.empty());
+
+        mockMvc.perform(get("/api/audit-events")
+                        .param("from", "2026-10-28T00:00:00Z")
+                        .param("to", "2026-10-29T00:00:00Z")
+                        .param("actor", "operator@gacs")
+                        .param("actionType", "REJECT")
+                        .param("runId", "7f3c")
+                        .param("jobId", "101")
+                        .param("page", "2")
+                        .param("size", "50"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+
+        verify(auditEventService).getEvents(
+                eq(new AuditEventFilter(
+                        Instant.parse("2026-10-28T00:00:00Z"),
+                        Instant.parse("2026-10-29T00:00:00Z"),
+                        "operator@gacs",
+                        AuditActionType.REJECT,
+                        "7f3c",
+                        101L)),
+                eq(org.springframework.data.domain.PageRequest.of(2, 50)));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"actionType=NOT_AN_ACTION", "from=yesterday", "to=2026-13-01", "jobId=abc"})
+    @WithMockUser(roles = "USER")
+    @DisplayName("AC6.1a — Malformed filter values return 400")
+    void getEvents_MalformedFilterBadRequest(String query) throws Exception {
+        mockMvc.perform(get("/api/audit-events?" + query))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false));
+        verifyNoInteractions(auditEventService);
+    }
+
+    @Test
+    @WithMockUser(roles = "USER")
+    @DisplayName("AC6.1a — Inverted date range returns 400")
+    void getEvents_InvertedRangeBadRequest() throws Exception {
+        when(auditEventService.getEvents(any(AuditEventFilter.class), any(Pageable.class)))
+                .thenThrow(new IllegalArgumentException("'from' must be before 'to'"));
+
+        mockMvc.perform(get("/api/audit-events")
+                        .param("from", "2026-10-29T00:00:00Z")
+                        .param("to", "2026-10-28T00:00:00Z"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("'from' must be before 'to'"));
+    }
+
+    @Test
+    @WithMockUser(username = "operator@gacs.internal", roles = "USER")
+    @DisplayName("AC6.1b — GET /api/audit-events/{id} returns the event, run snapshot and the owner's stored schedule")
+    void getEventById_IncludesRunAndStoredSchedule() throws Exception {
+        AuditEventResponseDto event = new AuditEventResponseDto(
+                5L, "operator@gacs.internal", AuditActionType.APPROVE,
+                Instant.parse("2026-10-28T09:30:00Z"), validRunId, validHash, validRationale);
+        AuditEventDetailDto.RunSnapshot run = new AuditEventDetailDto.RunSnapshot(
+                validRunId, Instant.parse("2026-10-28T09:00:00Z"), "OR-Tools CP-SAT", "9.10",
+                "{\"timeLimitSeconds\":10}", com.gacs.backend.model.OptimizerRunStatus.SCHEDULED, true);
+        java.time.LocalDateTime slot = java.time.LocalDateTime.parse("2026-10-28T10:00:00");
+        com.gacs.backend.dto.OptimizeResponseDto schedule = new com.gacs.backend.dto.OptimizeResponseDto(
+                validRunId, "SCHEDULED", true, 0.02, 0.002, 0.018, 90.0, null, false, List.of(
+                        new com.gacs.backend.dto.OptimizeResponseDto.ScheduleItem(101L, "Train", slot.minusHours(1), slot,
+                                slot.plusHours(1), 4.0, 0.0,
+                                List.of(new com.gacs.backend.dto.OptimizeResponseDto.Allocation(slot, 4.0, 0.0)),
+                                "OPTIMISED", null, 0.02, 0.002, 0.018)));
+        when(auditEventService.getEventDetail(5L, "operator@gacs.internal")).thenReturn(new AuditEventDetailDto(
+                event, run, AuditEventDetailDto.ScheduleAvailability.VISIBLE, true, schedule));
+
+        mockMvc.perform(get("/api/audit-events/5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.event.id").value(5))
+                .andExpect(jsonPath("$.data.event.scheduleHash").value(validHash))
+                .andExpect(jsonPath("$.data.run.solverName").value("OR-Tools CP-SAT"))
+                .andExpect(jsonPath("$.data.run.status").value("SCHEDULED"))
+                .andExpect(jsonPath("$.data.scheduleAvailability").value("VISIBLE"))
+                .andExpect(jsonPath("$.data.scheduleHashMatches").value(true))
+                .andExpect(jsonPath("$.data.schedule.items[0].jobId").value(101))
+                .andExpect(jsonPath("$.data.schedule.items[0].scheduledStart").value("2026-10-28T10:00:00Z"));
     }
 }

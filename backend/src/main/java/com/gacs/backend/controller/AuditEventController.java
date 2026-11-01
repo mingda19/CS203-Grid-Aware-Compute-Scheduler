@@ -1,8 +1,11 @@
 package com.gacs.backend.controller;
 
 import com.gacs.backend.dto.ApiResponse;
+import com.gacs.backend.dto.AuditEventDetailDto;
+import com.gacs.backend.dto.AuditEventFilter;
 import com.gacs.backend.dto.AuditEventRequestDto;
 import com.gacs.backend.dto.AuditEventResponseDto;
+import com.gacs.backend.model.AuditActionType;
 import com.gacs.backend.service.AuditEventService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -15,11 +18,14 @@ import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.security.Principal;
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -88,23 +94,49 @@ public class AuditEventController {
         return ResponseEntity.ok(ApiResponse.ok("Audit events retrieved", events));
     }
 
-    @Operation(summary = "List audit events with pagination", description = "Requires ROLE_USER or ROLE_ADMIN.")
+    @Operation(
+        summary = "Query audit events with filters and pagination",
+        description = "Filters by date range, operator, decision outcome, run and job (GRID-134 AC6.1a). "
+            + "All filters are optional; results are newest first. Requires ROLE_USER or ROLE_ADMIN."
+    )
     @ApiResponses(value = {
         @io.swagger.v3.oas.annotations.responses.ApiResponse(
             responseCode = "200",
             description = "Audit events page retrieved successfully."
+        ),
+        @io.swagger.v3.oas.annotations.responses.ApiResponse(
+            responseCode = "400",
+            description = "Invalid filter: malformed date or action type, or 'from' is not before 'to'."
         )
     })
     @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
     @GetMapping
     public ResponseEntity<ApiResponse<Page<AuditEventResponseDto>>> getEvents(
+            @Parameter(description = "Earliest event time, inclusive (ISO-8601 UTC)", example = "2026-10-28T00:00:00Z")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
+            @Parameter(description = "Latest event time, exclusive (ISO-8601 UTC)", example = "2026-10-29T00:00:00Z")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to,
+            @Parameter(description = "Operator email; case-insensitive substring match", example = "operator@gacs")
+            @RequestParam(required = false) String actor,
+            @Parameter(description = "Decision outcome", example = "APPROVE")
+            @RequestParam(required = false) AuditActionType actionType,
+            @Parameter(description = "Target optimiser run ID; case-insensitive substring match", example = "7f3c1e52")
+            @RequestParam(required = false) String runId,
+            @Parameter(description = "Target job ID; events on runs whose stored plan includes the job", example = "101")
+            @RequestParam(required = false) Long jobId,
             @PageableDefault(size = 20) Pageable pageable
     ) {
-        Page<AuditEventResponseDto> events = auditEventService.getEvents(pageable);
+        AuditEventFilter filter = new AuditEventFilter(from, to, actor, actionType, runId, jobId);
+        Page<AuditEventResponseDto> events = auditEventService.getEvents(filter, pageable);
         return ResponseEntity.ok(ApiResponse.ok("Audit events retrieved", events));
     }
 
-    @Operation(summary = "Get audit event by ID", description = "Requires ROLE_USER or ROLE_ADMIN.")
+    @Operation(
+        summary = "Get audit event by ID",
+        description = "Returns the event with the optimiser run and stored schedule it refers to (GRID-134 AC6.1b). "
+            + "The schedule is included only for the run's owner; scheduleHashMatches says whether it still "
+            + "matches the event's scheduleHash. Requires ROLE_USER or ROLE_ADMIN."
+    )
     @ApiResponses(value = {
         @io.swagger.v3.oas.annotations.responses.ApiResponse(
             responseCode = "200",
@@ -117,10 +149,11 @@ public class AuditEventController {
     })
     @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
     @GetMapping("/{id}")
-    public ResponseEntity<ApiResponse<AuditEventResponseDto>> getEventById(
-            @Parameter(description = "Audit event ID", required = true) @PathVariable Long id
+    public ResponseEntity<ApiResponse<AuditEventDetailDto>> getEventById(
+            @Parameter(description = "Audit event ID", required = true) @PathVariable Long id,
+            Principal principal
     ) {
-        AuditEventResponseDto event = auditEventService.getEventById(id);
+        AuditEventDetailDto event = auditEventService.getEventDetail(id, principal.getName());
         return ResponseEntity.ok(ApiResponse.ok("Audit event retrieved", event));
     }
 }

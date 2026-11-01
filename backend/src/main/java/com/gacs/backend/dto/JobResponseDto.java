@@ -1,5 +1,6 @@
 package com.gacs.backend.dto;
 
+import com.gacs.backend.model.ConfirmationOutcome;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.gacs.backend.model.Job;
 import com.gacs.backend.model.JobPriority;
@@ -51,6 +52,12 @@ public class JobResponseDto {
     @Schema(description = "Optional natural language constraints or notes", example = "Can wait up to 12 hours for low price valley, finish by tomorrow evening")
     private String rawConstraints;
 
+    @Schema(description = "Actual parser timestamp in UTC ISO-8601; null when unparsed", example = "2026-10-20T09:30:00")
+    private LocalDateTime parsedAt;
+
+    @Schema(description = "Decision on the latest parse; null when no parsing metadata is recorded", allowableValues = {"PENDING", "CONFIRMED", "REJECTED"})
+    private ConfirmationOutcome confirmationOutcome;
+
     @Schema(description = "Operational status", example = "PENDING")
     private String status;
 
@@ -88,6 +95,8 @@ public class JobResponseDto {
                 .flexibilityWindowHours(job.getFlexibilityWindowHours())
                 .isExempt(job.isExempt())
                 .rawConstraints(job.getRawConstraints())
+                .parsedAt(job.getParsedAt())
+                .confirmationOutcome(job.getConfirmationOutcome())
                 .status(job.getStatus())
                 .priority(job.getPriority() != null ? job.getPriority() : JobPriority.NORMAL)
                 .createdAt(job.getCreatedAt())

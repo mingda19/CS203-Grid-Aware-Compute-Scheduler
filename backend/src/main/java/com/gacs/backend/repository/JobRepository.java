@@ -4,6 +4,7 @@ import com.gacs.backend.model.Job;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -29,4 +30,9 @@ public interface JobRepository extends JpaRepository<Job, Long> {
      * Checks if a job exists and belongs to the given operator.
      */
     boolean existsByIdAndOwnerEmail(Long id, String ownerEmail);
+
+    /**
+     * Finds the operator's jobs among the given IDs; IDs that are missing or owned by someone else are left out.
+     */
+    List<Job> findByOwnerEmailAndIdIn(String ownerEmail, Collection<Long> ids);
 }

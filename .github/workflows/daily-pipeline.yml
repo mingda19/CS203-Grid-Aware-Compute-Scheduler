@@ -8,7 +8,7 @@ on:
     # queuing delay, since huge numbers of repos across GitHub schedule
     # there too. Confirmed directly against this repo's own run history
     # (GET /repos/.../actions/workflows/daily-pipeline.yml/runs)
-    - cron: '57 20 * * *'
+    - cron: '30 19 * * *'
   push:
     branches:
       - model/retraining

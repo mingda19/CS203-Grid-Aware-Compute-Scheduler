@@ -2,18 +2,26 @@ package com.gacs.backend.exception;
 
 import com.gacs.backend.dto.ApiResponse;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.util.HashMap;
 import java.util.Map;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class})
+    public ResponseEntity<ApiResponse<Void>> handleMalformedRequest(Exception ex) {
+        return ResponseEntity.badRequest().body(ApiResponse.fail("Malformed request body or parameter"));
+    }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiResponse<Map<String, String>>> handleValidationExceptions(MethodArgumentNotValidException ex) {
@@ -23,6 +31,13 @@ public class GlobalExceptionHandler {
         }
         ApiResponse<Map<String, String>> response = new ApiResponse<>(false, "Validation failed", errors);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+    }
+
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleUnreadableRequest(
+            org.springframework.http.converter.HttpMessageNotReadableException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.fail("Malformed JSON or invalid field value"));
     }
 
     @ExceptionHandler(BadCredentialsException.class)
@@ -35,6 +50,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleIllegalArgument(IllegalArgumentException ex) {
         ApiResponse<Void> response = ApiResponse.fail(ex.getMessage());
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+    }
+
+    @ExceptionHandler(ScheduleExportRejectedException.class)
+    public ResponseEntity<ApiResponse<Map<String, String>>> handleExportRejected(ScheduleExportRejectedException ex) {
+        // Always JSON: export requests ask for the file type in Accept, but a refusal is an error envelope.
+        return ResponseEntity.status(ex.getReason().status())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(new ApiResponse<>(false, ex.getMessage(), Map.of("reason", ex.getReason().name())));
     }
 
     @ExceptionHandler(UnprocessableDataException.class)

@@ -3,16 +3,20 @@ package com.gacs.backend.service.allocation;
 import com.gacs.backend.service.PriceSeries;
 
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
  * Checks a set of plans against every hard rule of the contract (section 6.4) and lists the broken
  * ones. Used on the brute-force checker now, and on the real solvers in Phase 5.
  * Shape rules (consecutive slots, shares add up to 1) are already enforced by {@link JobPlan}.
+ * {@link #violations(OptimizationProblem, AllocationResult)} additionally checks every attached
+ * {@link Constraint} (section 2) against the result.
  */
 final class ContractRules {
 
@@ -63,7 +67,78 @@ final class ContractRules {
     }
 
     static List<String> violations(OptimizationProblem problem, AllocationResult result) {
-        return violations(problem.jobs(), result.plans(), problem.prices(), problem.capacity());
+        List<String> problems = new ArrayList<>(violations(problem.jobs(), result.plans(), problem.prices(),
+                problem.capacity()));
+        Map<Long, JobPlan> plansById = new HashMap<>();
+        result.plans().forEach((job, plan) -> plansById.put(job.id(), plan));
+        for (Constraint constraint : problem.constraints()) {
+            if (constraint instanceof AbsoluteTimeWindowConstraint c) {
+                checkAbsoluteWindow(c, plansById, problems);
+            } else if (constraint instanceof PrecedenceConstraint c) {
+                checkPrecedence(c, plansById, problems);
+            } else if (constraint instanceof MutualExclusionConstraint c) {
+                checkMutualExclusion(c, plansById, problems);
+            } else if (constraint instanceof SynchronizedFinishConstraint c) {
+                checkSynchronizedFinish(c, plansById, problems);
+            }
+        }
+        return problems;
+    }
+
+    private static void checkAbsoluteWindow(AbsoluteTimeWindowConstraint c, Map<Long, JobPlan> plansById,
+                                             List<String> problems) {
+        for (long jobId : c.jobIds()) {
+            JobPlan plan = plansById.get(jobId);
+            if (plan == null) {
+                continue;
+            }
+            for (SlotAllocation allocation : plan.allocations()) {
+                if (!withinDaily(allocation.slotStart().toLocalTime(), c.dailyStartTime(), c.dailyEndTime())) {
+                    problems.add("job id " + jobId + " runs at " + allocation.slotStart()
+                            + ", outside its absolute time window");
+                }
+            }
+        }
+    }
+
+    private static boolean withinDaily(LocalTime time, LocalTime start, LocalTime end) {
+        return !start.isAfter(end) ? (!time.isBefore(start) && time.isBefore(end))
+                : (!time.isBefore(start) || time.isBefore(end));
+    }
+
+    private static void checkPrecedence(PrecedenceConstraint c, Map<Long, JobPlan> plansById,
+                                        List<String> problems) {
+        JobPlan before = plansById.get(c.beforeJobId());
+        JobPlan after = plansById.get(c.afterJobId());
+        if (before != null && after != null && after.start().isBefore(before.end())) {
+            problems.add("job id " + c.afterJobId() + " starts before job id " + c.beforeJobId() + " finishes");
+        }
+    }
+
+    private static void checkMutualExclusion(MutualExclusionConstraint c, Map<Long, JobPlan> plansById,
+                                              List<String> problems) {
+        List<Long> ids = c.jobIds();
+        JobPlan a = plansById.get(ids.get(0));
+        JobPlan b = plansById.get(ids.get(1));
+        if (a != null && b != null && a.start().isBefore(b.end()) && b.start().isBefore(a.end())) {
+            problems.add("job ids " + ids + " overlap despite mutual exclusion");
+        }
+    }
+
+    private static void checkSynchronizedFinish(SynchronizedFinishConstraint c, Map<Long, JobPlan> plansById,
+                                                 List<String> problems) {
+        List<Long> ids = c.jobIds();
+        long scheduledMembers = ids.stream().filter(plansById::containsKey).count();
+        if (scheduledMembers > 0 && scheduledMembers < ids.size()) {
+            problems.add("synchronized-finish group " + ids + " partially placed (" + scheduledMembers + " of "
+                    + ids.size() + ")");
+        }
+        List<LocalDateTime> ends = ids.stream().map(plansById::get).filter(Objects::nonNull).map(JobPlan::end)
+                .distinct().toList();
+        if (ends.size() > 1) {
+            problems.add("synchronized-finish group " + ids + " members do not all finish at the same hour: "
+                    + ends);
+        }
     }
 
     static Map<OptimizerJob, JobPlan> plansOf(BruteForceAllocator.Result result) {
