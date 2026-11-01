@@ -6,7 +6,6 @@ import com.gacs.backend.model.AuditActionType;
 import com.gacs.backend.model.AuditEvent;
 import com.gacs.backend.model.OptimizationPlan;
 import com.gacs.backend.model.OptimizerRun;
-import com.gacs.backend.model.OptimizerRunStatus;
 import com.gacs.backend.model.User;
 import com.gacs.backend.repository.AuditEventRepository;
 import com.gacs.backend.repository.OptimizationPlanRepository;
@@ -91,8 +90,7 @@ class AuditEventQueryTest {
     /** Stores a plan for the run that lists the given jobs, as ScheduleReviewService does when optimising. */
     private void storePlan(String runId, User owner, Long... jobIds) {
         OptimizerRun run = runs.save(OptimizerRun.builder().id(runId).createdAt(Instant.parse("2026-10-27T09:00:00Z"))
-                .solverName("HybridAllocationSolver").solverVersion("1").solverConfig("{}")
-                .status(OptimizerRunStatus.SCHEDULED).provenOptimal(true).build());
+                .solverName("HybridAllocationSolver").solverVersion("1").solverConfig("{}").build());
         plans.save(new OptimizationPlan(run, owner, "{}", List.of(jobIds), run.getCreatedAt()));
     }
 

@@ -1,13 +1,15 @@
 package com.gacs.backend.service;
 
+import com.gacs.backend.dto.ExplanationResponseDto;
 import com.gacs.backend.dto.OptimizeRequestDto;
 import com.gacs.backend.dto.OptimizeResponseDto;
 import com.gacs.backend.dto.OptimizeResponseDto.Allocation;
 import com.gacs.backend.dto.OptimizeResponseDto.ScheduleItem;
-import com.gacs.backend.dto.ExplanationResponseDto;
 import com.gacs.backend.exception.ResourceNotFoundException;
 import com.gacs.backend.model.ScheduleExplanation;
+import com.gacs.backend.model.ScheduleRun;
 import com.gacs.backend.repository.ScheduleExplanationRepository;
+import com.gacs.backend.repository.ScheduleRunRepository;
 import com.gacs.backend.service.allocation.AllocationResult;
 import com.gacs.backend.service.allocation.AllocationSolver;
 import com.gacs.backend.service.allocation.EnergyCostModel;
@@ -20,7 +22,6 @@ import com.gacs.backend.service.allocation.ScheduleRunRecorder;
 import com.gacs.backend.service.allocation.SlotAllocation;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.beans.factory.annotation.Autowired;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -32,14 +33,18 @@ import java.util.UUID;
 /**
  * One optimisation run (docs/api-contract.md section 6.4): validate the request into a problem,
  * solve it, price the result against each job's baseline, then persist it via
- * {@link ScheduleRunRecorder}.
+ * {@link ScheduleRunRecorder}. Also serves back the persisted explanation for a run
+ * ({@link #getExplanation}) - it does not re-run optimisation or regenerate anything, only reads
+ * what {@link ScheduleRunRecorder} already wrote.
  *
- * <p>Deliberately not {@code @Transactional}: {@link ScheduleRunRecorder#record} itself holds no
- * single transaction spanning this whole call (it brackets an external LLM call that must never
- * hold a database connection - see {@code ScheduleRunPersistence}'s javadoc). Adding
- * {@code @Transactional} here would defeat that by Spring's REQUIRED propagation folding both of
- * {@code ScheduleRunPersistence}'s short transactions back into one that spans the HTTP call again.
- * Nothing else in this method touches the database in a way that needs transactional wrapping.
+ * <p>{@link #optimize(OptimizeRequestDto, String)} is deliberately not {@code @Transactional}:
+ * {@link ScheduleRunRecorder#record} itself holds no single transaction spanning this whole call
+ * (it brackets an external LLM call that must never hold a database connection - see
+ * {@code ScheduleRunPersistence}'s javadoc). Adding {@code @Transactional} here would defeat that
+ * by Spring's REQUIRED propagation folding both of {@code ScheduleRunPersistence}'s short
+ * transactions back into one that spans the HTTP call again. Nothing else in that method touches
+ * the database in a way that needs transactional wrapping. {@link #getExplanation} has no such
+ * concern - it is a plain read, so it is {@code @Transactional(readOnly = true)} as usual.
  */
 @Service
 public class ScheduleOptimizationService {
@@ -48,26 +53,17 @@ public class ScheduleOptimizationService {
     private final AllocationSolver solver;
     private final EnergyCostModel costs;
     private final ScheduleRunRecorder recorder;
+    private final ScheduleRunRepository runs;
+    private final ScheduleExplanationRepository explanations;
 
     public ScheduleOptimizationService(OptimizationProblemFactory problems, AllocationSolver solver,
-                                       EnergyCostModel costs, ScheduleRunRecorder recorder) {
+                                       EnergyCostModel costs, ScheduleRunRecorder recorder,
+                                       ScheduleRunRepository runs, ScheduleExplanationRepository explanations) {
         this.problems = problems;
         this.solver = solver;
         this.costs = costs;
         this.recorder = recorder;
-    private final ScheduleExplanationRepository explanations;
-
-    public ScheduleOptimizationService(OptimizationProblemFactory problems, AllocationSolver solver,
-                                       EnergyCostModel costs) {
-        this(problems, solver, costs, null);
-    }
-
-    @Autowired
-    public ScheduleOptimizationService(OptimizationProblemFactory problems, AllocationSolver solver,
-                                       EnergyCostModel costs, ScheduleExplanationRepository explanations) {
-        this.problems = problems;
-        this.solver = solver;
-        this.costs = costs;
+        this.runs = runs;
         this.explanations = explanations;
     }
 
@@ -75,33 +71,31 @@ public class ScheduleOptimizationService {
      * @throws IllegalArgumentException invalid input (400)
      * @throws com.gacs.backend.exception.UnprocessableDataException baseline hours without a price (422)
      */
-    @Transactional(readOnly = true)
-    public OptimizeResponseDto optimize(OptimizeRequestDto request) {
-        return optimize(request, null);
-    }
-
-    @Transactional
     public OptimizeResponseDto optimize(OptimizeRequestDto request, String ownerEmail) {
         OptimizationProblem problem = problems.build(request);
         AllocationResult result = solver.solve(problem);
         OptimizeResponseDto response = buildResponse(problem, result);
         recorder.record(result, problem.constraints(), response, ownerEmail);
         return response;
-        if (ownerEmail != null && explanations != null) {
-            ScheduleExplanation explanation = new ScheduleExplanation();
-            explanation.setRunId(response.runId());
-            explanation.setOwnerEmail(ownerEmail);
-            explanation.setExplanation(response.plainEnglishExplanation());
-            explanations.save(explanation);
-        }
-        return response;
     }
 
+    /**
+     * Returns the explanation saved when the run was created - the same text the operator already
+     * saw in {@code OptimizeResponseDto.plainEnglishExplanation} when there is no LLM configured,
+     * or the LLM's narrative when there is. Scoped to the run's owner: a run id that exists but
+     * belongs to someone else is reported the same as one that does not exist at all, so this
+     * never confirms another operator's run id.
+     *
+     * @throws ResourceNotFoundException no such run for this owner, or no explanation persisted for it
+     */
     @Transactional(readOnly = true)
     public ExplanationResponseDto getExplanation(String runId, String ownerEmail) {
-        ScheduleExplanation explanation = explanations.findByRunIdAndOwnerEmail(runId, ownerEmail)
+        ScheduleRun run = runs.findByRunId(runId)
+                .filter(candidate -> candidate.getOwnerEmail().equals(ownerEmail))
                 .orElseThrow(() -> new ResourceNotFoundException("Explanation not found for run: " + runId));
-        return new ExplanationResponseDto(explanation.getRunId(), explanation.getExplanation());
+        ScheduleExplanation explanation = explanations.findByScheduleRunId(run.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Explanation not found for run: " + runId));
+        return new ExplanationResponseDto(run.getRunId(), explanation.getNarrative());
     }
 
     // ------------------------------------------------------------------ response

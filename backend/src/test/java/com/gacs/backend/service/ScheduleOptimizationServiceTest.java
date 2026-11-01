@@ -7,6 +7,8 @@ import com.gacs.backend.dto.OptimizeRequestDto.JobInput;
 import com.gacs.backend.dto.OptimizeResponseDto;
 import com.gacs.backend.dto.OptimizeResponseDto.Allocation;
 import com.gacs.backend.dto.OptimizeResponseDto.ScheduleItem;
+import com.gacs.backend.repository.ScheduleExplanationRepository;
+import com.gacs.backend.repository.ScheduleRunRepository;
 import com.gacs.backend.service.allocation.AllocationResult;
 import com.gacs.backend.service.allocation.AllocationSolver;
 import com.gacs.backend.service.allocation.EnergyCostModel;
@@ -46,8 +48,11 @@ class ScheduleOptimizationServiceTest {
     private final PriceSeriesProvider provider = mock(PriceSeriesProvider.class);
     private final OptimizationProblemFactory factory = new OptimizationProblemFactory(provider, OptimizerProperties.DEFAULTS);
     private final ScheduleRunRecorder recorder = mock(ScheduleRunRecorder.class);
+    private final ScheduleRunRepository scheduleRuns = mock(ScheduleRunRepository.class);
+    private final ScheduleExplanationRepository scheduleExplanations = mock(ScheduleExplanationRepository.class);
     private final ScheduleOptimizationService service =
-            new ScheduleOptimizationService(factory, new HybridAllocationSolver(COSTS), COSTS, recorder);
+            new ScheduleOptimizationService(factory, new HybridAllocationSolver(COSTS), COSTS, recorder,
+                    scheduleRuns, scheduleExplanations);
 
     private static LocalDateTime at(int hour) {
         return T0.plusHours(hour);
@@ -225,7 +230,8 @@ class ScheduleOptimizationServiceTest {
         AllocationSolver exact = new HybridAllocationSolver(COSTS);
         AllocationSolver unproven = problem -> new AllocationResult(exact.solve(problem).outcomes(), false);
         ScheduleOptimizationService heuristicService =
-                new ScheduleOptimizationService(factory, unproven, COSTS, recorder);
+                new ScheduleOptimizationService(factory, unproven, COSTS, recorder, scheduleRuns,
+                        scheduleExplanations);
 
         OptimizeResponseDto response = heuristicService.optimize(request(List.of(job(1, 20.0, 0.0, 0, 1, 3, false)),
                 null, forecast(10, 20, 30)), OWNER);

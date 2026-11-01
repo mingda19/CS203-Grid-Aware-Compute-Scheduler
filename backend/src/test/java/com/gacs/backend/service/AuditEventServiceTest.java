@@ -10,7 +10,6 @@ import com.gacs.backend.model.OptimizationPlan;
 import com.gacs.backend.model.OptimizerRun;
 import com.gacs.backend.model.User;
 import com.gacs.backend.util.ScheduleHashUtil;
-import com.gacs.backend.model.OptimizerRunStatus;
 import com.gacs.backend.repository.AuditEventRepository;
 import com.gacs.backend.repository.OptimizationPlanRepository;
 import com.gacs.backend.repository.OptimizerRunRepository;
@@ -57,13 +56,16 @@ class AuditEventServiceTest {
     @Mock
     private UserRepository userRepository;
 
+    @Mock
+    private com.gacs.backend.repository.ScheduleRunRepository scheduleRunRepository;
+
     private AuditEventService auditEventService;
 
     @BeforeEach
     void setUp() {
         SecurityContextHolder.clearContext();
         auditEventService = new AuditEventService(auditEventRepository, optimizerRunRepository, planRepository,
-                userRepository, new StoredScheduleReader(),
+                userRepository, scheduleRunRepository, new StoredScheduleReader(),
                 Clock.fixed(Instant.parse("2026-10-28T09:30:00Z"), ZoneOffset.UTC));
     }
 
@@ -246,8 +248,6 @@ class AuditEventServiceTest {
                 .solverName("OR-Tools CP-SAT")
                 .solverVersion("9.10")
                 .solverConfig("{\"timeLimitSeconds\":10}")
-                .status(OptimizerRunStatus.SCHEDULED)
-                .provenOptimal(true)
                 .build();
     }
 

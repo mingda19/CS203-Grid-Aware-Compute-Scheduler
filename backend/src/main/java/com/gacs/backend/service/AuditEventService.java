@@ -9,10 +9,12 @@ import com.gacs.backend.dto.AuditEventResponseDto;
 import com.gacs.backend.exception.ResourceNotFoundException;
 import com.gacs.backend.model.AuditEvent;
 import com.gacs.backend.model.OptimizationPlan;
+import com.gacs.backend.model.ScheduleRun;
 import com.gacs.backend.model.User;
 import com.gacs.backend.repository.AuditEventRepository;
 import com.gacs.backend.repository.OptimizationPlanRepository;
 import com.gacs.backend.repository.OptimizerRunRepository;
+import com.gacs.backend.repository.ScheduleRunRepository;
 import com.gacs.backend.repository.UserRepository;
 import com.gacs.backend.util.ScheduleHashUtil;
 import jakarta.persistence.criteria.Join;
@@ -53,6 +55,8 @@ public class AuditEventService {
 
     private final UserRepository userRepository;
 
+    private final ScheduleRunRepository scheduleRunRepository;
+
     private final StoredScheduleReader scheduleReader;
 
     private final Clock clock;
@@ -61,12 +65,14 @@ public class AuditEventService {
                              OptimizerRunRepository optimizerRunRepository,
                              OptimizationPlanRepository planRepository,
                              UserRepository userRepository,
+                             ScheduleRunRepository scheduleRunRepository,
                              StoredScheduleReader scheduleReader,
                              Clock clock) {
         this.auditEventRepository = auditEventRepository;
         this.optimizerRunRepository = optimizerRunRepository;
         this.planRepository = planRepository;
         this.userRepository = userRepository;
+        this.scheduleRunRepository = scheduleRunRepository;
         this.scheduleReader = scheduleReader;
         this.clock = clock;
     }
@@ -147,8 +153,9 @@ public class AuditEventService {
     @Transactional(readOnly = true)
     public AuditEventDetailDto getEventDetail(Long id, String viewerEmail) {
         AuditEventResponseDto event = getEventById(id);
+        ScheduleRun scheduleRun = scheduleRunRepository.findByRunId(event.runId()).orElse(null);
         RunSnapshot run = optimizerRunRepository.findById(event.runId())
-                .map(RunSnapshot::fromEntity)
+                .map(optimizerRun -> RunSnapshot.fromEntity(optimizerRun, scheduleRun))
                 .orElse(null);
         OptimizationPlan plan = planRepository.findById(event.runId()).orElse(null);
         if (plan == null) {

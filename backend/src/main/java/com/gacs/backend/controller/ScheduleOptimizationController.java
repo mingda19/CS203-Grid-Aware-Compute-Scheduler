@@ -80,7 +80,11 @@ public class ScheduleOptimizationController {
     public ResponseEntity<ApiResponse<OptimizeResponseDto>> optimize(
         @RequestBody(required = false) OptimizeRequestDto request, Principal principal
     ) {
-        OptimizeResponseDto plan = optimizationService.optimize(request, principal.getName());
+        // Routed through reviewService, not optimizationService directly: it performs the 401
+        // "no database user" check documented above and records the OptimizerRun/OptimizationPlan
+        // pair the approve/reject/revise endpoints need, in addition to calling optimizationService
+        // itself for the actual solve + explanation persistence.
+        OptimizeResponseDto plan = reviewService.optimize(request, principal.getName());
         return ResponseEntity.ok(ApiResponse.ok("Optimized schedule generated", plan));
     }
 

@@ -2,6 +2,7 @@ package com.gacs.backend.dto;
 
 import com.gacs.backend.model.OptimizerRun;
 import com.gacs.backend.model.OptimizerRunStatus;
+import com.gacs.backend.model.ScheduleRun;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
@@ -34,15 +35,20 @@ public record AuditEventDetailDto(
         @Schema(description = "How the run ended") OptimizerRunStatus status,
         @Schema(description = "Whether the solver proved the plan optimal; null when no plan was produced") Boolean provenOptimal
     ) {
-        public static RunSnapshot fromEntity(OptimizerRun run) {
+        /**
+         * @param scheduleRun the {@code ScheduleRun} sharing this run's id, for status/provenOptimal -
+         *                    {@code OptimizerRun} itself no longer carries either (see its javadoc); null
+         *                    leaves both null, same as when no run is stored at all
+         */
+        public static RunSnapshot fromEntity(OptimizerRun run, ScheduleRun scheduleRun) {
             return new RunSnapshot(
                 run.getId(),
                 run.getCreatedAt(),
                 run.getSolverName(),
                 run.getSolverVersion(),
                 run.getSolverConfig(),
-                run.getStatus(),
-                run.getProvenOptimal()
+                scheduleRun == null ? null : OptimizerRunStatus.valueOf(scheduleRun.getStatus()),
+                scheduleRun == null ? null : scheduleRun.isProvenOptimal()
             );
         }
     }
