@@ -5,6 +5,8 @@ import com.gacs.backend.service.PriceSeries;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,13 +35,15 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
     static AllocationResult of(OptimizationProblem problem, Map<OptimizerJob, JobPlan> flexiblePlans,
                                boolean provenOptimal) {
         List<JobOutcome> outcomes = new ArrayList<>();
+        Map<OptimizerJob, JobPlan> scheduled = new HashMap<>(flexiblePlans);
+        problem.jobs().stream().filter(OptimizerJob::exempt).forEach(job -> scheduled.put(job, problem.baselineOf(job)));
         for (OptimizerJob job : problem.jobs()) {
             if (job.exempt()) {
                 outcomes.add(new JobOutcome(job, problem.baselineOf(job), PerJobStatus.UNCHANGED_EXEMPT, null));
             } else if (flexiblePlans.containsKey(job)) {
                 outcomes.add(new JobOutcome(job, flexiblePlans.get(job), PerJobStatus.OPTIMISED, null));
             } else {
-                outcomes.add(new JobOutcome(job, null, PerJobStatus.NO_FEASIBLE_SLOT, noRoomReason(job, problem)));
+                outcomes.add(new JobOutcome(job, null, PerJobStatus.NO_FEASIBLE_SLOT, noRoomReason(job, problem, scheduled)));
             }
         }
         return new AllocationResult(outcomes, provenOptimal);
@@ -63,8 +67,9 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
 
     /**
      * True when {@code candidate} is better than {@code incumbent} under the contract's objective: more jobs
-     * scheduled, then lower cost, then (equal count and cost) the plan that schedules the job that comes
-     * first in {@link OptimizationProblem#TIE_BREAK_ORDER} where the two differ.
+     * scheduled, then the plan that serves higher priorities (more CRITICAL jobs, then more HIGH, ...), then
+     * lower cost, then (all equal) the plan that schedules the job that comes first in
+     * {@link OptimizationProblem#TIE_BREAK_ORDER} where the two differ.
      */
     static boolean isBetter(AllocationResult candidate, AllocationResult incumbent, OptimizationProblem problem,
                             EnergyCostModel costs) {
@@ -74,6 +79,11 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
         int count = Integer.compare(candidate.scheduledCount(), incumbent.scheduledCount());
         if (count != 0) {
             return count > 0;
+        }
+        int priority = Arrays.compare(OptimizationProblem.priorityProfile(candidate.plans().keySet()),
+                OptimizationProblem.priorityProfile(incumbent.plans().keySet()));
+        if (priority != 0) {
+            return priority > 0;
         }
         double difference = candidate.costUsd(costs, problem.prices()) - incumbent.costUsd(costs, problem.prices());
         if (Math.abs(difference) > COST_TOLERANCE) {
@@ -93,10 +103,21 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
      * Why a job got no plan. Request validation already ensured it could finish alone on the cluster, so
      * the cause is always capacity taken by other jobs within the hours it was allowed to use.
      */
-    private static String noRoomReason(OptimizerJob job, OptimizationProblem problem) {
+    private static String noRoomReason(OptimizerJob job, OptimizationProblem problem,
+                                       Map<OptimizerJob, JobPlan> scheduled) {
         JobWindow window = new JobWindow(job, problem.prices());
         LocalDateTime lastEnd = window.lastSlot().plusHours(1);
+        // The job that took the slot: the first (by tie-break order) of those running inside this job's window.
+        List<OptimizerJob> blockers = scheduled.entrySet().stream()
+                .filter(e -> e.getValue().allocations().stream().anyMatch(a ->
+                        !a.slotStart().isBefore(job.originalStartTime()) && a.slotStart().isBefore(lastEnd)))
+                .map(Map.Entry::getKey)
+                .sorted(OptimizationProblem.TIE_BREAK_ORDER)
+                .toList();
+        String took = blockers.isEmpty() ? "other jobs use"
+                : "job " + blockers.get(0).label() + " (" + blockers.get(0).priority() + ")"
+                + (blockers.size() > 1 ? " and " + (blockers.size() - 1) + " other(s) use" : " uses");
         return "Cluster full between " + job.originalStartTime().format(HOUR) + " and " + lastEnd.format(HOUR)
-                + " UTC: other jobs use the capacity this job needs to finish by its deadline.";
+                + " UTC: " + took + " the capacity this job needs to finish by its deadline.";
     }
 }

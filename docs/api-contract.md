@@ -806,12 +806,13 @@ Evaluates jobs against forecast prices and cluster capacity and proposes a start
 * There is no per-job rate cap: a job may take whatever capacity is free in a slot. Its duration is therefore an **output** of the optimisation (the number of slots it needs), limited by the capacity left after other jobs.
 * `scheduledStart` is the start of the first slot used and `scheduledEnd` is the end of the last.
 
-**Objective and tie-break order (GRID-155 / GRID-124).** The optimiser places as many jobs as possible, then minimises total cost. When two otherwise-equal placements remain tied (jobs competing for the same capacity), ties are broken in order:
-1. Higher `priority` first (`CRITICAL` > `HIGH` > `NORMAL` > `LOW`).
-2. If `priority` ties, the job requesting fewer total resource-hours (`cpuHours + gpuHours`) first.
-3. If that ties too, the earlier `originalStartTime`, then the lower `id`.
+**Objective and tie-break order (GRID-155 / GRID-124).** The optimiser compares plans in this order:
+1. Place as many jobs as possible.
+2. Serve higher priorities: more `CRITICAL` jobs placed, then more `HIGH`, then `NORMAL`, then `LOW`. This outranks cost, so when capacity only fits one of several competing jobs the higher-priority job gets the slot even if the other would be cheaper. Priority is not a cost weight: jobs that do not compete are optimised exactly as before.
+3. Minimise total cost.
+4. Remaining ties go to the job that comes first by: higher `priority`, earlier `deadline`, fewer total resource-hours (`cpuHours + gpuHours`), earlier `originalStartTime`, then lower `id` (ids are assigned in creation order, standing in for creation time, which the request does not carry).
 
-Before GRID-155, step 3 alone was the whole rule; `priority` existed on the Job schema but had no effect on the optimiser. Both solvers (the exact solver's tie-break weighting and the heuristic's placement order) apply this same order.
+Priority never overrides a job's `deadline` or `isExempt`: an exempt job always runs at its original time and keeps its capacity, and a job that cannot finish by its deadline is not placed. A job that loses is `NO_FEASIBLE_SLOT`, keeps its original time, and its `reason` names the job that took the capacity, e.g. `... UTC: job id 7 (CRITICAL) and 1 other(s) use the capacity this job needs ...`. Both solvers apply this order.
 
 **Request**
 ```json
@@ -993,7 +994,7 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 | 2026-11-01 | §6.6: added `GET /api/schedules/{runId}/export.csv` and `.json` behind an approval gate (403 not approved; 409 stale or invalidated) with `schedule-run-{runId}` attachment filenames (GRID-135 AC3). | - |
 | 2026-11-01 | §6.6: the JSON export adds `run.createdAt`, `run.solver` and `approval` (GRID-135 AC2). | - |
 | 2026-11-01 | Added §6.7 documenting the audit log queries, with a new `jobId` filter backed by `optimization_plan_jobs`, and the stored schedule (owner only) in the event detail (GRID-134 AC6). | - |
-| 2026-11-01 | §6.4: added *Objective and tie-break order*, documenting the rule `priority` had been reserved for but did not yet affect - the optimiser now orders competing jobs by `priority`, then total resource-hours, then the original `originalStartTime`/`id` fallback (GRID-155). | - |
+| 2026-11-01 | §6.4: added *Objective and tie-break order*, documenting the rule `priority` had been reserved for but did not yet affect - the optimiser now orders competing jobs by `priority`, breaks remaining ties by `deadline`, then total resource-hours, then the original `originalStartTime`/`id` fallback (GRID-155). | - |
 | 2026-11-01 | §6.4: added run `status` `INFEASIBLE` (nothing placeable; never approvable or exportable) and `503` with `runId` when the solver fails, recorded as a `FAILED` run with no plan (GRID-142 AC1.3). | - |
 | 2026-11-01 | Added §6.8: automatic material-input invalidation, shared backend execution gating, approved-run application, and plan detail (GRID-11 AC2.3). | - |
 

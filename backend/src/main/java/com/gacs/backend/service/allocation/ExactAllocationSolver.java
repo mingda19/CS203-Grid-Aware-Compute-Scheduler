@@ -1,5 +1,6 @@
 package com.gacs.backend.service.allocation;
 
+import com.gacs.backend.model.JobPriority;
 import com.gacs.backend.service.PriceSeries;
 import org.ojalgo.optimisation.Expression;
 import org.ojalgo.optimisation.ExpressionsBasedModel;
@@ -16,7 +17,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalInt;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.TreeMap;
 
@@ -40,8 +41,10 @@ import java.util.TreeMap;
  * <p>The objective is solved in two passes so a huge "placement" weight never shares one objective
  * with cent-sized costs (the solver's gap tolerance could otherwise hide real cost differences):
  * <ol>
- *   <li>maximise the number of scheduled jobs;</li>
- *   <li>with that number fixed, minimise total cost, plus tiny terms that prefer scheduling jobs earlier
+ *   <li>maximise the number of scheduled jobs, then (as a lower-order term of the same weight) how many
+ *       of them are CRITICAL, then HIGH, and so on, so priority decides who gets a contested slot even
+ *       when the lower-priority job would be cheaper;</li>
+ *   <li>with that fixed, minimise total cost, plus tiny terms that prefer scheduling jobs earlier
  *       in {@link OptimizationProblem#TIE_BREAK_ORDER} and then earlier starts.</li>
  * </ol>
  * Each pass is time-boxed. The result is proven optimal only when both passes finish optimal.
@@ -54,6 +57,20 @@ public final class ExactAllocationSolver {
     private static final double START_WEIGHT = 1e-11;
 
     private final EnergyCostModel costs;
+
+    /**
+     * Pass-1 weight of scheduling {@code job}: a base large enough that one more job always beats any mix of
+     * priorities, plus {@code (n+1)^k} by priority class (LOW 1 ... CRITICAL (n+1)^3), so one more job of a
+     * higher class beats any number of a lower class. ponytail: integers up to roughly n^4, fine for the
+     * ~100 jobs this solver is ever given (HybridAllocationSolver routes bigger runs to the heuristic);
+     * rank-weights below are still linear within a class, so a rare capacity-blocked tie there is arbitrary
+     * but deterministic.
+     */
+    private static double placementWeight(OptimizerJob job, int jobCount) {
+        double base = jobCount + 1.0;
+        return jobCount * Math.pow(base, 3) + 1.0
+                + Math.pow(base, JobPriority.values().length - 1 - job.priority().ordinal());
+    }
 
     public ExactAllocationSolver(EnergyCostModel costs) {
         this.costs = costs;
@@ -76,19 +93,19 @@ public final class ExactAllocationSolver {
         }
         long deadline = System.nanoTime() + budget.toNanos();
 
-        Model countPass = new Model(problem, flexible, OptionalInt.empty(), groups.plans());
+        Model countPass = new Model(problem, flexible, OptionalLong.empty(), groups.plans());
         Optimisation.Result counted = countPass.minimise(remainingMillis(deadline));
         if (!counted.getState().isFeasible()) {
             return Optional.empty();
         }
         boolean countProven = counted.getState().isOptimal();
-        int scheduled = (int) Math.round(countPass.scheduledCount(counted));
+        long scheduled = Math.round(countPass.scheduledWeight(counted));
 
         long left = remainingMillis(deadline);
         if (left <= 0) {
             return Optional.of(countPass.extract(counted, false));
         }
-        Model costPass = new Model(problem, flexible, OptionalInt.of(scheduled), groups.plans());
+        Model costPass = new Model(problem, flexible, OptionalLong.of(scheduled), groups.plans());
         Optimisation.Result costed = costPass.minimise(left);
         if (!costed.getState().isFeasible()) {
             return Optional.of(countPass.extract(counted, false));
@@ -113,7 +130,7 @@ public final class ExactAllocationSolver {
         private final Map<Long, TreeMap<LocalDateTime, Variable>> runningByJob = new HashMap<>();
         private int expressions;
 
-        Model(OptimizationProblem problem, List<OptimizerJob> flexible, OptionalInt fixedCount,
+        Model(OptimizationProblem problem, List<OptimizerJob> flexible, OptionalLong fixedCount,
              Map<OptimizerJob, JobPlan> groupPlans) {
             this.problem = problem;
             this.groupPlans = groupPlans;
@@ -128,7 +145,7 @@ public final class ExactAllocationSolver {
             groupPlans.values().forEach(free::reserve);
             Map<LocalDateTime, Expression> cpuAt = new TreeMap<>();
             Map<LocalDateTime, Expression> gpuAt = new TreeMap<>();
-            Expression count = costPass ? expression().level(fixedCount.getAsInt()) : null;
+            Expression count = costPass ? expression().level(fixedCount.getAsLong()) : null;
 
             for (int rank = 0; rank < flexible.size(); rank++) {
                 addJobVariables(flexible.get(rank), rank, flexible.size(), costPass, costScale, prices, free,
@@ -158,10 +175,11 @@ public final class ExactAllocationSolver {
                 hours.add(t);
             }
 
+            double weight = placementWeight(job, flexibleCount);
             Variable p = model.newVariable("p" + rank).binary()
-                    .weight(costPass ? -RANK_WEIGHT * costScale * (flexibleCount - rank) : -1.0);
+                    .weight(costPass ? -RANK_WEIGHT * costScale * (flexibleCount - rank) : -weight);
             if (count != null) {
-                count.set(p, 1);
+                count.set(p, weight);
             }
             if (hours.isEmpty() || starts.isEmpty()) {
                 p.level(0);
@@ -259,8 +277,10 @@ public final class ExactAllocationSolver {
             return model.minimise();
         }
 
-        double scheduledCount(Optimisation.Result result) {
-            return vars.stream().mapToDouble(v -> value(result, v.scheduled())).sum();
+        double scheduledWeight(Optimisation.Result result) {
+            return vars.stream()
+                    .mapToDouble(v -> value(result, v.scheduled()) * placementWeight(v.job(), vars.size()))
+                    .sum();
         }
 
         AllocationResult extract(Optimisation.Result result, boolean provenOptimal) {

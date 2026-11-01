@@ -50,18 +50,29 @@ public record OptimizationProblem(
     }
 
     /**
-     * The order used to break ties between plans that place the same number of jobs at the same cost
-     * (GRID-155 / GRID-124): the higher-priority job (CRITICAL first, then HIGH, NORMAL, LOW - {@link
-     * JobPriority}'s declaration order) is placed first; if priority ties, the job asking for fewer
-     * total resource-hours is placed first, since it is the easier of the two to still fit somewhere
-     * else if it loses the contested slot; if that ties too, the earlier originalStartTime, then the
-     * lower id, same as before priority existed.
+     * The order in which competing jobs get a contested slot (GRID-155 AC3 / GRID-124): the higher-priority
+     * job first (CRITICAL, HIGH, NORMAL, LOW - {@link JobPriority}'s declaration order); then the earlier
+     * deadline; then the job asking for fewer total resource-hours (the easier one to still fit elsewhere if
+     * it loses the contested slot); then the earlier originalStartTime; then the lower id. Ids are assigned
+     * in creation order, so the id stands in for "earlier creation time", which the optimiser input does not
+     * carry.
      */
     public static final Comparator<OptimizerJob> TIE_BREAK_ORDER = Comparator
             .comparing(OptimizerJob::priority)
+            .thenComparing(OptimizerJob::deadline)
             .thenComparing(OptimizerJob::totalResourceHours)
             .thenComparing(OptimizerJob::originalStartTime)
             .thenComparing(OptimizerJob::id, Comparator.nullsLast(Comparator.naturalOrder()));
+
+    /**
+     * How many of {@code scheduled} fall in each priority, CRITICAL first. Compare two with
+     * {@code Arrays.compare}: the larger is the one that serves higher priorities better.
+     */
+    public static int[] priorityProfile(java.util.Collection<OptimizerJob> scheduled) {
+        int[] counts = new int[JobPriority.values().length];
+        scheduled.forEach(job -> counts[job.priority().ordinal()]++);
+        return counts;
+    }
 
     public OptimizationProblem {
         jobs = List.copyOf(jobs);
