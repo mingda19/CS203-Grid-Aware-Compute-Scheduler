@@ -173,9 +173,22 @@ export interface OptimizeResponse {
   items: ScheduleItem[]
 }
 
+export interface JobExplanation {
+  jobId: number
+  whyThisPlacement: string | null
+  constraints: Array<{
+    constraintType: string
+    code: string
+    slackHours: number | null
+    relatedJobIds: number[]
+    explanation: string
+  }>
+}
+
 export interface ExplanationResponse {
   runId: string
   explanation: string
+  items?: JobExplanation[]
 }
 
 export interface CreateWorkloadSchedule {

@@ -107,7 +107,7 @@ public class ScheduleOptimizationService {
                 .orElseThrow(() -> new ResourceNotFoundException("Explanation not found for run: " + runId));
         ScheduleExplanation explanation = explanations.findByScheduleRunId(run.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Explanation not found for run: " + runId));
-        return new ExplanationResponseDto(run.getRunId(), explanation.getNarrative());
+        return new ExplanationResponseDto(run.getRunId(), explanation.getNarrative(), recorder.jobExplanations(run.getId()));
     }
 
     // ------------------------------------------------------------------ response
