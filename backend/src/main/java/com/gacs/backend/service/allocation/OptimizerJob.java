@@ -44,11 +44,6 @@ public record OptimizerJob(
         return exempt ? originalStartTime : originalStartTime.plusHours(flexibilityWindowHours);
     }
 
-    /** Total work requested, used as the tie-break's resource-footprint measure. */
-    public double totalResourceHours() {
-        return cpuHours + gpuHours;
-    }
-
     /** For messages: "id 101", or the quoted name when the job has no id. */
     public String label() {
         return id == null ? "'" + name + "'" : "id " + id;

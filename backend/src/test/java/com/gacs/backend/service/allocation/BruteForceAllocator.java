@@ -4,7 +4,7 @@ import com.gacs.backend.service.PriceSeries;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -15,9 +15,10 @@ import java.util.Optional;
  * and keeps the best, by the contract's objective (section 6.4, Objective):
  * <ol>
  *   <li>place as many jobs as possible;</li>
+ *   <li>then serve higher priorities (more CRITICAL jobs, then more HIGH, ...);</li>
  *   <li>then the lowest total cost;</li>
- *   <li>then, between plans that leave out different jobs, place the job with the earlier
- *       {@code originalStartTime} (then lower {@code id}).</li>
+ *   <li>then, between plans that leave out different jobs, place the job that comes first in
+ *       {@link OptimizationProblem#TIE_BREAK_ORDER}.</li>
  * </ol>
  *
  * <p>Continuous shares cannot be enumerated, so shares are multiples of {@code 1 / quanta}. Every
@@ -72,10 +73,9 @@ final class BruteForceAllocator {
             }
         }
 
-        // Flexible jobs in tie-break order: earlier originalStartTime first, then lower id.
         List<OptimizerJob> flexible = jobs.stream()
                 .filter(job -> !job.exempt())
-                .sorted(Comparator.comparing(OptimizerJob::originalStartTime).thenComparing(OptimizerJob::id))
+                .sorted(OptimizationProblem.TIE_BREAK_ORDER)
                 .toList();
         List<List<Option>> options = new ArrayList<>();
         for (OptimizerJob job : flexible) {
@@ -199,9 +199,23 @@ final class BruteForceAllocator {
             return true;
         }
 
+        private int[] profile(Option[] plans) {
+            List<OptimizerJob> placed = new ArrayList<>();
+            for (int i = 0; i < plans.length; i++) {
+                if (plans[i] != null) {
+                    placed.add(jobs.get(i));
+                }
+            }
+            return OptimizationProblem.priorityProfile(placed);
+        }
+
         private boolean isBetter(Option[] chosen, int placed, double cost) {
             if (placed != bestPlaced) {
                 return placed > bestPlaced;
+            }
+            int priority = Arrays.compare(profile(chosen), profile(best));
+            if (priority != 0) {
+                return priority > 0;
             }
             if (Math.abs(cost - bestCost) > TOLERANCE) {
                 return cost < bestCost;
