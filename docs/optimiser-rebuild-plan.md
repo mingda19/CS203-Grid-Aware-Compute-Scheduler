@@ -11,7 +11,7 @@ bring the optimiser in line, in the order they should be done.
 
 | # | Topic | Decision |
 |---|---|---|
-| 1 | Jobs competing for capacity | Place as many jobs as possible, then minimise total cost. Remaining ties go to the earlier `originalStartTime`, then the lower `id`. **Temporary for Sprint 3:** job priority replaces the tie-break in Sprint 4 (each job gets a weight instead of counting as 1). |
+| 1 | Jobs competing for capacity | Place as many jobs as possible, then minimise total cost. Remaining ties go to the earlier `originalStartTime`, then the lower `id`. **Temporary for Sprint 3:** job priority replaces the tie-break in Sprint 4 (each job gets a weight instead of counting as 1). **Update (Sprint 4, GRID-155):** implemented as an additional tie-break comparator ahead of the Sprint 3 rule - `priority`, then total resource-hours (`cpuHours + gpuHours`), then the original `originalStartTime`/`id` fallback - not as an objective-function weight. See [api-contract.md §6.4](api-contract.md#64-schedule-optimization-engine-contract-grid-124), *Objective and tie-break order*. |
 | 4a | Capacity used by the baseline | The baseline uses the same per-slot limit as the optimiser (the Capacity (AC3) rule: `capacityOverrides[]`, else `clusterCapacity`, else defaults). |
 | 4b | Exempt jobs over the limit | Exempt jobs always run at `originalStartTime`, as in their baseline, even if they exceed a slot's limit. That slot then has no room for other jobs. |
 | - | Per-job status | `OPTIMISED`, `UNCHANGED_EXEMPT`, `NO_FEASIBLE_SLOT`. `RESCHEDULED` and `UNCHANGED_ALREADY_OPTIMAL` are removed. |
@@ -35,7 +35,7 @@ Not yet in the contract. For the contract owner to add, with a change-note row:
 
 - Baseline sentence: "...took the largest share **the slot's capacity limit (see Capacity)** allows...".
 - Capacity section: exempt jobs may exceed a slot's limit, and the slot then has no room for other jobs.
-- Objective: "When jobs compete for capacity, the optimiser places as many jobs as possible, then minimises cost. Ties go to the earlier `originalStartTime`. Replaced by job priority in Sprint 4."
+- ~~Objective: "When jobs compete for capacity, the optimiser places as many jobs as possible, then minimises cost. Ties go to the earlier `originalStartTime`. Replaced by job priority in Sprint 4."~~ Added in Sprint 4 (GRID-155) as §6.4's *Objective and tie-break order*, with the priority/resource-hours rule actually built, not the placeholder wording above.
 - Change notes: add the 2026-10-20 rename to `OPTIMISED` and the removal of `RESCHEDULED`.
 - `422`: covers every baseline slot, not only the `originalStartTime` slot.
 - `horizonHours` is ignored when `forecast[]` is sent. Range is 1–168.
@@ -216,6 +216,6 @@ Measured on 2026-10-23 (`-Xmx384m`, random runs over 24–72 hours):
 
 ## 5. Out of scope (Sprint 4)
 
-- Job priority (replaces the tie-break in decision 1).
+- ~~Job priority (replaces the tie-break in decision 1).~~ Done - see decision 1's Sprint 4 update above.
 - Saving runs and queuing `NO_FEASIBLE_SLOT` jobs for a later run.
 - Frontend: the decision panel still shows hard-coded sample figures and does not call the endpoint.
