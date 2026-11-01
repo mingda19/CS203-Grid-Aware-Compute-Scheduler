@@ -34,7 +34,7 @@ import {
   type ScheduleItem,
   type FacilityConfig,
 } from "@/lib/api"
-import { formatSgtDateTime, SGT_TIMEZONE } from "@/lib/date-utils"
+import { formatSgtDateTime } from "@/lib/date-utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -47,6 +47,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
+import { toInputDate, toApiUtcDate } from "@/lib/job-form-utils"
 import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
 
@@ -59,6 +61,9 @@ type FormState = {
   flexibilityWindowHours: string
   priority: JobPriority
   isExempt: boolean
+  rawConstraints?: string | null
+  parsedAt?: string | null
+  confirmationOutcome?: ComputeJobPayload["confirmationOutcome"]
 }
 
 const blankForm = (): FormState => ({
@@ -71,33 +76,6 @@ const blankForm = (): FormState => ({
   priority: "NORMAL",
   isExempt: false,
 })
-
-// The API uses timezone-free LocalDateTime strings that represent UTC. Convert
-// them explicitly so datetime-local inputs always show Singapore wall time.
-const toInputDate = (value?: string) => {
-  if (!value) return ""
-  const iso = value.endsWith("Z") || value.includes("+") ? value : `${value}Z`
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: SGT_TIMEZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date(iso))
-  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? ""
-  return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`
-}
-
-const toApiUtcDate = (value: string, onTheHour = false) => {
-  const [date, time] = value.split("T")
-  const [year, month, day] = date.split("-").map(Number)
-  const [hour, minute] = time.split(":").map(Number)
-  const finalMinute = onTheHour ? 0 : minute
-  const utc = new Date(Date.UTC(year, month - 1, day, hour - 8, finalMinute, 0))
-  return utc.toISOString().slice(0, 19)
-}
 
 const displayDate = (value?: string) => (value ? formatSgtDateTime(value) : "—")
 
@@ -131,6 +109,7 @@ export default function JobsPage() {
   const [viewOpen, setViewOpen] = React.useState(false)
   const [editing, setEditing] = React.useState<ComputeJob | null>(null)
   const [viewing, setViewing] = React.useState<ComputeJob | null>(null)
+  const [parseReviewPending, setParseReviewPending] = React.useState(false)
   const [form, setForm] = React.useState<FormState>(blankForm)
 
   // Optimizer state
@@ -255,12 +234,14 @@ export default function JobsPage() {
 
   const openCreate = () => {
     setEditing(null)
+    setParseReviewPending(false)
     setForm(blankForm())
     setError("")
     setFormOpen(true)
   }
 
   const openEdit = (job: ComputeJob) => {
+    setParseReviewPending(false)
     setEditing(job)
     setError("")
     setForm({
@@ -272,6 +253,9 @@ export default function JobsPage() {
       flexibilityWindowHours: String(job.flexibilityWindowHours),
       priority: job.priority ?? "NORMAL",
       isExempt: job.isExempt,
+      rawConstraints: job.rawConstraints,
+      parsedAt: job.parsedAt,
+      confirmationOutcome: job.confirmationOutcome,
     })
     setFormOpen(true)
   }
@@ -290,6 +274,10 @@ export default function JobsPage() {
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError("")
+    if (parseReviewPending) {
+      setError("Confirm the proposed constraints or discard the text changes before saving.")
+      return
+    }
     const cpuHours = Number(form.cpuHours)
     const gpuHours = Number(form.gpuHours)
     const flexibilityWindowHours = Number(form.flexibilityWindowHours)
@@ -311,6 +299,9 @@ export default function JobsPage() {
       flexibilityWindowHours,
       priority: form.priority,
       isExempt: form.isExempt,
+      rawConstraints: form.rawConstraints,
+      parsedAt: form.parsedAt,
+      confirmationOutcome: form.confirmationOutcome,
     }
     setSaving(true)
     try {
@@ -1021,6 +1012,31 @@ export default function JobsPage() {
                 Enter resource requirements and allowed scheduling window. Times are shown in Singapore time (SGT).
               </DialogDescription>
             </DialogHeader>
+            {formOpen && <ConstraintParseReview
+              draft={{
+                originalStartTime: form.originalStartTime ? toApiUtcDate(form.originalStartTime, true) : null,
+                deadline: form.deadline ? toApiUtcDate(form.deadline) : null,
+                flexibilityWindowHours: form.flexibilityWindowHours === "" ? null : Number(form.flexibilityWindowHours),
+                priority: form.priority,
+                isExempt: form.isExempt,
+              }}
+              confirmedSource={form.rawConstraints ?? ""}
+              onPendingChange={setParseReviewPending}
+              onConfirm={(result, rawConstraints) => {
+                setForm((current) => ({
+                  ...current,
+                  originalStartTime: result.fields.originalStartTime ? toInputDate(result.fields.originalStartTime) : "",
+                  deadline: result.fields.deadline ? toInputDate(result.fields.deadline) : "",
+                  flexibilityWindowHours: result.fields.flexibilityWindowHours == null ? "" : String(result.fields.flexibilityWindowHours),
+                  priority: result.fields.priority ?? current.priority,
+                  isExempt: result.fields.isExempt ?? current.isExempt,
+                  rawConstraints,
+                  parsedAt: result.parsedAt,
+                  confirmationOutcome: "CONFIRMED",
+                }))
+                setError("")
+              }}
+            />}
             <div className="grid gap-4 py-5 sm:grid-cols-2">
               <Field label="Job name">
                 <Input
@@ -1124,7 +1140,7 @@ export default function JobsPage() {
               <Button type="button" variant="outline" onClick={() => setFormOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={saving} className="bg-emerald-600 text-white hover:bg-emerald-700">
+              <Button type="submit" disabled={saving || parseReviewPending} className="bg-emerald-600 text-white hover:bg-emerald-700">
                 {saving ? "Saving…" : editing ? "Save changes" : "Create job"}
               </Button>
             </DialogFooter>
