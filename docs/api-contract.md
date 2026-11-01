@@ -810,7 +810,7 @@ Evaluates jobs against forecast prices and cluster capacity and proposes a start
 1. Place as many jobs as possible.
 2. Serve higher priorities: more `CRITICAL` jobs placed, then more `HIGH`, then `NORMAL`, then `LOW`. This outranks cost, so when capacity only fits one of several competing jobs the higher-priority job gets the slot even if the other would be cheaper. Priority is not a cost weight: jobs that do not compete are optimised exactly as before.
 3. Minimise total cost.
-4. Remaining ties go to the job that comes first by: higher `priority`, earlier `deadline`, earlier `originalStartTime`, then lower `id` (ids are assigned in creation order, standing in for creation time, which the request does not carry).
+4. Remaining ties go to the job that comes first by: higher `priority`, earlier `deadline`, fewer total resource-hours (`cpuHours + gpuHours`), earlier `originalStartTime`, then lower `id` (ids are assigned in creation order, standing in for creation time, which the request does not carry).
 
 Priority never overrides a job's `deadline` or `isExempt`: an exempt job always runs at its original time and keeps its capacity, and a job that cannot finish by its deadline is not placed. A job that loses is `NO_FEASIBLE_SLOT`, keeps its original time, and its `reason` names the job that took the capacity, e.g. `... UTC: job id 7 (CRITICAL) and 1 other(s) use the capacity this job needs ...`. Both solvers apply this order.
 
@@ -994,7 +994,7 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 | 2026-11-01 | §6.6: added `GET /api/schedules/{runId}/export.csv` and `.json` behind an approval gate (403 not approved; 409 stale or invalidated) with `schedule-run-{runId}` attachment filenames (GRID-135 AC3). | - |
 | 2026-11-01 | §6.6: the JSON export adds `run.createdAt`, `run.solver` and `approval` (GRID-135 AC2). | - |
 | 2026-11-01 | Added §6.7 documenting the audit log queries, with a new `jobId` filter backed by `optimization_plan_jobs`, and the stored schedule (owner only) in the event detail (GRID-134 AC6). | - |
-| 2026-11-01 | §6.4: added *Objective and tie-break order*, documenting the rule `priority` had been reserved for but did not yet affect - the optimiser now gives contested capacity to the higher `priority` job (ahead of cost), breaks remaining ties by `deadline`, then `originalStartTime`/`id`, and names the winning job in a loser's `reason` (GRID-155). | - |
+| 2026-11-01 | §6.4: added *Objective and tie-break order*, documenting the rule `priority` had been reserved for but did not yet affect - the optimiser now gives contested capacity to the higher `priority` job (ahead of cost), breaks remaining ties by `deadline`, then fewer total resource-hours, then `originalStartTime`/`id`, and names the winning job in a loser's `reason` (GRID-155). | - |
 | 2026-11-01 | Added §6.8: automatic material-input invalidation, shared backend execution gating, approved-run application, and plan detail (GRID-11 AC2.3). | - |
 
 ### 6.5 Operator decisions (GRID-11 AC2 / AC2.2)

@@ -49,12 +49,15 @@ public record OptimizationProblem(
     /**
      * The order in which competing jobs get a contested slot (GRID-155 AC3 / GRID-124): the higher-priority
      * job first (CRITICAL, HIGH, NORMAL, LOW - {@link JobPriority}'s declaration order); then the earlier
-     * deadline; then the earlier originalStartTime; then the lower id. Ids are assigned in creation order,
-     * so the id stands in for "earlier creation time", which the optimiser input does not carry.
+     * deadline; then the job asking for fewer total resource-hours (the easier one to still fit elsewhere if
+     * it loses the contested slot); then the earlier originalStartTime; then the lower id. Ids are assigned
+     * in creation order, so the id stands in for "earlier creation time", which the optimiser input does not
+     * carry.
      */
     public static final Comparator<OptimizerJob> TIE_BREAK_ORDER = Comparator
             .comparing(OptimizerJob::priority)
             .thenComparing(OptimizerJob::deadline)
+            .thenComparing(OptimizerJob::totalResourceHours)
             .thenComparing(OptimizerJob::originalStartTime)
             .thenComparing(OptimizerJob::id, Comparator.nullsLast(Comparator.naturalOrder()));
 

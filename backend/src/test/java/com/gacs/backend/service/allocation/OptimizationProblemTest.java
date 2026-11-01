@@ -9,12 +9,16 @@ import java.util.List;
 import static com.gacs.backend.service.allocation.Fixtures.at;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** {@link OptimizationProblem#TIE_BREAK_ORDER}: priority, then earlier deadline, then the originalStartTime/id
- *  fallback (GRID-155 AC3 / GRID-124). */
+/** {@link OptimizationProblem#TIE_BREAK_ORDER}: priority, then earlier deadline, then fewer resource-hours, then
+ *  the originalStartTime/id fallback (GRID-155 AC3 / GRID-124). */
 class OptimizationProblemTest {
 
     private static OptimizerJob job(long id, JobPriority priority, int startHour, int deadlineHour) {
         return new OptimizerJob(id, "job-" + id, 10.0, 0.0, at(startHour), at(deadlineHour), 2, false, priority);
+    }
+
+    private static OptimizerJob job(long id, JobPriority priority, int startHour, int deadlineHour, double cpuHours) {
+        return new OptimizerJob(id, "job-" + id, cpuHours, 0.0, at(startHour), at(deadlineHour), 2, false, priority);
     }
 
     private static List<Long> order(OptimizerJob... jobs) {
@@ -42,7 +46,14 @@ class OptimizationProblemTest {
     }
 
     @Test
-    @DisplayName("Equal priority and deadline: earlier originalStartTime, then lower id")
+    @DisplayName("Equal priority and deadline: fewer resource-hours first, whatever the start or id; deadline still outranks size")
+    void equalPriorityAndDeadlineSmallerJobWins() {
+        assertThat(order(job(1, JobPriority.NORMAL, 0, 5, 50.0), job(2, JobPriority.NORMAL, 1, 5, 10.0))).containsExactly(2L, 1L);
+        assertThat(order(job(1, JobPriority.NORMAL, 0, 4, 50.0), job(2, JobPriority.NORMAL, 0, 5, 10.0))).containsExactly(1L, 2L);
+    }
+
+    @Test
+    @DisplayName("Equal priority, deadline and resource-hours: earlier originalStartTime, then lower id")
     void fallsBackToOriginalStartTimeThenId() {
         assertThat(order(job(1, JobPriority.NORMAL, 1, 5), job(2, JobPriority.NORMAL, 0, 5))).containsExactly(2L, 1L);
         assertThat(order(job(2, JobPriority.NORMAL, 0, 5), job(1, JobPriority.NORMAL, 0, 5))).containsExactly(1L, 2L);
