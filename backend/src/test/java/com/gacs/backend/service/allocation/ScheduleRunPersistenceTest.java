@@ -55,6 +55,16 @@ class ScheduleRunPersistenceTest {
         assertThat(persisted.items()).hasSize(1);
         assertThat(persisted.items().get(0).getWhyThisPlacement()).isEqualTo("Placed on its cheapest feasible plan.");
         assertThat(persisted.impacts()).hasSize(2); // DEADLINE + FLEXIBILITY_WINDOW
+        var details = persistence.jobExplanations(persisted.run().getId());
+        assertThat(details).hasSize(1);
+        assertThat(details.get(0).jobId()).isEqualTo(40L);
+        assertThat(details.get(0).whyThisPlacement()).isEqualTo("Placed on its cheapest feasible plan.");
+        assertThat(details.get(0).constraints()).extracting(c -> c.constraintType())
+                .containsExactly("DEADLINE", "FLEXIBILITY_WINDOW");
+        assertThat(details.get(0).constraints()).allSatisfy(c -> {
+            assertThat(c.explanation()).isNotBlank();
+            assertThat(c.relatedJobIds()).isEmpty();
+        });
         // No explanation row yet - that is finalizeExplanation's job, not persist's.
         assertThat(explanations.findByScheduleRunId(persisted.run().getId())).isEmpty();
     }

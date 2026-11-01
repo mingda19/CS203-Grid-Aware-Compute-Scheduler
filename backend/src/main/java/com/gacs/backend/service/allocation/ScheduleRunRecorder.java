@@ -1,6 +1,7 @@
 package com.gacs.backend.service.allocation;
 
 import com.gacs.backend.dto.OptimizeResponseDto;
+import com.gacs.backend.dto.ExplanationResponseDto;
 import com.gacs.backend.model.ConstraintImpact;
 import com.gacs.backend.model.ScheduleItem;
 import com.gacs.backend.model.ScheduleRun;
@@ -34,6 +35,10 @@ public class ScheduleRunRecorder {
     public ScheduleRunRecorder(ScheduleRunPersistence persistence, ExplanationGenerator explanationGenerator) {
         this.persistence = persistence;
         this.explanationGenerator = explanationGenerator;
+    }
+
+    public List<ExplanationResponseDto.JobExplanation> jobExplanations(Long runId) {
+        return persistence.jobExplanations(runId);
     }
 
     /**
