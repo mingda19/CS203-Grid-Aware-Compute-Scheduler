@@ -8,7 +8,7 @@ import java.util.Optional;
 
 /**
  * Looks up a flexible job's "running" binary variable ({@code a[j,t]} in
- * {@link ExactAllocationSolver}) for a given job and hour, for {@link Constraint#applyToExactModel}
+ * {@link ExactAllocationSolver}) for a given job and hour, for {@link PlacementConstraint#applyToExactModel}
  * to build linear expressions over. Empty when the job has no variable for that hour - either the
  * hour is outside the job's own window, or the job is exempt (exempt jobs have no decision
  * variables at all; a constraint referencing one is a no-op against it in the exact model).

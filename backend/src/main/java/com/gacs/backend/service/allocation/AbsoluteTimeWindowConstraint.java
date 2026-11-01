@@ -18,7 +18,7 @@ import java.util.Objects;
  * should not declare that. {@code dailyStartTime.isAfter(dailyEndTime)} is a window that wraps
  * past midnight (e.g. 22:00-06:00), supported directly.
  */
-public final class AbsoluteTimeWindowConstraint extends Constraint {
+public final class AbsoluteTimeWindowConstraint implements PlacementConstraint {
 
     private final long jobId;
     private final LocalTime dailyStartTime;

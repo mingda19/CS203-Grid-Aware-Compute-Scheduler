@@ -7,6 +7,8 @@ import com.gacs.backend.dto.OptimizeRequestDto.JobInput;
 import com.gacs.backend.dto.OptimizeResponseDto;
 import com.gacs.backend.dto.OptimizeResponseDto.Allocation;
 import com.gacs.backend.dto.OptimizeResponseDto.ScheduleItem;
+import com.gacs.backend.repository.ScheduleExplanationRepository;
+import com.gacs.backend.repository.ScheduleRunRepository;
 import com.gacs.backend.service.allocation.AllocationResult;
 import com.gacs.backend.service.allocation.AllocationSolver;
 import com.gacs.backend.service.allocation.EnergyCostModel;
@@ -46,8 +48,11 @@ class ScheduleOptimizationServiceTest {
     private final PriceSeriesProvider provider = mock(PriceSeriesProvider.class);
     private final OptimizationProblemFactory factory = new OptimizationProblemFactory(provider, OptimizerProperties.DEFAULTS);
     private final ScheduleRunRecorder recorder = mock(ScheduleRunRecorder.class);
+    private final ScheduleRunRepository scheduleRuns = mock(ScheduleRunRepository.class);
+    private final ScheduleExplanationRepository scheduleExplanations = mock(ScheduleExplanationRepository.class);
     private final ScheduleOptimizationService service =
-            new ScheduleOptimizationService(factory, new HybridAllocationSolver(COSTS), COSTS, recorder);
+            new ScheduleOptimizationService(factory, new HybridAllocationSolver(COSTS), COSTS, recorder,
+                    scheduleRuns, scheduleExplanations);
 
     private static LocalDateTime at(int hour) {
         return T0.plusHours(hour);
@@ -84,7 +89,7 @@ class ScheduleOptimizationServiceTest {
         prices[15] = 24.0;
         OptimizeResponseDto response = service.optimize(request(
                 List.of(new JobInput(101L, "LLM Fine-Tuning Run #42", 64.0, 16.0, T0, at(32), 15, false)),
-                null, forecast(prices)), OWNER);
+                null, forecast(prices)), OWNER, ignored -> { });
 
         assertThat(UUID.fromString(response.runId()).version()).isEqualTo(4);
         assertThat(response.status()).isEqualTo("SCHEDULED");
@@ -118,7 +123,7 @@ class ScheduleOptimizationServiceTest {
         OptimizeResponseDto response = service.optimize(request(List.of(
                 job(1, 37.0, 3.0, 0, 3, 6, false),
                 job(2, 91.0, 0.0, 1, 2, 6, false),
-                job(3, 13.0, 7.0, 2, 0, 6, true)), null, forecast(33.17, 41.93, 12.71, 28.39, 19.07, 45.61)), OWNER);
+                job(3, 13.0, 7.0, 2, 0, 6, true)), null, forecast(33.17, 41.93, 12.71, 28.39, 19.07, 45.61)), OWNER, ignored -> { });
 
         double baseline = response.items().stream().mapToDouble(ScheduleItem::baselineCostUsd).sum();
         double optimized = response.items().stream().mapToDouble(ScheduleItem::optimizedCostUsd).sum();
@@ -138,7 +143,7 @@ class ScheduleOptimizationServiceTest {
     void allocationsAddUp() {
         // 600 CPU-hours at 256 per hour needs three hours.
         OptimizeResponseDto response = service.optimize(request(List.of(job(1, 600.0, 32.0, 0, 1, 5, false)),
-                null, forecast(30, 10, 20, 40, 50)), OWNER);
+                null, forecast(30, 10, 20, 40, 50)), OWNER, ignored -> { });
 
         ScheduleItem item = item(response, 1);
         assertThat(item.allocations().size()).isGreaterThanOrEqualTo(3);
@@ -156,7 +161,7 @@ class ScheduleOptimizationServiceTest {
     void noFeasibleSlot() {
         OptimizeResponseDto response = service.optimize(request(List.of(
                 job(1, 256.0, 0.0, 0, 0, 1, true),
-                job(2, 100.0, 0.0, 0, 0, 1, false)), null, forecast(10)), OWNER);
+                job(2, 100.0, 0.0, 0, 0, 1, false)), null, forecast(10)), OWNER, ignored -> { });
 
         assertThat(response.status()).isEqualTo("NEEDS_ATTENTION");
         ScheduleItem left = item(response, 2);
@@ -181,7 +186,7 @@ class ScheduleOptimizationServiceTest {
     void negativeSavings() {
         OptimizeResponseDto response = service.optimize(request(List.of(
                 job(1, 200.0, 0.0, 0, 1, 2, false),
-                job(2, 200.0, 0.0, 0, 1, 2, false)), 300.0, forecast(20, 50)), OWNER);
+                job(2, 200.0, 0.0, 0, 1, 2, false)), 300.0, forecast(20, 50)), OWNER, ignored -> { });
 
         assertThat(response.status()).isEqualTo("SCHEDULED");
         assertThat(response.baselineCostUsd()).isEqualTo(0.4);
@@ -195,7 +200,7 @@ class ScheduleOptimizationServiceTest {
     @DisplayName("Exempt jobs keep their original time and save nothing")
     void exemptJob() {
         OptimizeResponseDto response = service.optimize(request(List.of(job(1, 20.0, 0.0, 0, 0, 3, true)),
-                null, forecast(50, 10, 10)), OWNER);
+                null, forecast(50, 10, 10)), OWNER, ignored -> { });
 
         ScheduleItem item = item(response, 1);
         assertThat(item.perJobStatus()).isEqualTo("UNCHANGED_EXEMPT");
@@ -213,7 +218,7 @@ class ScheduleOptimizationServiceTest {
         }
         when(provider.load("LZ_NORTH", T0, 48)).thenReturn(new PriceSeries(curve, true));
         OptimizeResponseDto response = service.optimize(new OptimizeRequestDto(
-                List.of(job(1, 20.0, 0.0, 0, 2, 5, false)), null, "LZ_NORTH", null, null, null), OWNER);
+                List.of(job(1, 20.0, 0.0, 0, 2, 5, false)), null, "LZ_NORTH", null, null, null), OWNER, ignored -> { });
 
         assertThat(response.usedSeededFallbackPrices()).isTrue();
         assertThat(response.plainEnglishExplanation()).contains("seeded fallback");
@@ -225,10 +230,11 @@ class ScheduleOptimizationServiceTest {
         AllocationSolver exact = new HybridAllocationSolver(COSTS);
         AllocationSolver unproven = problem -> new AllocationResult(exact.solve(problem).outcomes(), false);
         ScheduleOptimizationService heuristicService =
-                new ScheduleOptimizationService(factory, unproven, COSTS, recorder);
+                new ScheduleOptimizationService(factory, unproven, COSTS, recorder, scheduleRuns,
+                        scheduleExplanations);
 
         OptimizeResponseDto response = heuristicService.optimize(request(List.of(job(1, 20.0, 0.0, 0, 1, 3, false)),
-                null, forecast(10, 20, 30)), OWNER);
+                null, forecast(10, 20, 30)), OWNER, ignored -> { });
 
         assertThat(response.provenOptimal()).isFalse();
         assertThat(response.plainEnglishExplanation()).contains("heuristic search");
@@ -240,7 +246,7 @@ class ScheduleOptimizationServiceTest {
         OptimizeResponseDto response = service.optimize(request(List.of(
                 job(3, 20.0, 0.0, 0, 0, 3, false),
                 job(1, 20.0, 0.0, 0, 0, 3, false),
-                job(2, 20.0, 0.0, 0, 0, 3, true)), null, forecast(10, 10, 10)), OWNER);
+                job(2, 20.0, 0.0, 0, 0, 3, true)), null, forecast(10, 10, 10)), OWNER, ignored -> { });
 
         assertThat(response.items()).extracting(ScheduleItem::jobId).containsExactly(3L, 1L, 2L);
     }

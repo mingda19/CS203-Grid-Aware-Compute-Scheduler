@@ -7,6 +7,7 @@ import com.gacs.backend.model.ScheduleRun;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * Orchestrates persisting one optimisation run around the slow, external part - the LLM call -
@@ -35,15 +36,23 @@ public class ScheduleRunRecorder {
         this.explanationGenerator = explanationGenerator;
     }
 
-    public void record(AllocationResult result, List<Constraint> constraints, OptimizeResponseDto response,
-                       String ownerEmail) {
-        ScheduleRunPersistence.Persisted persisted = persistence.persist(result, constraints, response, ownerEmail);
+    /**
+     * {@code afterExplanationPersisted} runs inside the same transaction as {@link
+     * ScheduleRunPersistence#finalizeExplanation} - see that method's javadoc for why a caller
+     * would want this instead of just doing its own persistence after {@code record} returns. A
+     * caller with nothing to do there passes a no-op.
+     */
+    public void record(AllocationResult result, List<PlacementConstraint> constraints,
+                       List<SynchronizedFinishConstraint> synchronizedGroups, OptimizeResponseDto response,
+                       String ownerEmail, Consumer<OptimizeResponseDto> afterExplanationPersisted) {
+        ScheduleRunPersistence.Persisted persisted = persistence.persist(result, constraints, synchronizedGroups,
+                response, ownerEmail);
 
         ScheduleRun run = persisted.run();
         List<ScheduleItem> items = persisted.items();
         List<ConstraintImpact> impacts = persisted.impacts();
         ExplanationOutcome explanation = explanationGenerator.generate(run, items, impacts);
 
-        persistence.finalizeExplanation(run.getId(), explanation, response);
+        persistence.finalizeExplanation(run.getId(), explanation, response, afterExplanationPersisted);
     }
 }

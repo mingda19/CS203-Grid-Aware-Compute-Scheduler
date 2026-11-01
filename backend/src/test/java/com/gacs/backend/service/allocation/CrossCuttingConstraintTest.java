@@ -19,7 +19,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** Two different constraint types attached to overlapping jobs, enforced together. */
 class CrossCuttingConstraintTest {
 
-    private static final ExactAllocationSolver EXACT = new ExactAllocationSolver(COSTS, Duration.ofSeconds(10));
+    private static final Duration BUDGET = Duration.ofSeconds(10);
+    private static final ExactAllocationSolver EXACT = new ExactAllocationSolver(COSTS);
     private static final AnnealingAllocationSolver HEURISTIC = new AnnealingAllocationSolver(COSTS, 200);
 
     /**
@@ -31,14 +32,14 @@ class CrossCuttingConstraintTest {
     @Test
     @DisplayName("Precedence and an absolute time window on the same job are both enforced together")
     void precedenceAndAbsoluteWindowBothBind() {
-        List<Constraint> constraints = List.of(
+        List<PlacementConstraint> constraints = List.of(
                 new PrecedenceConstraint(1, 2),
                 new AbsoluteTimeWindowConstraint(2, LocalTime.of(13, 0), LocalTime.of(15, 0)));
         OptimizationProblem problem = problem(
                 List.of(job(1, 20.0, 0.0, 3, 0, 4), job(2, 20.0, 0.0, 0, 4, 5)),
                 prices(1, 1, 1, 1, 9), cpuCapacity(256.0), constraints);
 
-        AllocationResult exactResult = EXACT.solve(problem).orElseThrow();
+        AllocationResult exactResult = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, exactResult)).isEmpty();
         assertThat(exactResult.scheduledCount()).isEqualTo(2);
         assertThat(planFor(exactResult, 1).end()).isEqualTo(at(4));
@@ -53,7 +54,7 @@ class CrossCuttingConstraintTest {
     @Test
     @DisplayName("Same problem, multiple constraint types attached: both solvers are deterministic")
     void deterministicWithConstraintsAttached() {
-        List<Constraint> constraints = List.of(
+        List<PlacementConstraint> constraints = List.of(
                 new PrecedenceConstraint(1, 2),
                 new AbsoluteTimeWindowConstraint(2, LocalTime.of(13, 0), LocalTime.of(15, 0)),
                 new MutualExclusionConstraint(2, 3));
@@ -61,7 +62,7 @@ class CrossCuttingConstraintTest {
                 List.of(job(1, 20.0, 0.0, 3, 0, 4), job(2, 20.0, 0.0, 0, 4, 5), job(3, 20.0, 0.0, 0, 4, 5)),
                 prices(1, 1, 1, 1, 9), cpuCapacity(256.0), constraints);
 
-        assertThat(EXACT.solve(problem)).isEqualTo(EXACT.solve(problem));
+        assertThat(EXACT.solve(problem, BUDGET)).isEqualTo(EXACT.solve(problem, BUDGET));
         assertThat(HEURISTIC.solve(problem)).isEqualTo(HEURISTIC.solve(problem));
     }
 

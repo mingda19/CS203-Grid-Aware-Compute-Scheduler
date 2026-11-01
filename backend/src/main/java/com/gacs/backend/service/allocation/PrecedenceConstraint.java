@@ -28,7 +28,7 @@ import java.util.Optional;
  * constrains the after-job relative to a before-job that actually runs; it does not cascade into
  * also failing the after-job just because the before-job itself could not be placed.
  */
-public final class PrecedenceConstraint extends Constraint {
+public final class PrecedenceConstraint implements PlacementConstraint {
 
     private final long beforeJobId;
     private final long afterJobId;

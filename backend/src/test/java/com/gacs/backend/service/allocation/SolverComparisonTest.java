@@ -28,6 +28,7 @@ class SolverComparisonTest {
     private static final int CASES = 120;
     private static final int HOURS = 6;
     private static final double COST_SLACK = 1e-6;
+    private static final Duration BUDGET = Duration.ofSeconds(10);
 
     private record Case(OptimizationProblem problem, int index) {
     }
@@ -35,12 +36,12 @@ class SolverComparisonTest {
     @Test
     @DisplayName("Exact solver is never beaten by the brute-force checker, and both follow every rule")
     void exactAtLeastAsGoodAsBruteForce() {
-        ExactAllocationSolver exact = new ExactAllocationSolver(COSTS, Duration.ofSeconds(10));
+        ExactAllocationSolver exact = new ExactAllocationSolver(COSTS);
         int withJobLeftOut = 0;
         int withMultiHourRun = 0;
         for (Case c : cases()) {
             OptimizationProblem problem = c.problem();
-            AllocationResult result = exact.solve(problem).orElseThrow();
+            AllocationResult result = exact.solve(problem, BUDGET).orElseThrow();
             if (result.scheduledCount() < problem.jobs().size()) {
                 withJobLeftOut++;
             }
@@ -69,13 +70,13 @@ class SolverComparisonTest {
     @Test
     @DisplayName("Heuristic always follows every rule and never beats the proven optimum")
     void heuristicFeasibleAndNoBetterThanExact() {
-        ExactAllocationSolver exact = new ExactAllocationSolver(COSTS, Duration.ofSeconds(10));
+        ExactAllocationSolver exact = new ExactAllocationSolver(COSTS);
         AnnealingAllocationSolver heuristic = new AnnealingAllocationSolver(COSTS, 200);
         int matchedOptimum = 0;
         List<Case> cases = cases();
         for (Case c : cases) {
             OptimizationProblem problem = c.problem();
-            AllocationResult best = exact.solve(problem).orElseThrow();
+            AllocationResult best = exact.solve(problem, BUDGET).orElseThrow();
             AllocationResult guess = heuristic.solve(problem);
 
             assertThat(ContractRules.violations(problem, guess)).as("case %d heuristic rules", c.index()).isEmpty();
@@ -97,10 +98,10 @@ class SolverComparisonTest {
     @DisplayName("The same problem always gives the same result")
     void deterministic() {
         AnnealingAllocationSolver heuristic = new AnnealingAllocationSolver(COSTS, 200);
-        ExactAllocationSolver exact = new ExactAllocationSolver(COSTS, Duration.ofSeconds(10));
+        ExactAllocationSolver exact = new ExactAllocationSolver(COSTS);
         for (Case c : cases().subList(0, 20)) {
             assertThat(heuristic.solve(c.problem())).isEqualTo(heuristic.solve(c.problem()));
-            assertThat(exact.solve(c.problem())).isEqualTo(exact.solve(c.problem()));
+            assertThat(exact.solve(c.problem(), BUDGET)).isEqualTo(exact.solve(c.problem(), BUDGET));
         }
     }
 

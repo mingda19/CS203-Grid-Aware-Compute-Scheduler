@@ -31,6 +31,7 @@ public class HybridAllocationSolver implements AllocationSolver {
     private final EnergyCostModel costs;
     private final int sizeThreshold;
     private final Duration timeBudget;
+    private final ExactAllocationSolver exactSolver;
     private final AnnealingAllocationSolver heuristic;
 
     @Autowired
@@ -44,27 +45,29 @@ public class HybridAllocationSolver implements AllocationSolver {
         this.costs = costs;
         this.sizeThreshold = sizeThreshold;
         this.timeBudget = timeBudget;
+        this.exactSolver = new ExactAllocationSolver(costs);
         this.heuristic = heuristic;
     }
 
     @Override
     public AllocationResult solve(OptimizationProblem problem) {
-        Optional<AllocationResult> exact = Optional.empty();
-        if (size(problem) <= sizeThreshold) {
-            try {
-                exact = new ExactAllocationSolver(costs, timeBudget).solve(problem);
-            } catch (RuntimeException solverFailure) {
-                // Fall through to the heuristic: a valid plan beats a 500.
-            }
-            if (exact.isPresent() && exact.get().provenOptimal()) {
-                return exact.get();
-            }
-        }
-        AllocationResult fallback = heuristic.solve(problem);
-        if (exact.isPresent() && AllocationResult.isBetter(exact.get(), fallback, problem, costs)) {
+        Optional<AllocationResult> exact = tryExact(problem);
+        if (exact.isPresent() && exact.get().provenOptimal()) {
             return exact.get();
         }
-        return fallback;
+        AllocationResult fallback = heuristic.solve(problem);
+        return exact.filter(e -> AllocationResult.isBetter(e, fallback, problem, costs)).orElse(fallback);
+    }
+
+    private Optional<AllocationResult> tryExact(OptimizationProblem problem) {
+        if (size(problem) > sizeThreshold) {
+            return Optional.empty();
+        }
+        try {
+            return exactSolver.solve(problem, timeBudget);
+        } catch (RuntimeException solverFailure) {
+            return Optional.empty(); // a valid heuristic plan beats a 500
+        }
     }
 
     /** Number of (flexible job, hour) pairs the exact model would have. */

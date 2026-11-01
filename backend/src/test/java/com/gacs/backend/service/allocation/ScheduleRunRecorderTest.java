@@ -73,7 +73,7 @@ class ScheduleRunRecorderTest {
         String runId = UUID.randomUUID().toString();
         OptimizeResponseDto response = response(runId, List.of(outcome), List.of(dtoItem(outcome, 1.0, 0.5)));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         var savedRun = runs.findByRunId(runId).orElseThrow();
         assertThat(savedRun.getOwnerEmail()).isEqualTo(OWNER);
@@ -108,7 +108,7 @@ class ScheduleRunRecorderTest {
         OptimizeResponseDto response = response(UUID.randomUUID().toString(), List.of(outcome),
                 List.of(dtoItem(outcome, 1.0, 1.0)));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         var item = onlyItemFor(response);
         assertThat(item.getWhyThisPlacement()).isEqualTo("Kept at its original time because it is exempt.");
@@ -126,7 +126,7 @@ class ScheduleRunRecorderTest {
         OptimizeResponseDto response = response(UUID.randomUUID().toString(), List.of(outcome),
                 List.of(dtoItemUnscheduled(outcome)));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         var item = onlyItemFor(response);
         assertThat(item.getScheduledStart()).isNull();
@@ -144,7 +144,7 @@ class ScheduleRunRecorderTest {
         String runId = UUID.randomUUID().toString();
         OptimizeResponseDto response = response(runId, List.of(outcome), List.of(dtoItem(outcome, 2.0, 1.0)));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         var run = runs.findByRunId(runId).orElseThrow();
         var explanation = explanations.findByScheduleRunId(run.getId()).orElseThrow();
@@ -166,7 +166,7 @@ class ScheduleRunRecorderTest {
         OptimizeResponseDto response = response(UUID.randomUUID().toString(), List.of(outcome),
                 List.of(dtoItem(outcome, 1.0, 1.0)));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         var item = onlyItemFor(response);
         var deadlineImpact = constraintImpacts.findByScheduleItemIdOrderByIdAsc(item.getId()).stream()
@@ -184,7 +184,7 @@ class ScheduleRunRecorderTest {
         OptimizeResponseDto response = response(UUID.randomUUID().toString(), List.of(outcome),
                 List.of(dtoItem(outcome, 1.0, 1.0)));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         var item = onlyItemFor(response);
         var deadlineImpact = constraintImpacts.findByScheduleItemIdOrderByIdAsc(item.getId()).stream()
@@ -203,7 +203,7 @@ class ScheduleRunRecorderTest {
         OptimizeResponseDto response = response(UUID.randomUUID().toString(), List.of(outcome),
                 List.of(dtoItem(outcome, 1.0, 1.0)));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         var item = onlyItemFor(response);
         var windowImpact = constraintImpacts.findByScheduleItemIdOrderByIdAsc(item.getId()).stream()
@@ -222,7 +222,7 @@ class ScheduleRunRecorderTest {
         OptimizeResponseDto response = response(UUID.randomUUID().toString(), List.of(outcome),
                 List.of(dtoItem(outcome, 1.0, 1.0)));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         var item = onlyItemFor(response);
         var windowImpact = constraintImpacts.findByScheduleItemIdOrderByIdAsc(item.getId()).stream()
@@ -241,7 +241,7 @@ class ScheduleRunRecorderTest {
         OptimizeResponseDto response = response(UUID.randomUUID().toString(), List.of(outcome),
                 List.of(dtoItem(outcome, 1.0, 1.5))); // optimized cost higher than baseline
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         var item = onlyItemFor(response);
         assertThat(item.getSavingsUsd()).isEqualTo(-0.5);
@@ -258,7 +258,7 @@ class ScheduleRunRecorderTest {
         OptimizeResponseDto response = response(UUID.randomUUID().toString(), outcomes,
                 List.of(dtoItem(outcomeA, 1.0, 1.0), dtoItem(outcomeB, 1.0, 1.0)));
 
-        recorder.record(new AllocationResult(outcomes, true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(outcomes, true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         var run = runs.findByRunId(response.runId()).orElseThrow();
         var savedItems = items.findByScheduleRunIdOrderByIdAsc(run.getId());
@@ -275,10 +275,10 @@ class ScheduleRunRecorderTest {
         String runId1 = UUID.randomUUID().toString();
         String runId2 = UUID.randomUUID().toString();
 
-        recorder.record(new AllocationResult(List.of(outcome1), true), List.of(),
-                response(runId1, List.of(outcome1), List.of(dtoItem(outcome1, 1.0, 1.0))), OWNER);
-        recorder.record(new AllocationResult(List.of(outcome2), true), List.of(),
-                response(runId2, List.of(outcome2), List.of(dtoItem(outcome2, 1.0, 1.0))), OWNER);
+        recorder.record(new AllocationResult(List.of(outcome1), true), List.of(), List.of(),
+                response(runId1, List.of(outcome1), List.of(dtoItem(outcome1, 1.0, 1.0))), OWNER, ignored -> { });
+        recorder.record(new AllocationResult(List.of(outcome2), true), List.of(), List.of(),
+                response(runId2, List.of(outcome2), List.of(dtoItem(outcome2, 1.0, 1.0))), OWNER, ignored -> { });
 
         assertThat(runs.findByRunId(runId1)).isPresent();
         assertThat(runs.findByRunId(runId2)).isPresent();
@@ -293,10 +293,11 @@ class ScheduleRunRecorderTest {
         String sharedRunId = UUID.randomUUID().toString();
         OptimizeResponseDto response = response(sharedRunId, List.of(outcome), List.of(dtoItem(outcome, 1.0, 1.0)));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         assertThatThrownBy(() ->
-                recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER))
+                recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER,
+                        ignored -> { }))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
@@ -318,7 +319,7 @@ class ScheduleRunRecorderTest {
         explanationGenerator.setClient((run, savedItems, savedImpacts, timeout) ->
                 ExplanationGenerationResult.success(llmResponse, "{\"raw\":true}"));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         var run = runs.findByRunId(runId).orElseThrow();
         var explanation = explanations.findByScheduleRunId(run.getId()).orElseThrow();
@@ -348,7 +349,7 @@ class ScheduleRunRecorderTest {
         explanationGenerator.setClient((run, savedItems, savedImpacts, timeout) ->
                 ExplanationGenerationResult.failure(FallbackReason.TIMEOUT, null));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
 
         var run = runs.findByRunId(runId).orElseThrow();
         var explanation = explanations.findByScheduleRunId(run.getId()).orElseThrow();
@@ -376,7 +377,7 @@ class ScheduleRunRecorderTest {
         AbsoluteTimeWindowConstraint constraint = new AbsoluteTimeWindowConstraint(20L, LocalTime.of(10, 0),
                 LocalTime.of(18, 0));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(constraint), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(constraint), List.of(), response, OWNER, ignored -> { });
 
         var item = onlyItemFor(response);
         var impacts = constraintImpacts.findByScheduleItemIdOrderByIdAsc(item.getId());
@@ -401,7 +402,7 @@ class ScheduleRunRecorderTest {
                 List.of(dtoItem(beforeOutcome, 1.0, 1.0), dtoItem(afterOutcome, 1.0, 1.0)));
         PrecedenceConstraint constraint = new PrecedenceConstraint(21L, 22L);
 
-        recorder.record(new AllocationResult(outcomes, true), List.of(constraint), response, OWNER);
+        recorder.record(new AllocationResult(outcomes, true), List.of(constraint), List.of(), response, OWNER, ignored -> { });
 
         var beforeItem = itemFor(response, 21L);
         assertThat(constraintImpacts.findByScheduleItemIdOrderByIdAsc(beforeItem.getId()))
@@ -426,7 +427,7 @@ class ScheduleRunRecorderTest {
                 List.of(dtoItemUnscheduled(beforeOutcome), dtoItem(afterOutcome, 1.0, 1.0)));
         PrecedenceConstraint constraint = new PrecedenceConstraint(23L, 24L);
 
-        recorder.record(new AllocationResult(outcomes, true), List.of(constraint), response, OWNER);
+        recorder.record(new AllocationResult(outcomes, true), List.of(constraint), List.of(), response, OWNER, ignored -> { });
 
         var afterItem = itemFor(response, 24L);
         var precedenceImpact = constraintImpacts.findByScheduleItemIdOrderByIdAsc(afterItem.getId()).stream()
@@ -447,7 +448,7 @@ class ScheduleRunRecorderTest {
                 List.of(dtoItem(outcomeA, 1.0, 1.0), dtoItem(outcomeB, 1.0, 1.0)));
         MutualExclusionConstraint constraint = new MutualExclusionConstraint(25L, 26L);
 
-        recorder.record(new AllocationResult(outcomes, true), List.of(constraint), response, OWNER);
+        recorder.record(new AllocationResult(outcomes, true), List.of(constraint), List.of(), response, OWNER, ignored -> { });
 
         var impactA = constraintImpacts.findByScheduleItemIdOrderByIdAsc(itemFor(response, 25L).getId()).stream()
                 .filter(i -> i.getConstraintType().equals("MUTUAL_EXCLUSION")).findFirst().orElseThrow();
@@ -471,7 +472,7 @@ class ScheduleRunRecorderTest {
                 List.of(dtoItem(outcomeA, 1.0, 1.0), dtoItemUnscheduled(outcomeB)));
         MutualExclusionConstraint constraint = new MutualExclusionConstraint(27L, 28L);
 
-        recorder.record(new AllocationResult(outcomes, true), List.of(constraint), response, OWNER);
+        recorder.record(new AllocationResult(outcomes, true), List.of(constraint), List.of(), response, OWNER, ignored -> { });
 
         var impactA = constraintImpacts.findByScheduleItemIdOrderByIdAsc(itemFor(response, 27L).getId()).stream()
                 .filter(i -> i.getConstraintType().equals("MUTUAL_EXCLUSION")).findFirst().orElseThrow();
@@ -491,7 +492,7 @@ class ScheduleRunRecorderTest {
                 List.of(dtoItem(outcomeA, 1.0, 1.0), dtoItem(outcomeB, 1.0, 1.0)));
         SynchronizedFinishConstraint constraint = new SynchronizedFinishConstraint(List.of(29L, 30L));
 
-        recorder.record(new AllocationResult(outcomes, true), List.of(constraint), response, OWNER);
+        recorder.record(new AllocationResult(outcomes, true), List.of(), List.of(constraint), response, OWNER, ignored -> { });
 
         var impactA = constraintImpacts.findByScheduleItemIdOrderByIdAsc(itemFor(response, 29L).getId()).stream()
                 .filter(i -> i.getConstraintType().equals("SYNCHRONIZED_FINISH")).findFirst().orElseThrow();
@@ -518,7 +519,7 @@ class ScheduleRunRecorderTest {
                 List.of(dtoItem(flexibleOutcome, 1.0, 1.0), dtoItem(exemptOutcome, 1.0, 1.0)));
         SynchronizedFinishConstraint constraint = new SynchronizedFinishConstraint(List.of(31L, 32L));
 
-        recorder.record(new AllocationResult(outcomes, true), List.of(constraint), response, OWNER);
+        recorder.record(new AllocationResult(outcomes, true), List.of(), List.of(constraint), response, OWNER, ignored -> { });
 
         var flexibleItem = itemFor(response, 31L);
         assertThat(constraintImpacts.findByScheduleItemIdOrderByIdAsc(flexibleItem.getId()))
@@ -535,7 +536,7 @@ class ScheduleRunRecorderTest {
         AbsoluteTimeWindowConstraint constraint = new AbsoluteTimeWindowConstraint(33L, LocalTime.of(0, 0),
                 LocalTime.of(23, 0));
 
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(constraint), response, OWNER);
+        recorder.record(new AllocationResult(List.of(outcome), true), List.of(constraint), List.of(), response, OWNER, ignored -> { });
 
         var item = onlyItemFor(response);
         assertThat(constraintImpacts.findByScheduleItemIdOrderByIdAsc(item.getId())).isEmpty();
@@ -556,7 +557,7 @@ class ScheduleRunRecorderTest {
                 .map(outcome -> dtoItem(outcome, 1.0, 1.0)).toList();
         OptimizeResponseDto response = response(UUID.randomUUID().toString(), result.outcomes(), dtoItems);
 
-        recorder.record(result, List.of(constraint), response, OWNER);
+        recorder.record(result, List.of(constraint), List.of(), response, OWNER, ignored -> { });
 
         var afterItem = itemFor(response, 35L);
         var precedenceImpact = constraintImpacts.findByScheduleItemIdOrderByIdAsc(afterItem.getId()).stream()

@@ -116,8 +116,7 @@ public class ScheduleExportService {
      */
     @Transactional(readOnly = true)
     public ExportFile export(UUID runId, Format format, String email) {
-        User owner = users.findByEmail(email)
-                .orElseThrow(() -> new BadCredentialsException("Authenticated user no longer exists"));
+        User owner = AuthenticatedOperators.resolve(users, email);
         OptimizationPlan plan = plans.findOwned(runId.toString(), owner.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Optimization plan not found"));
 
@@ -208,8 +207,8 @@ public class ScheduleExportService {
                     || !sameHours(job.getGpuHours(), item.allocatedGpuHours())) {
                 throw invalidated(runId, "job " + id + "'s CPU or GPU hours changed after the schedule was generated");
             }
-            LocalDateTime earliest = job.getOriginalStartTime().truncatedTo(ChronoUnit.HOURS);
-            LocalDateTime latest = job.isExempt() ? earliest : earliest.plusHours(job.getFlexibilityWindowHours());
+            LocalDateTime earliest = job.earliestAllowedStart();
+            LocalDateTime latest = job.latestAllowedStart();
             if (item.scheduledStart().isBefore(earliest) || item.scheduledStart().isAfter(latest)) {
                 throw invalidated(runId, "job " + id + " must now start between " + utc(earliest) + " and "
                         + utc(latest) + ", but the schedule starts it at " + utc(item.scheduledStart()));

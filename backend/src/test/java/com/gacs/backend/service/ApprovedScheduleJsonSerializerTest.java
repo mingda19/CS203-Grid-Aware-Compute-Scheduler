@@ -9,7 +9,6 @@ import com.gacs.backend.dto.OptimizeResponseDto.ScheduleItem;
 import com.gacs.backend.model.AuditActionType;
 import com.gacs.backend.model.AuditEvent;
 import com.gacs.backend.model.OptimizerRun;
-import com.gacs.backend.model.OptimizerRunStatus;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -121,9 +120,12 @@ class ApprovedScheduleJsonSerializerTest {
     @DisplayName("Every field of the stored run record appears in the export")
     void document_CoversEveryRunRecordField() {
         // OptimizerRun field -> where the export carries it. A new OptimizerRun field fails this test.
+        // status/provenOptimal are deliberately absent: they live on ScheduleRun now, not duplicated
+        // here, and the export already sources its top-level status/provenOptimal from the
+        // OptimizeResponseDto `schedule` parameter, not from the run record.
         Map<String, String> carriedAs = Map.of(
-                "id", "run.runId", "createdAt", "run.createdAt", "status", "run.status",
-                "provenOptimal", "run.provenOptimal", "solverName", "run.solver.name",
+                "id", "run.runId", "createdAt", "run.createdAt",
+                "solverName", "run.solver.name",
                 "solverVersion", "run.solver.version", "solverConfig", "run.solver.config");
 
         assertThat(fieldNames(OptimizerRun.class)).isEqualTo(carriedAs.keySet());
@@ -144,8 +146,7 @@ class ApprovedScheduleJsonSerializerTest {
 
     private static OptimizerRun runRecord(String config) {
         return OptimizerRun.builder().id(RUN_ID).createdAt(Instant.parse("2026-10-20T09:00:00.123456Z"))
-                .solverName("HybridAllocationSolver").solverVersion("1").solverConfig(config)
-                .status(OptimizerRunStatus.NEEDS_ATTENTION).provenOptimal(true).build();
+                .solverName("HybridAllocationSolver").solverVersion("1").solverConfig(config).build();
     }
 
     private static AuditEvent approvalEvent(AuditActionType action, String runId) {

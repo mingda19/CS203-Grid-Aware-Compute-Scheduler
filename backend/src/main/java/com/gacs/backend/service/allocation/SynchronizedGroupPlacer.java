@@ -42,9 +42,7 @@ final class SynchronizedGroupPlacer {
     }
 
     static Placement place(OptimizationProblem problem, EnergyCostModel costs) {
-        List<SynchronizedFinishConstraint> groups = problem.constraints().stream()
-                .filter(c -> c instanceof SynchronizedFinishConstraint)
-                .map(c -> (SynchronizedFinishConstraint) c)
+        List<SynchronizedFinishConstraint> groups = problem.synchronizedGroups().stream()
                 .sorted(Comparator.comparing(group -> group.jobIds().stream().min(Long::compareTo).orElseThrow()))
                 .toList();
 

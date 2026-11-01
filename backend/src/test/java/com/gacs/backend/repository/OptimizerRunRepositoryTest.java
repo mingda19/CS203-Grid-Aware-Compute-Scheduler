@@ -1,7 +1,6 @@
 package com.gacs.backend.repository;
 
 import com.gacs.backend.model.OptimizerRun;
-import com.gacs.backend.model.OptimizerRunStatus;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -27,8 +26,10 @@ class OptimizerRunRepositoryTest {
     private EntityManager entityManager;
 
     @Test
-    @DisplayName("GRID-140 — a run persists with its id, timestamp, solver, configuration and status")
+    @DisplayName("GRID-140 — a run persists with its id, timestamp, solver and configuration")
     void savesAndReloadsRun() {
+        // status/provenOptimal are deliberately not fields here any more - ScheduleRun (sharing
+        // this run's id) already owns both, and this table's own purpose is solver provenance only.
         String id = "7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44";
         Instant createdAt = Instant.parse("2026-10-28T09:30:00Z");
         runs.saveAndFlush(OptimizerRun.builder()
@@ -37,8 +38,6 @@ class OptimizerRunRepositoryTest {
                 .solverName("HybridAllocationSolver")
                 .solverVersion("1")
                 .solverConfig(CONFIG)
-                .status(OptimizerRunStatus.NEEDS_ATTENTION)
-                .provenOptimal(true)
                 .build());
         entityManager.clear();
 
@@ -48,27 +47,5 @@ class OptimizerRunRepositoryTest {
         assertThat(reloaded.getSolverName()).isEqualTo("HybridAllocationSolver");
         assertThat(reloaded.getSolverVersion()).isEqualTo("1");
         assertThat(reloaded.getSolverConfig()).isEqualTo(CONFIG);
-        assertThat(reloaded.getStatus()).isEqualTo(OptimizerRunStatus.NEEDS_ATTENTION);
-        assertThat(reloaded.getProvenOptimal()).isTrue();
-    }
-
-    @Test
-    @DisplayName("GRID-140 — a run that produced no plan stores a null provenOptimal")
-    void timeoutRunHasNoOptimalityFlag() {
-        String id = "11111111-2222-4333-8444-555555555555";
-        runs.saveAndFlush(OptimizerRun.builder()
-                .id(id)
-                .createdAt(Instant.parse("2026-10-28T09:31:00Z"))
-                .solverName("HybridAllocationSolver")
-                .solverVersion("1")
-                .solverConfig(CONFIG)
-                .status(OptimizerRunStatus.TIMEOUT)
-                .build());
-        entityManager.clear();
-
-        OptimizerRun reloaded = runs.findById(id).orElseThrow();
-
-        assertThat(reloaded.getStatus()).isEqualTo(OptimizerRunStatus.TIMEOUT);
-        assertThat(reloaded.getProvenOptimal()).isNull();
     }
 }

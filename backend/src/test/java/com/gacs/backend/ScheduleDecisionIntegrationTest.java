@@ -42,8 +42,9 @@ class ScheduleDecisionIntegrationTest {
     @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.gacs.backend.service.AuditEventService audit;
     @Autowired AuditEventRepository decisions;
     @Autowired UserRepository users;
-    @Autowired OptimizerRunRepository runs;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean OptimizerRunRepository runs;
     @Autowired ScheduleExplanationRepository explanations;
+    @Autowired com.gacs.backend.repository.ScheduleRunRepository scheduleRuns;
     @Autowired ScheduleReviewService reviews;
     @Autowired JwtUtils jwt;
     @Autowired PlatformTransactionManager transactions;
@@ -83,11 +84,14 @@ class ScheduleDecisionIntegrationTest {
         OptimizerRun run = runs.findById(runId.toString()).orElseThrow();
         assertThat(run.getCreatedAt()).isEqualTo(plan.getCreatedAt());
         assertThat(plan.getRun().getId()).isEqualTo(runId.toString());
-        assertThat(explanations.findByRunIdAndOwnerEmail(runId.toString(), owner.getEmail())).isPresent();
+        // status/provenOptimal live on ScheduleRun now, not OptimizerRun (no longer duplicated
+        // across both tables) - explanations are keyed off ScheduleRun's own surrogate id too.
+        var scheduleRun = scheduleRuns.findByRunId(runId.toString()).orElseThrow();
+        assertThat(explanations.findByScheduleRunId(scheduleRun.getId())).isPresent();
         assertThat(run.getSolverName()).isEqualTo("HybridAllocationSolver");
         assertThat(run.getSolverVersion()).isEqualTo(com.gacs.backend.service.allocation.AllocationSolver.VERSION);
-        assertThat(run.getStatus().name()).isEqualTo(result.path("status").asText());
-        assertThat(run.getProvenOptimal()).isEqualTo(result.path("provenOptimal").asBoolean());
+        assertThat(scheduleRun.getStatus()).isEqualTo(result.path("status").asText());
+        assertThat(scheduleRun.isProvenOptimal()).isEqualTo(result.path("provenOptimal").asBoolean());
         assertThat(json.readTree(run.getSolverConfig()).path("cpuKwhPerHour").asDouble()).isEqualTo(0.05);
         return runId;
     }
@@ -267,6 +271,25 @@ class ScheduleDecisionIntegrationTest {
                 .andExpect(status().isInternalServerError());
         } finally {
             org.mockito.Mockito.reset(plans);
+        }
+        assertThat(plans.count()).isEqualTo(plansBefore);
+        assertThat(runs.count()).isEqualTo(runsBefore);
+        assertThat(explanations.count()).isEqualTo(explanationsBefore);
+    }
+
+    @Test
+    void optimizerRunPersistenceFailureRollsBackExplanation() throws Exception {
+        long plansBefore = plans.count();
+        long runsBefore = runs.count();
+        long explanationsBefore = explanations.count();
+        org.mockito.Mockito.doThrow(new IllegalStateException("Optimizer run write failed"))
+            .when(runs).save(org.mockito.ArgumentMatchers.any(OptimizerRun.class));
+        try {
+            mvc.perform(post("/api/schedules/optimize").with(user(owner.getEmail()))
+                    .contentType(APPLICATION_JSON).content(REQUEST))
+                .andExpect(status().isInternalServerError());
+        } finally {
+            org.mockito.Mockito.reset(runs);
         }
         assertThat(plans.count()).isEqualTo(plansBefore);
         assertThat(runs.count()).isEqualTo(runsBefore);

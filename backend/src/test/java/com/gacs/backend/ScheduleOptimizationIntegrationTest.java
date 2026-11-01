@@ -7,12 +7,12 @@ import com.gacs.backend.repository.PredictedPriceRepository;
 import com.gacs.backend.repository.ScheduleItemRepository;
 import com.gacs.backend.repository.ScheduleExplanationRepository;
 import com.gacs.backend.repository.ScheduleRunRepository;
+import com.gacs.backend.repository.UserRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.security.test.context.support.WithMockUser;
@@ -67,11 +67,18 @@ class ScheduleOptimizationIntegrationTest {
     @Autowired
     private ScheduleExplanationRepository scheduleExplanations;
 
+    @Autowired
+    private UserRepository users;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
     void clearForecasts() {
-        for (String email : java.util.List.of("contract-tester@datacenter.io", "user", "explanation-owner@datacenter.io")) {
+        // ScheduleOptimizationController now routes /optimize through ScheduleReviewService, which
+        // 401s (BadCredentialsException) unless the authenticated email has a real User row - every
+        // @WithMockUser username used anywhere in this file needs one seeded here.
+        for (String email : java.util.List.of("contract-tester@datacenter.io", "user",
+                "explanation-owner@datacenter.io", "run-recorder-tester@datacenter.io")) {
             if (!users.existsByEmail(email)) users.save(new com.gacs.backend.model.User(email, "test-password", "Operator", "ROLE_USER"));
         }
         predictions.deleteAll();

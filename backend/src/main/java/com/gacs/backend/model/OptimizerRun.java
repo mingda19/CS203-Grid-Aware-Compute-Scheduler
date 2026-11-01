@@ -6,8 +6,17 @@ import lombok.*;
 import java.time.Instant;
 
 /**
- * One optimiser run: which solver and configuration produced it, and how it ended (GRID-140).
- * The id is the {@code runId} the optimise endpoint returns, so audit events can refer to it.
+ * One optimiser run: which solver and configuration produced it (GRID-140). The id is the
+ * {@code runId} the optimise endpoint returns, so audit events can refer to it.
+ *
+ * <p>Deliberately holds no {@code status}/{@code provenOptimal}: {@code ScheduleRun} (written by
+ * the same {@code /optimize} call, keyed by the same run id) already owns both, and nothing about
+ * this table's own purpose - solver provenance for the audit trail - needs a second copy. Any
+ * reader that needs a run's status/provenOptimal (e.g. {@code AuditEventService}) looks it up from
+ * {@code ScheduleRun} by the shared id. Known gap, not addressed here: a run that fails before
+ * {@code ScheduleRun} is ever persisted (solver exception, timeout) has no row in either table
+ * today, so {@code OptimizerRunStatus}'s INFEASIBLE/TIMEOUT/FAILED values are not currently
+ * reachable from any code path - unrelated to this table's own field set.
  */
 @Entity
 @Table(name = "optimizer_runs", indexes = {
@@ -36,12 +45,4 @@ public class OptimizerRun {
     /** JSON snapshot of the {@code gacs.optimiser.*} properties the run used. */
     @Column(name = "solver_config", nullable = false, updatable = false, columnDefinition = "TEXT")
     private String solverConfig;
-
-    @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false, updatable = false, length = 30)
-    private OptimizerRunStatus status;
-
-    /** Null when the run produced no plan (timeout, failure). */
-    @Column(name = "proven_optimal", updatable = false)
-    private Boolean provenOptimal;
 }

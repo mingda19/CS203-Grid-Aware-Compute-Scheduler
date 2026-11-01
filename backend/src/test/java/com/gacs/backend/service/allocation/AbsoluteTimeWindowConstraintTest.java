@@ -23,7 +23,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class AbsoluteTimeWindowConstraintTest {
 
-    private static final ExactAllocationSolver EXACT = new ExactAllocationSolver(COSTS, Duration.ofSeconds(10));
+    private static final Duration BUDGET = Duration.ofSeconds(10);
+    private static final ExactAllocationSolver EXACT = new ExactAllocationSolver(COSTS);
     private static final AnnealingAllocationSolver HEURISTIC = new AnnealingAllocationSolver(COSTS, 200);
 
     @Test
@@ -34,7 +35,7 @@ class AbsoluteTimeWindowConstraintTest {
         OptimizationProblem problem = problem(List.of(job(1, 20.0, 0.0, 0, 3, 4)), prices(10, 1, 2, 9),
                 cpuCapacity(256.0), List.of(constraint));
 
-        AllocationResult result = EXACT.solve(problem).orElseThrow();
+        AllocationResult result = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, result)).isEmpty();
         assertThat(result.provenOptimal()).isTrue();
         assertThat(outcome(result).plan().start()).isEqualTo(at(2));
@@ -66,7 +67,7 @@ class AbsoluteTimeWindowConstraintTest {
         OptimizationProblem problem = problem(List.of(job(1, 20.0, 0.0, 0, 13, 14)), priceSeries, cpuCapacity(256.0),
                 List.of(constraint));
 
-        AllocationResult result = EXACT.solve(problem).orElseThrow();
+        AllocationResult result = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, result)).isEmpty();
         assertThat(outcome(result).plan().start()).isEqualTo(at(13));
     }
@@ -79,7 +80,7 @@ class AbsoluteTimeWindowConstraintTest {
         OptimizationProblem problem = problem(List.of(job(1, 20.0, 0.0, 0, 2, 3)), prices(10, 10, 10),
                 cpuCapacity(256.0), List.of(constraint));
 
-        AllocationResult exactResult = EXACT.solve(problem).orElseThrow();
+        AllocationResult exactResult = EXACT.solve(problem, BUDGET).orElseThrow();
         assertThat(ContractRules.violations(problem, exactResult)).isEmpty();
         assertThat(outcome(exactResult).status()).isEqualTo(PerJobStatus.NO_FEASIBLE_SLOT);
 
@@ -112,7 +113,7 @@ class AbsoluteTimeWindowConstraintTest {
             OptimizationProblem randomProblem = problem(List.of(theJob), prices(perHour), cpuCapacity(256.0),
                     List.of(constraint));
 
-            AllocationResult exactResult = EXACT.solve(randomProblem).orElseThrow();
+            AllocationResult exactResult = EXACT.solve(randomProblem, BUDGET).orElseThrow();
             assertThat(ContractRules.violations(randomProblem, exactResult)).as("case %d", checked).isEmpty();
             AllocationResult heuristicResult = HEURISTIC.solve(randomProblem);
             assertThat(ContractRules.violations(randomProblem, heuristicResult)).as("case %d", checked).isEmpty();

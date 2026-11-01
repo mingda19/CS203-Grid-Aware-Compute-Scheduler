@@ -11,7 +11,6 @@ import com.gacs.backend.model.AuditEvent;
 import com.gacs.backend.model.Job;
 import com.gacs.backend.model.OptimizationPlan;
 import com.gacs.backend.model.OptimizerRun;
-import com.gacs.backend.model.OptimizerRunStatus;
 import com.gacs.backend.model.ReviewState;
 import com.gacs.backend.model.User;
 import com.gacs.backend.repository.AuditEventRepository;
@@ -106,7 +105,7 @@ class ScheduleExportServiceTest {
     private void storeApproved(String resultJson) {
         OptimizerRun run = OptimizerRun.builder().id(RUN_ID.toString()).createdAt(Instant.parse("2026-11-01T00:00:00Z"))
                 .solverName("HybridAllocationSolver").solverVersion("1").solverConfig("{\"cpuKwhPerHour\":0.05}")
-                .status(OptimizerRunStatus.SCHEDULED).provenOptimal(true).build();
+                .build();
         OptimizationPlan plan = new OptimizationPlan(run, owner, resultJson, List.of(), run.getCreatedAt());
         storedRun = run;
         ReflectionTestUtils.setField(plan, "runId", RUN_ID.toString());

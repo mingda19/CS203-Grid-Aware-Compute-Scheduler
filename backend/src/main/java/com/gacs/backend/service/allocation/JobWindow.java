@@ -17,7 +17,7 @@ import java.util.function.Predicate;
  *   <li>every slot it uses has a forecast price, and the slots are consecutive, so a run cannot
  *       cross an unpriced hour;</li>
  *   <li>every slot it uses satisfies this window's extra restriction, if any ({@link #restrictedTo}) -
- *       the mechanism {@link Constraint#restrict} narrows a job's window through.</li>
+ *       the mechanism {@link PlacementConstraint#restrict} narrows a job's window through.</li>
  * </ul>
  * Shared by the solvers and the brute-force checker so they agree on what is allowed.
  */

@@ -49,7 +49,7 @@ class ScheduleRunPersistenceTest {
         OptimizeResponseDto response = response(List.of(outcome), List.of(dtoItem(outcome)));
 
         ScheduleRunPersistence.Persisted persisted = persistence.persist(
-                new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+                new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER);
 
         assertThat(persisted.run().getRunId()).isEqualTo(response.runId());
         assertThat(persisted.items()).hasSize(1);
@@ -66,7 +66,7 @@ class ScheduleRunPersistenceTest {
         JobOutcome outcome = new JobOutcome(job, singleSlotPlan(job, T0), PerJobStatus.OPTIMISED, null);
         OptimizeResponseDto response = response(List.of(outcome), List.of(dtoItem(outcome)));
         ScheduleRunPersistence.Persisted persisted = persistence.persist(
-                new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+                new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER);
 
         LlmExplanationResponse llmResponse = new LlmExplanationResponse("LLM headline", "LLM narrative",
                 List.of(new LlmExplanationResponse.JobExplanation(41L, "LLM: separate-step explanation")),
@@ -78,7 +78,7 @@ class ScheduleRunPersistenceTest {
         // persisted.items()/.impacts() are deliberately never passed in here - only the run id,
         // exactly as ScheduleRunRecorder calls it, to prove finalizeExplanation looks the rows up
         // itself rather than needing the caller to hand back live references.
-        persistence.finalizeExplanation(persisted.run().getId(), explanation, response);
+        persistence.finalizeExplanation(persisted.run().getId(), explanation, response, ignored -> { });
 
         var savedItem = items.findByScheduleRunIdOrderByIdAsc(persisted.run().getId()).get(0);
         assertThat(savedItem.getWhyThisPlacement()).isEqualTo("LLM: separate-step explanation");
@@ -97,10 +97,10 @@ class ScheduleRunPersistenceTest {
         JobOutcome outcome = new JobOutcome(job, singleSlotPlan(job, T0), PerJobStatus.OPTIMISED, null);
         OptimizeResponseDto response = response(List.of(outcome), List.of(dtoItem(outcome)));
         ScheduleRunPersistence.Persisted persisted = persistence.persist(
-                new AllocationResult(List.of(outcome), true), List.of(), response, OWNER);
+                new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER);
 
         persistence.finalizeExplanation(persisted.run().getId(),
-                ExplanationOutcome.fallback(FallbackReason.TIMEOUT), response);
+                ExplanationOutcome.fallback(FallbackReason.TIMEOUT), response, ignored -> { });
 
         var savedItem = items.findByScheduleRunIdOrderByIdAsc(persisted.run().getId()).get(0);
         assertThat(savedItem.getWhyThisPlacement()).isEqualTo("Placed on its cheapest feasible plan.");
