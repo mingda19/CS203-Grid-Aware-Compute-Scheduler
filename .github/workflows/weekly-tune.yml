@@ -1,0 +1,78 @@
+name: Weekly Continuous-Learning Tune
+
+on:
+  schedule:
+    # Sundays 20:30 UTC - comfortably after daily-pipeline.yml's own daily
+    # 19:30 UTC run (scheduled runs are best-effort per GitHub's docs, hence
+    # the :30 offset there too - see that file's own comment), so this
+    # week's tune sees that day's ingested data rather than racing it.
+    - cron: '30 20 * * 0'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Which target(s) to tune (leave blank for both)'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - y0
+          - y1
+      kind:
+        description: 'Which model kind(s) to tune (leave blank for both)'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - lstm
+          - lear
+      dry_run:
+        description: 'Tune and score, but never promote or advance the validation cursor'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: weekly-tune
+  cancel-in-progress: false
+
+jobs:
+  tune:
+    name: Run update.py
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: data_scripts
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: data_scripts/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run weekly tune (update.py)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          args=()
+          if [ -n "${{ github.event.inputs.target }}" ]; then
+            args+=(--target "${{ github.event.inputs.target }}")
+          fi
+          if [ -n "${{ github.event.inputs.kind }}" ]; then
+            args+=(--kind "${{ github.event.inputs.kind }}")
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
+            args+=(--dry-run)
+          fi
+          python update.py "${args[@]}"

@@ -1,4 +1,7 @@
 # CPU-only torch wheels on Linux (CI/servers): the default PyPI wheel bundles CUDA and is several GB.
+# torch is only actually imported by predict_lstm.py's path (predictions._lstm_module); scikit-learn/joblib
+# only by predict_lear.py's (predictions._lear_module, model/lear_model.py's per-hour LASSO) - each is
+# installed here for either script to run in the same environment, but neither pulls in the other's at import time.
 --extra-index-url https://download.pytorch.org/whl/cpu
 openmeteo-requests
 pandas
@@ -9,5 +12,6 @@ gridstatusio
 sqlalchemy
 psycopg2-binary
 scikit-learn
+joblib
 holidays
 torch
