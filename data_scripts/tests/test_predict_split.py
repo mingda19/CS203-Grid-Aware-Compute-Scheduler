@@ -150,12 +150,11 @@ class BuildLearFrameTests(unittest.TestCase):
 
 
 class ReferenceRmseTests(unittest.TestCase):
-    def test_falls_back_to_hardcoded_dict_when_table_is_missing(self):
+    def test_none_when_table_is_missing(self):
         engine = sa.create_engine("sqlite:///:memory:")  # no rmse_reference table at all
-        ref = pred.load_reference_rmse(engine, "lstm", "y0")
-        self.assertEqual(ref, pred.REFERENCE_RMSE[("lstm", "y0")])
+        self.assertIsNone(pred.load_reference_rmse(engine, "lstm", "y0"))
 
-    def test_reads_a_complete_row_from_the_table_over_the_dict(self):
+    def test_reads_a_complete_row_from_the_table(self):
         engine = sa.create_engine("sqlite:///:memory:")
         with engine.begin() as conn:
             conn.execute(sa.text(
@@ -167,7 +166,7 @@ class ReferenceRmseTests(unittest.TestCase):
         ref = pred.load_reference_rmse(engine, "lear", "y0")
         self.assertEqual(ref, [5.0 + h for h in range(24)])
 
-    def test_incomplete_row_falls_back_to_the_dict(self):
+    def test_incomplete_row_is_none(self):
         engine = sa.create_engine("sqlite:///:memory:")
         with engine.begin() as conn:
             conn.execute(sa.text(
@@ -176,8 +175,7 @@ class ReferenceRmseTests(unittest.TestCase):
             conn.execute(sa.text(
                 "INSERT INTO rmse_reference (model_kind, target, hour_utc, rmse) VALUES ('lstm', 'y0', 0, 1.0)"
             ))
-        ref = pred.load_reference_rmse(engine, "lstm", "y0")
-        self.assertEqual(ref, pred.REFERENCE_RMSE[("lstm", "y0")])
+        self.assertIsNone(pred.load_reference_rmse(engine, "lstm", "y0"))
 
 
 if __name__ == "__main__":

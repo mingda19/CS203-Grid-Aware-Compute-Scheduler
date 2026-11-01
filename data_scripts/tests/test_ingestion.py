@@ -192,6 +192,44 @@ class WeatherFetchTests(unittest.TestCase):
         self.assertEqual(out["temperature_2m"].tolist(), [9.4, 7.8])
 
 
+class UpdateAllWeatherSinceTests(unittest.TestCase):
+    """update_all_weather(engine, since=...) previously had no `since`
+    parameter at all - main() had nothing to pass it even if it had tried to,
+    so --since silently did nothing for weather while still correctly
+    backfilling EIA/DAM (both of which do thread `since` through). No network:
+    make_openmeteo_client and update_weather are monkeypatched to capture the
+    date range actually requested, without calling Open-Meteo or touching a DB."""
+
+    def setUp(self):
+        self.calls = []
+        self._real_client, self._real_update = ing.make_openmeteo_client, ing.update_weather
+        ing.make_openmeteo_client = lambda: object()
+        ing.update_weather = lambda engine, client, dataset, start_date, end_date: (
+            self.calls.append((dataset.name, start_date, end_date)), (0, 0))[1]
+
+    def tearDown(self):
+        ing.make_openmeteo_client, ing.update_weather = self._real_client, self._real_update
+
+    def test_since_extends_the_start_date_back(self):
+        ing.update_all_weather(None, reference_date=date(2026, 11, 2), since=date(2026, 2, 1))
+        starts = {start for _, start, _ in self.calls}
+        ends = {end for _, _, end in self.calls}
+        self.assertEqual(starts, {"2026-02-01"})
+        self.assertEqual(ends, {"2026-11-05"})  # reference_date + 3 days, unaffected by since
+        self.assertEqual(len(self.calls), len(ing.WEATHER_DATASETS))
+
+    def test_no_since_keeps_the_normal_yesterday_start(self):
+        ing.update_all_weather(None, reference_date=date(2026, 11, 2))
+        starts = {start for _, start, _ in self.calls}
+        self.assertEqual(starts, {"2026-11-01"})
+
+    def test_since_in_the_future_relative_to_yesterday_is_not_used(self):
+        # since is a backfill request, never a way to shrink the normal window.
+        ing.update_all_weather(None, reference_date=date(2026, 11, 2), since=date(2026, 11, 2))
+        starts = {start for _, start, _ in self.calls}
+        self.assertEqual(starts, {"2026-11-01"})
+
+
 # --------------------------------------------------------------------------- #
 # GridStatus DAM price - normalize logic is unchanged from gridstatus_pull.py;
 # what's new is that update_dam_prices upserts into the DB instead of merging

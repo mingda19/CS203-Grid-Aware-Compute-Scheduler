@@ -59,25 +59,18 @@ file) or `model_artifacts.format` (Supabase):
                    from a local .json file for that script's own use.
 
 This module is the shared library (feature engineering, confidence scoring,
-DB writes) for predict_lstm.py and predict_lear.py, and can still be run
-directly for local-file testing/dev (both production scripts load from
-Supabase instead - see run_predictions_from_supabase).
+DB writes) for predict_lstm.py and predict_lear.py - it has no CLI of its
+own. For local-file testing/dev against a specific artifact, use either
+script's --model-path (production loads from Supabase instead - see
+run_predictions_from_supabase).
 
-Usage:
-  python predictions.py                       # both horizons, anchored on today (UTC) - local-file dev/testing
-  python predictions.py --date 2026-03-02     # anchor on that UTC date instead of today
-  python predictions.py --horizon y0          # only the 48h-ahead target
-  python predictions.py --model-y0 ../model/models/xgboost_y0_full.json  # same, retired XGBoost (comparison only)
-
-Or import: from predictions import run_predictions, run_predictions_from_supabase
+Import: from predictions import run_predictions, run_predictions_from_supabase
 """
 
 from __future__ import annotations
 
-import argparse
 import logging
 import sys
-import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -93,8 +86,6 @@ logger = logging.getLogger("predictions")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 MODEL_DIR = SCRIPT_DIR.parent / "model"
-DEFAULT_MODEL_PATH_Y0 = MODEL_DIR / "models" / "lstm_y0_full.pt"
-DEFAULT_MODEL_PATH_Y1 = MODEL_DIR / "models" / "lstm_y1_full.pt"
 DEFAULT_LOCATION = "LZ_NORTH"
 # Hours from the anchor day ("now") to each target day's start - model/model.md S9.
 LEAD_HOURS = {"y0": 48, "y1": 72}
@@ -103,38 +94,16 @@ LEAD_HOURS = {"y0": 48, "y1": 72}
 WINSORIZE_LOWER = -1393.85
 WINSORIZE_UPPER = 1506.55
 
-# Reference RMSE per (model kind, horizon, hour-of-day UTC of the TARGET hour),
-# measured once on model/evaluate.py's held-out run (model/reports/
-# forecasts_holdout_y0.parquet / forecasts_holdout_y1.parquet). Used as the
-# denominator of a raw uncertainty ratio (how a recent run of real-world
-# errors for this exact slot compares to what held-out evaluation said to
-# expect), which confidence_scores() below converts to the bounded (0, 100]
-# score actually written to the DB - nothing downstream (the API, the alert
-# service) converts it again.
-#
-# Superseded by the `rmse_reference` table (recomputed periodically by
-# recompute_reference_rmse.py from real recent residuals, not frozen at
-# whatever this dict said the day someone last remembered to update it -
-# model/model.md's continuous-learning section, point 4): confidence_scores()
-# reads that table first when given an `engine`, via load_reference_rmse(),
-# and only falls back to this dict when the table has no complete row yet for
-# a (kind, horizon) - e.g. "lear" has no entries below at all, since it never
-# existed when this dict was hand-written; it relies entirely on the DB table
-# once recompute_reference_rmse.py has run for it at least once.
-REFERENCE_RMSE: dict[tuple[str, str], list[float]] = {
-    ("xgb", "y0"):  [60.12, 53.73, 48.09, 38.24, 20.49, 17.81, 12.59, 14.20,
-                     15.62, 20.16, 21.80, 24.86, 25.21, 26.20, 20.70, 16.44,
-                     16.45, 15.44, 16.25, 17.61, 19.51, 25.67, 27.16, 35.22],
-    ("lstm", "y0"): [44.74, 39.72, 42.22, 33.21, 11.51,  8.72,  6.99,  6.93,
-                       7.01,  7.00,  8.23,  9.29,  9.79,  8.94,  8.46,  8.67,
-                       8.37,  8.47,  9.38, 11.06, 13.94, 15.83, 15.46, 23.23],
-    ("xgb", "y1"):  [60.38, 54.94, 49.21, 37.36, 19.17, 17.79, 12.38, 12.56,
-                     10.30, 10.91, 12.21, 14.30, 17.58, 17.69, 13.79, 13.45,
-                     12.69, 14.10, 14.88, 16.57, 19.35, 23.83, 24.80, 35.08],
-    ("lstm", "y1"): [46.40, 42.50, 42.13, 32.97, 11.38,  8.55,  6.56,  6.18,
-                       6.07,  6.04,  7.27,  8.57,  8.99,  8.91,  9.53,  9.78,
-                       9.17,  9.21, 10.58, 13.27, 17.30, 19.79, 19.53, 25.67],
-}
+# Reference RMSE per (model kind, horizon, hour-of-day UTC of the TARGET
+# hour) lives in Supabase (`rmse_reference`, recomputed periodically by
+# recompute_reference_rmse.py from real recent residuals - model/model.md's
+# continuous-learning section, point 4), not a hand-maintained dict here -
+# load_reference_rmse() below reads it directly. Used as the denominator of
+# a raw uncertainty ratio (how a recent run of real-world errors for this
+# exact slot compares to what that recompute said to expect), which
+# confidence_scores() converts to the bounded (0, 100] score actually
+# written to the DB - nothing downstream (the API, the alert service)
+# converts it again.
 CONFIDENCE_LOOKBACK_DAYS = 21  # enough for a 7-day-halflife EWM to shed its startup transient
 CONFIDENCE_HALFLIFE_DAYS = 7
 MIN_CONFIDENCE_SAMPLES = 3  # fewer points make "decay" meaningless - that hour is left out, not guessed
@@ -372,30 +341,25 @@ def decayed_abs_residuals_by_hour(df: pd.DataFrame, min_samples: int = MIN_CONFI
 def load_reference_rmse(engine: sa.Engine, kind: str, horizon: str) -> list[float] | None:
     """24-hour RMSE reference from `rmse_reference` (recomputed periodically
     by recompute_reference_rmse.py from real recent residuals - model/model.md's
-    continuous-learning section, point 4), falling back to the hand-maintained
-    REFERENCE_RMSE dict below if the DB has no (complete) row yet for this
-    (kind, horizon) - e.g. a brand-new model kind before its first recompute
-    cycle has run. Also falls back there if the table itself doesn't exist
-    yet (rmse_reference is created by the backend's RmseReference entity -
-    ddl-auto=update - which may not have booted yet in a brand-new
-    deployment, or at all in an offline test's minimal DB): a missing
-    reference table degrading confidence scores rather than crashing
-    predictions outright is the same philosophy as
-    decayed_abs_residuals_by_hour returning {} for "no live history yet".
-    None if nothing has anything."""
+    continuous-learning section, point 4). None if the table has no complete
+    row yet for this (kind, horizon) - e.g. a brand-new model kind before its
+    first recompute cycle has run - or doesn't exist yet at all (rmse_reference
+    is created by the backend's RmseReference entity, ddl-auto=update, which
+    may not have booted yet in a brand-new deployment, or at all in an
+    offline test's minimal DB): a missing reference degrading confidence
+    scores rather than crashing predictions outright is the same philosophy
+    as decayed_abs_residuals_by_hour returning {} for "no live history yet"."""
     query = sa.text("SELECT hour_utc, rmse FROM rmse_reference WHERE model_kind = :kind AND target = :horizon")
     try:
         with engine.begin() as conn:
             rows = dict(conn.execute(query, {"kind": kind, "horizon": horizon}).all())
     except sa.exc.DBAPIError:
         rows = {}
-    if len(rows) == 24:
-        return [rows[h] for h in range(24)]
-    return REFERENCE_RMSE.get((kind, horizon))
+    return [rows[h] for h in range(24)] if len(rows) == 24 else None
 
 
 def confidence_scores(kind: str, horizon: str, decayed_by_hour: dict[int, float],
-                      engine: sa.Engine | None = None) -> dict[int, float]:
+                      engine: sa.Engine) -> dict[int, float]:
     """{hour: confidence percentage} for all 24 hours, from the raw ratio
     `decayed_abs_residual / reference_rmse[hour]` mapped through
     `100 / (1 + ratio)`: bounded (0, 100], parameter-free, and with a
@@ -404,12 +368,9 @@ def confidence_scores(kind: str, horizon: str, decayed_by_hour: dict[int, float]
     50 is better than the reference, below is worse. This is the FINAL value
     written to `predicted_price.confidence_score` - nothing downstream
     converts it again. NaN (never 0, never 100) wherever decayed_by_hour has
-    no entry for that hour (no live history yet for this slot).
-
-    `engine` is optional: pass it to read the reference from `rmse_reference`
-    (falling back to REFERENCE_RMSE - see load_reference_rmse), or omit it to
-    use REFERENCE_RMSE directly, as every caller did before that table existed."""
-    ref = load_reference_rmse(engine, kind, horizon) if engine is not None else REFERENCE_RMSE.get((kind, horizon))
+    no entry for that hour (no live history yet for this slot), or
+    load_reference_rmse(engine, kind, horizon) has none for it either."""
+    ref = load_reference_rmse(engine, kind, horizon)
     out: dict[int, float] = {}
     for hour in range(24):
         residual = decayed_by_hour.get(hour)
@@ -829,36 +790,3 @@ def run_predictions_from_supabase(engine: sa.Engine, model_kind: str, horizons: 
         results.append(_predict_and_write(engine, kind, model, row["model_version"], horizon,
                                           anchor_date, generated_at, location))
     return results
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Predict LZ_NORTH DAM prices (y0: 48h ahead, y1: 72h ahead) "
-                                                 "and write them to predicted_price.")
-    parser.add_argument("--date", type=date.fromisoformat, dest="anchor_date",
-                        help="anchor UTC date - \"now,\" the day features are safely known as of "
-                            "(default: today). Target dates are this plus 48h (y0) / 72h (y1).")
-    parser.add_argument("--horizon", choices=["y0", "y1", "both"], default="both")
-    parser.add_argument("--model-y0", type=Path, default=DEFAULT_MODEL_PATH_Y0,
-                        help="saved y0 model: .json (XGBoost) or .pt (LSTM)")
-    parser.add_argument("--model-y1", type=Path, default=DEFAULT_MODEL_PATH_Y1,
-                        help="saved y1 model: .json (XGBoost) or .pt (LSTM)")
-    args = parser.parse_args()
-
-    logging.Formatter.converter = time.gmtime
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
-                        datefmt="%Y-%m-%dT%H:%M:%SZ")
-
-    model_paths = {h: p for h, p in [("y0", args.model_y0), ("y1", args.model_y1)]
-                  if args.horizon in (h, "both")}
-
-    engine = ing.make_engine()
-    try:
-        run_predictions(engine, model_paths, anchor_date=args.anchor_date)
-    except Exception:
-        logger.exception("Prediction run FAILED")
-        sys.exit(1)
-    sys.exit(0)
-
-
-if __name__ == "__main__":
-    main()

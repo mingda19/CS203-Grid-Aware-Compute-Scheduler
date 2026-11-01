@@ -303,8 +303,16 @@ def update_weather(engine: sa.Engine, client: openmeteo_requests.Client, dataset
     return upsert_dataframe(engine, dataset.table, new, ["location_id", "time"])
 
 
-def update_all_weather(engine: sa.Engine, reference_date: date | None = None) -> None:
-    """Fetch yesterday through +3 days (UTC) for all 4 weather datasets.
+def update_all_weather(engine: sa.Engine, reference_date: date | None = None, since: date | None = None) -> None:
+    """Fetch (since or yesterday) through +3 days (UTC) for all 4 weather
+    datasets. `since` (--since) backfills history, same as
+    update_all_eia_data/update_all_dam_prices - previously this function had
+    no such parameter at all, so main() had nothing to pass it even if it had
+    tried to (it didn't - see run_ingestion()/main() history): --since
+    silently did nothing for weather while still correctly backfilling EIA
+    and DAM. One call, not chunked by day - see this module's own history
+    for whether a large `since` backfill needs chunking against Open-Meteo's
+    historical-forecast endpoint before relying on this for a multi-month gap.
 
     Through +3 days, not just tomorrow, on purpose: predictions.py predicts
     y_0 (2 days out) and y_1 (3 days out), and needs the target day's
@@ -322,10 +330,10 @@ def update_all_weather(engine: sa.Engine, reference_date: date | None = None) ->
     failed outright."""
     client = make_openmeteo_client()
     today = reference_date or datetime.now(timezone.utc).date()
-    yesterday = today - timedelta(days=1)
+    start = min(since, today - timedelta(days=1)) if since else today - timedelta(days=1)
     furthest_target = today + timedelta(days=3)
     for dataset in WEATHER_DATASETS:
-        added, total = update_weather(engine, client, dataset, yesterday.isoformat(), furthest_target.isoformat())
+        added, total = update_weather(engine, client, dataset, start.isoformat(), furthest_target.isoformat())
         logger.info("[weather:%s] +%d new, %d total in %s", dataset.name, added, total, dataset.table)
 
 
@@ -616,7 +624,7 @@ def main() -> None:
     try:
         result = run_ingestion(
             engine,
-            weather_fn=(lambda eng: update_all_weather(eng)) if "weather" in only else (lambda eng: None),
+            weather_fn=(lambda eng: update_all_weather(eng, since=args.since)) if "weather" in only else (lambda eng: None),
             eia_fn=(lambda eng: update_all_eia_data(eng, since=args.since)) if "eia" in only else (lambda eng: None),
             dam_fn=(lambda eng: update_all_dam_prices(eng, since=args.since)) if "dam" in only else (lambda eng: None),
         )
