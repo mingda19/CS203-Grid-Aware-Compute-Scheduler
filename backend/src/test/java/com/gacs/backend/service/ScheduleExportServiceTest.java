@@ -64,6 +64,7 @@ class ScheduleExportServiceTest {
     @Mock private AuditEventRepository auditEvents;
     @Mock private JobRepository jobs;
     @Mock private UserRepository users;
+    @Mock private ScheduleInputs inputs;
 
     private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
     private User owner;
@@ -74,14 +75,14 @@ class ScheduleExportServiceTest {
     void setUp() {
         owner = new User(EMAIL, "password", "Operator", "ROLE_USER");
         ReflectionTestUtils.setField(owner, "id", 7L);
-        when(users.findByEmail(EMAIL)).thenReturn(Optional.of(owner));
+        when(inputs.lock(EMAIL)).thenReturn(owner);
         when(plans.findOwnedInStateCreatedAfter(anyLong(), any(), any())).thenReturn(List.of());
     }
 
     private ScheduleExportService service(String now) {
-        return new ScheduleExportService(plans, auditEvents, jobs, users, new ApprovedScheduleCsvSerializer(),
-                new ApprovedScheduleJsonSerializer(), new StoredScheduleReader(),
-                Clock.fixed(Instant.parse(now), ZoneOffset.UTC));
+        return new ScheduleExportService(new ScheduleGate(plans, auditEvents, jobs,
+            new StoredScheduleReader(), Clock.fixed(Instant.parse(now), ZoneOffset.UTC), inputs),
+            new ApprovedScheduleCsvSerializer(), new ApprovedScheduleJsonSerializer());
     }
 
     private static ScheduleItem scheduled(long jobId, double cpuHours) {
@@ -111,7 +112,7 @@ class ScheduleExportServiceTest {
         ReflectionTestUtils.setField(plan, "runId", RUN_ID.toString());
         plan.recordDecision(AuditActionType.APPROVE);
         assertThat(plan.getReviewState()).isEqualTo(ReviewState.APPROVED);
-        when(plans.findOwned(RUN_ID.toString(), 7L)).thenReturn(Optional.of(plan));
+        when(plans.findOwnedForUpdate(RUN_ID.toString(), 7L)).thenReturn(Optional.of(plan));
         storedApproval = AuditEvent.builder().id(1L).actor(EMAIL).actionType(AuditActionType.APPROVE)
                 .timestamp(Instant.parse("2026-11-01T00:00:00Z")).runId(RUN_ID.toString())
                 .scheduleHash(ScheduleHashUtil.computeSha256(resultJson)).operatorRationale("ok").build();
@@ -147,9 +148,10 @@ class ScheduleExportServiceTest {
         assertThatThrownBy(() -> service("2026-11-11T00:00:00Z").export(RUN_ID, Format.CSV, EMAIL))
                 .isInstanceOfSatisfying(ScheduleExportRejectedException.class,
                         e -> assertThat(e.getReason()).isEqualTo(Reason.STALE));
+        // Once stale, changing the clock or inputs cannot restore eligibility.
         assertThatThrownBy(() -> service("2026-11-09T00:00:00Z").export(RUN_ID, Format.CSV, EMAIL))
                 .isInstanceOfSatisfying(ScheduleExportRejectedException.class,
-                        e -> assertThat(e.getReason()).isEqualTo(Reason.INVALIDATED));
+                        e -> assertThat(e.getReason()).isEqualTo(Reason.STALE));
     }
 
     @Test

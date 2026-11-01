@@ -28,6 +28,9 @@ public interface OptimizationPlanRepository extends JpaRepository<OptimizationPl
                                                         @Param("state") ReviewState state,
                                                         @Param("after") Instant after);
 
+    List<OptimizationPlan> findByOwnerIdAndReviewState(Long ownerId, ReviewState state);
+    List<OptimizationPlan> findByReviewState(ReviewState state);
+
     /** Plans with no recorded job IDs: stored before they were kept, or with no jobs at all. */
     @Query("select p from OptimizationPlan p where p.jobIds is empty")
     List<OptimizationPlan> findWithoutJobIds();
