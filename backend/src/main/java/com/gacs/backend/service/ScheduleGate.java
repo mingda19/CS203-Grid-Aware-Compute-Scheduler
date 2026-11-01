@@ -14,6 +14,7 @@ import com.gacs.backend.model.User;
 import com.gacs.backend.repository.AuditEventRepository;
 import com.gacs.backend.repository.JobRepository;
 import com.gacs.backend.repository.OptimizationPlanRepository;
+import com.gacs.backend.service.allocation.OptimizationProblem;
 import com.gacs.backend.util.ScheduleHashUtil;
 import org.springframework.stereotype.Service;
 
@@ -89,6 +90,7 @@ public class ScheduleGate {
             String mismatch = inputs.mismatch(plan, email);
             if (mismatch != null) throw invalidated(plan.getRunId(), mismatch);
             requireJobsUnchanged(plan.getRunId(), schedule, plan.getOwner());
+            requireInputsUnchanged(plan, StoredScheduleReader.jobIds(schedule), plan.getOwner());
             return new Checked(schedule, approval);
         } catch (ScheduleExportRejectedException ex) {
             if (ex.getReason() != Reason.NOT_APPROVED)
@@ -192,6 +194,21 @@ public class ScheduleGate {
                         + " is now before its scheduled end " + utc(item.scheduledEnd()));
             }
         }
+    }
+
+    /** Compare the solver's canonical jobs with current jobs, independently of plan provenance. */
+    private void requireInputsUnchanged(OptimizationPlan plan, Set<Long> jobIds, User owner) {
+        String snapshot = plan.getRun().getInputSnapshot();
+        if (snapshot == null) return; // Runs created before GRID-141 have no solver snapshot.
+        String solved = snapshot.lines().findFirst().orElse("");
+        String current = jobs.findByOwnerEmailAndIdIn(owner.getEmail(), List.copyOf(jobIds)).stream()
+            .sorted(Comparator.comparing(Job::getId))
+            .map(job -> OptimizationProblem.jobEntry(job.getId(), job.getCpuHours(), job.getGpuHours(),
+                job.earliestAllowedStart(), job.getDeadline(), job.getFlexibilityWindowHours(), job.isExempt(),
+                job.getPriority()))
+            .collect(Collectors.joining(";"));
+        if (!solved.equals(current))
+            throw invalidated(plan.getRunId(), "its jobs have changed since the schedule was generated");
     }
 
     private static List<ScheduleItem> items(OptimizeResponseDto schedule) {

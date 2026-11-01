@@ -999,6 +999,33 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 
 ### 6.5 Operator decisions (GRID-11 AC2 / AC2.2)
 
+#### Browsing plans for review (GRID-55)
+
+`GET /api/schedules?page=0&size=20` returns a standard `ApiResponse<Page<PlanSummary>>`
+for the authenticated operator only, newest first by `createdAt`, then descending `runId`.
+Each summary contains `runId`, UTC `createdAt`, and `reviewState` (`PENDING`, `APPROVED`,
+`REJECTED`, `REVISION_REQUESTED`, `STALE`, or `INVALIDATED`). Page indices start at zero;
+`size` must be 1–100. Invalid pagination returns **400**. Missing authentication returns
+**403**; an authenticated email without a database user returns **401**. Administrators
+cannot list another operator's plans.
+
+The list reports stored states. Before offering decisions, the UI reads
+`GET /api/schedules/{runId}` (§6.8) to check validity and display the persisted recommendation.
+A **409** decision refusal retains its error message and requires a refresh before another
+decision. Approval, rejection, and revision each require explicit confirmation with a
+justification. The UI updates state only after a successful server response and refreshes
+decision history. It does not imply that an approval dispatched a workload.
+
+The Jobs optimization summary links to `/approvals?runId={runId}` with **Review and approve**.
+The review page selects that exact run, including runs outside the first list page. Once approval
+succeeds, **Add approved schedule to calendar** calls `POST /api/schedules/{runId}/apply` (§6.8).
+Jobs no longer creates individual calendar entries from an unapproved optimization preview.
+An already approved run does not require another approval before applying it. Application
+refusals require refreshing the plan; the backend remains authoritative if approval changes
+between reviewing and applying.
+
+#### Recording a decision
+
 All routes require JWT authentication and ownership of the persisted optimization plan. Existing users act as operators; administrator privileges do not bypass ownership. The operator's numeric database ID is resolved from the authenticated email, never from request fields or the JWT's numeric user ID claim.
 
 | Route | Recorded action | New review state |
@@ -1062,6 +1089,7 @@ Both require JWT authentication and ownership of the plan, with the same identit
 | 4 | At least one of its slots has not ended: now (UTC) is before the latest `scheduledEnd` | **409**, `data.reason = "STALE"` |
 | 5 | No later-approved `APPROVED` plan of the same owner lists any of the same `jobId`s | **409**, `data.reason = "STALE"` |
 | 6 | Every scheduled job is still in the owner's jobs (§6.3) and the plan still fits it, by the §6.4 window rules: its CPU and GPU hours equal the job's `allocatedCpuHours` / `allocatedGpuHours`; `scheduledStart` lies in [`originalStartTime` truncated to the hour, that + `flexibilityWindowHours`] (exactly `originalStartTime` when `isExempt`); and `scheduledEnd` is no later than `deadline` truncated to the hour | **409**, `data.reason = "INVALIDATED"` |
+| 7 | (GRID-141) Every job in the run is exactly as the optimiser was given it: the run stores a snapshot of its inputs (`optimizer_runs.input_snapshot`, jobs sorted by id, then prices, then capacity) and its SHA-256 (`input_hash`); the shared approval/application/export gate rebuilds the jobs line from the owner's jobs now (id, CPU and GPU hours, `originalStartTime` truncated to the hour, `deadline`, `flexibilityWindowHours`, `isExempt`, `priority`). Name and non-cancelled status are ignored. This solver snapshot is separate from the job/facility provenance in `optimization_plans.input_snapshot`. Runs without a solver snapshot skip this comparison but still require valid plan provenance | **409**, `data.reason = "INVALIDATED"` |
 
 `NO_FEASIBLE_SLOT` jobs do not contribute to elapsed-slot detection, but all input jobs participate in provenance validation (§6.8). Current job and facility scheduling revisions must match the stored input snapshot. Material changes invalidate the plan even when its original slots remain feasible. Cosmetic edits and ordinary execution status changes do not invalidate it. Invalidation and staleness are permanent for a run; withdrawing a superseding approval does not revive earlier plans. Export refusals persist detected invalidation/staleness, without adding operator decision events. The message explains the refusal, for example:
 

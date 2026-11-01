@@ -3,6 +3,8 @@ package com.gacs.backend.service.allocation;
 import com.gacs.backend.model.JobPriority;
 import com.gacs.backend.service.PriceSeries;
 
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -11,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * A validated optimisation run: what {@link OptimizationProblemFactory} produces from a request and
@@ -87,6 +90,45 @@ public record OptimizationProblem(
 
     public JobPlan baselineOf(OptimizerJob job) {
         return baselines.get(job);
+    }
+
+    /**
+     * Canonical text of this run's inputs, stored with the run and hashed so a later change can be
+     * detected (GRID-141). Line 1: the jobs, sorted by id, name left out (see {@link #jobEntry}).
+     * Line 2: the price of every priced slot. Line 3: the capacity limit of those same slots, the
+     * only slots the solver can use.
+     */
+    public String snapshot() {
+        String jobLine = jobs.stream()
+                .sorted(Comparator.comparing(OptimizerJob::id, Comparator.nullsLast(Comparator.<Long>naturalOrder())))
+                .map(job -> jobEntry(job.id(), job.cpuHours(), job.gpuHours(), job.originalStartTime(),
+                        job.deadline(), job.flexibilityWindowHours(), job.exempt(), job.priority()))
+                .collect(Collectors.joining(";"));
+        StringBuilder priceLine = new StringBuilder();
+        StringBuilder capacityLine = new StringBuilder();
+        prices.asMap().forEach((slot, price) -> {
+            CapacityLimit limit = capacity.limitAt(slot);
+            priceLine.append(slot).append('=').append(number(price)).append(';');
+            capacityLine.append(slot).append('=').append(number(limit.cpuHours())).append('/')
+                    .append(number(limit.gpuHours())).append(';');
+        });
+        return jobLine + "\n" + priceLine + "\n" + capacityLine;
+    }
+
+    /**
+     * One job's line in {@link #snapshot()}. Shared with the export check, which rebuilds it from the
+     * job as it is now: one formatter, so the two can never drift apart. Priority participates in
+     * the solver's tie-break order (GRID-155).
+     */
+    public static String jobEntry(Long id, double cpuHours, double gpuHours, LocalDateTime start,
+                                  LocalDateTime deadline, int flexibilityWindowHours, boolean exempt,
+                                  JobPriority priority) {
+        return id + "," + number(cpuHours) + "," + number(gpuHours) + "," + start + "," + deadline + ","
+                + flexibilityWindowHours + "," + exempt + "," + priority;
+    }
+
+    private static String number(double value) {
+        return BigDecimal.valueOf(value).stripTrailingZeros().toPlainString();
     }
 
     /** Every declared placement constraint that governs {@code job}, in declaration order. */

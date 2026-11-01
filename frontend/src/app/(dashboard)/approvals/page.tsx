@@ -39,7 +39,6 @@ function DecisionBadge({ action }: { action: AuditActionType }) {
 }
 
 export default function ApprovalsPage() {
-  const [planApproved, setPlanApproved] = React.useState(false)
   const [decisions, setDecisions] = React.useState<AuditEvent[]>([])
   const [operator, setOperator] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
@@ -85,7 +84,7 @@ export default function ApprovalsPage() {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold tracking-tight text-foreground">
-              Operator Approvals & Dispatch
+              Operator Approvals
             </h1>
             <DataStatusBadge
               size="sm"
@@ -94,18 +93,13 @@ export default function ApprovalsPage() {
             />
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            Review algorithmic schedule optimizations with full impact projections before issuing grid dispatch commands.
+            Review schedule recommendations and record your approval, rejection, or requested changes.
           </p>
         </div>
       </div>
 
       {/* Main Decision Cockpit Panel */}
-      <DecisionPanel
-        planApproved={planApproved}
-        onApprove={() => setPlanApproved(true)}
-        onReject={() => setPlanApproved(false)}
-        onReset={() => setPlanApproved(false)}
-      />
+      <DecisionPanel onDecision={() => setReloadKey(value => value + 1)} />
 
       {/* Decision history from the audit log, with approved-schedule downloads */}
       <Card>

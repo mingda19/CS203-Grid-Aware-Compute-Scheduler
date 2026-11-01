@@ -1,524 +1,101 @@
 "use client"
 
 import * as React from "react"
-import {
-  ShieldAlert,
-  CheckCircle2,
-  AlertTriangle,
-  ArrowRight,
-  TrendingDown,
-  TrendingUp,
-  Clock,
-  Zap,
-  Cpu,
-  ChevronDown,
-  ChevronUp,
-  SlidersHorizontal,
-  XCircle,
-  RotateCcw,
-  Sparkles,
-  Info,
-  Check,
-  Server,
-  Layers,
-} from "lucide-react"
-
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card"
+import Link from "next/link"
+import { RefreshCw } from "lucide-react"
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Separator } from "@/components/ui/separator"
-import { DataStatusBadge } from "@/components/ui/data-status-badge"
-import {
-  calculateDecisionImpact,
-  formatCurrency,
-  formatMw,
-  type OptimizationWorkloadItem,
-} from "@/lib/decision-utils"
-import { DispatchConfirmationModal } from "./dispatch-confirmation-modal"
+import { useScheduleReview } from "@/hooks/use-schedule-review"
+import { reviewLabels, decisionUnavailable, calendarUnavailable } from "@/lib/schedule-review-utils"
+import { formatSgtDateTime } from "@/lib/date-utils"
+import type { ScheduleDecisionAction, SchedulePlanDetail } from "@/lib/api"
 import { RejectPlanModal } from "./reject-plan-modal"
-import { getStoredUser } from "@/lib/api"
 
-export interface DecisionPanelProps {
-  planApproved: boolean
-  onApprove: (dispatchedWorkloads: OptimizationWorkloadItem[]) => void
-  onReject: (reason: string, notes: string) => void
-  onReset: () => void
+export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
+  const review = useScheduleReview(onDecision)
+  const [action, setAction] = React.useState<ScheduleDecisionAction | null>(null)
+  const unavailable = decisionUnavailable(review.plan, "reject")
+  const disabled = review.submitting || review.listLoading || review.detailLoading || !!review.listError || !!review.detailError || review.conflict || !!unavailable
+  return <Card id="approvals">
+    <CardHeader>
+      <div className="flex items-center justify-between gap-3">
+        <CardTitle>Schedule recommendations</CardTitle>
+        <Button type="button" variant="outline" size="sm" disabled={review.submitting || review.listLoading || review.detailLoading || !!action} onClick={review.refresh}>
+          <RefreshCw className="mr-2 h-4 w-4" />Refresh plans
+        </Button>
+      </div>
+      <CardDescription>Review your saved recommendations and record an approval, rejection, or request for revision. Decisions do not dispatch workloads.</CardDescription>
+    </CardHeader>
+    <CardContent className="space-y-4">
+      {review.listLoading && <p role="status">Loading schedule plans…</p>}
+      {review.listError && <p role="alert" className="text-sm text-destructive">{review.listError} Use “Refresh plans” to retry.</p>}
+      {!review.listLoading && !review.listError && !review.plans.length && !review.selected && <p className="text-sm text-muted-foreground">No recommendations found. <Link className="underline" href="/jobs">Generate a schedule from Jobs</Link> to review it here.</p>}
+      {(!!review.plans.length || !!review.selected) && <div className="space-y-2">
+        <label htmlFor="schedule-plan-select" className="text-sm font-medium">Recommendation</label>
+        <select id="schedule-plan-select" className="w-full rounded-md border bg-background p-2 text-sm" value={review.selected} disabled={review.submitting || !!action}
+          onChange={event => review.select(event.target.value)}>
+          {review.selected && !review.plans.some(plan => plan.runId === review.selected) && <option value={review.selected}>Selected recommendation — {review.selected}</option>}
+          {review.plans.map(plan => <option key={plan.runId} value={plan.runId}>{formatSgtDateTime(plan.createdAt)} — {reviewLabels[plan.runId === review.plan?.runId ? review.plan.reviewState : plan.reviewState]} — {plan.runId}</option>)}
+        </select>
+        <div className="flex items-center gap-3 text-xs">
+          <Button type="button" size="sm" variant="outline" disabled={review.page === 0 || review.submitting || !!action} onClick={() => review.changePage(review.page - 1)}>Previous</Button>
+          <span>Page {review.page + 1} of {Math.max(1, review.totalPages)}</span>
+          <Button type="button" size="sm" variant="outline" disabled={review.page + 1 >= review.totalPages || review.submitting || !!action} onClick={() => review.changePage(review.page + 1)}>Next</Button>
+        </div>
+      </div>}
+      {review.detailLoading && <p role="status">Loading recommendation and checking its validity…</p>}
+      {review.detailError && <p role="alert" className="text-sm text-destructive">{review.detailError} Refresh plans to retry.</p>}
+      {review.conflict && <div role="alert" className="rounded-md border border-amber-500 p-3 text-sm">This schedule could not be updated because its approval or validity changed. {review.decisionError} Refresh plans to load its current state. Generate a new recommendation if it is stale or invalidated.</div>}
+      {review.decisionError && !review.conflict && <p role="alert" className="text-sm text-destructive">{review.decisionError}</p>}
+      {review.notice && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-400">{review.notice}</p>}
+      {review.plan && <>
+        <PlanRecommendation plan={review.plan} />
+        {unavailable && <p className="text-sm text-muted-foreground">{unavailable} <Link href="/jobs" className="underline">Open Jobs</Link></p>}
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" disabled={disabled || review.plan.reviewState === "APPROVED" || !!decisionUnavailable(review.plan, "approve")} onClick={() => setAction("approve")}>{review.plan.reviewState === "APPROVED" ? "Schedule approved" : "Approve schedule"}</Button>
+          <Button type="button" variant="destructive" disabled={disabled} onClick={() => setAction("reject")}>Reject schedule</Button>
+          <Button type="button" variant="outline" disabled={disabled} onClick={() => setAction("revise")}>Request revision</Button>
+          {review.plan.reviewState === "APPROVED" && <Button type="button" disabled={disabled || !!calendarUnavailable(review.plan) || review.addedToCalendar}
+            onClick={() => void review.addToCalendar()}>{review.submitting && !action ? "Adding to calendar…" : review.addedToCalendar ? "Added to calendar" : "Add approved schedule to calendar"}</Button>}
+          {review.addedToCalendar && <Button type="button" variant="outline" asChild><Link href="/workloads">Open workload calendar</Link></Button>}
+        </div>
+      </>}
+      {action && review.plan && <RejectPlanModal key={`${review.plan.runId}:${action}`} open action={action} runId={review.plan.runId}
+        onOpenChange={open => { if (!open) setAction(null) }} onSubmit={comment => review.decide(action, comment)}
+        submitting={review.submitting} error={review.decisionError} blocked={review.conflict || !!decisionUnavailable(review.plan, action)} />}
+    </CardContent>
+  </Card>
 }
 
-const initialOptimizationWorkloads: OptimizationWorkloadItem[] = []
-
-export function DecisionPanel({
-  planApproved,
-  onApprove,
-  onReject,
-  onReset,
-}: DecisionPanelProps) {
-  const [workloads, setWorkloads] = React.useState<OptimizationWorkloadItem[]>(
-    initialOptimizationWorkloads
-  )
-  const [expandedWorkloadId, setExpandedWorkloadId] = React.useState<string | null>(null)
-  const [isConfirmOpen, setIsConfirmOpen] = React.useState(false)
-  const [isRejectOpen, setIsRejectOpen] = React.useState(false)
-  const [planRejected, setPlanRejected] = React.useState(false)
-  const [rejectionReason, setRejectionReason] = React.useState<string | null>(null)
-  const [dispatchedAt, setDispatchedAt] = React.useState<string | null>(null)
-
-  const impact = React.useMemo(() => calculateDecisionImpact(workloads), [workloads])
-
-  if (workloads.length === 0) {
-    return (
-      <Card className="border-border">
-        <CardContent className="py-12 text-center space-y-3">
-          <Sparkles className="h-8 w-8 mx-auto text-muted-foreground/40" />
-          <h3 className="font-semibold text-base text-foreground">No Optimization Approvals Pending</h3>
-          <p className="text-xs text-muted-foreground max-w-sm mx-auto">
-            Submit compute workloads and trigger schedule optimization to evaluate price shifts and review approvals here.
-          </p>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  const toggleWorkloadInclusion = (id: string) => {
-    if (planApproved || planRejected) return
-    setWorkloads((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, included: !item.included } : item))
-    )
-  }
-
-  const handleApproveConfirm = () => {
-    setDispatchedAt(new Date().toUTCString())
-    onApprove(workloads.filter((w) => w.included))
-  }
-
-  const handleRejectSubmit = (reason: string, notes: string) => {
-    setPlanRejected(true)
-    setRejectionReason(reason)
-    onReject(reason, notes)
-  }
-
-  const handleResetToEvaluation = () => {
-    setPlanRejected(false)
-    setRejectionReason(null)
-    setDispatchedAt(null)
-    onReset()
-  }
-
-  return (
-    <div id="approvals" className="scroll-mt-20">
-      <Card
-        className={`border-2 transition-all shadow-md ${
-          planApproved
-            ? "border-emerald-500/50 bg-emerald-500/5 shadow-emerald-500/5"
-            : planRejected
-            ? "border-destructive/40 bg-destructive/5"
-            : "border-amber-500/60 bg-gradient-to-br from-card via-card to-amber-500/5 shadow-amber-500/10"
-        }`}
-      >
-        {/* Panel Header */}
-        <CardHeader className="pb-4">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-            <div className="flex items-start sm:items-center gap-3">
-              <div
-                className={`p-2.5 rounded-xl shadow-xs shrink-0 ${
-                  planApproved
-                    ? "bg-emerald-500 text-white"
-                    : planRejected
-                    ? "bg-destructive text-white"
-                    : "bg-amber-500 text-white animate-pulse"
-                }`}
-              >
-                {planApproved ? (
-                  <CheckCircle2 className="h-6 w-6" />
-                ) : planRejected ? (
-                  <XCircle className="h-6 w-6" />
-                ) : (
-                  <ShieldAlert className="h-6 w-6" />
-                )}
-              </div>
-              <div>
-                <div className="flex items-center gap-2.5 flex-wrap">
-                  <CardTitle className="text-lg font-bold text-foreground">
-                    {planApproved
-                      ? "Optimization Plan #2026-0920-04 Dispatched & Active"
-                      : planRejected
-                      ? "Optimization Plan #2026-0920-04 Dismissed (Fixed Baseline)"
-                      : "Human-in-the-Loop Decision: Schedule Recommendation #2026-0920-04"}
-                  </CardTitle>
-                  <DataStatusBadge
-                    size="sm"
-                    status="demo"
-                    source="Optimization Engine Solver (XGBoost-LSTM v2.4, Ingestion Latency: 1.2m)"
-                  />
-                </div>
-                <CardDescription className="text-xs mt-1 text-muted-foreground flex items-center gap-2 flex-wrap">
-                  {planApproved ? (
-                    <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-medium">
-                      <Check className="h-3.5 w-3.5" />
-                      Dispatch commands acknowledged by Slurm, Kubernetes, and Facility BMS adapters at {dispatchedAt ?? "recently"}.
-                    </span>
-                  ) : planRejected ? (
-                    <span className="flex items-center gap-1.5 text-destructive font-medium">
-                      <XCircle className="h-3.5 w-3.5" />
-                      Dismissed: {rejectionReason ?? "Standard fixed baseline maintained"}.
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-semibold">
-                      <Clock className="h-3.5 w-3.5" />
-                      Operator action required · Decision needed before 09:15 SGT (in 24 mins) before interval lock
-                    </span>
-                  )}
-                </CardDescription>
-              </div>
-            </div>
-
-            {/* Status Pills */}
-            <div className="flex items-center gap-2 self-start lg:self-center">
-              <span
-                className={`text-xs font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5 ${
-                  planApproved
-                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30"
-                    : planRejected
-                    ? "bg-destructive/15 text-destructive border border-destructive/30"
-                    : "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
-                }`}
-              >
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    planApproved
-                      ? "bg-emerald-500"
-                      : planRejected
-                      ? "bg-destructive"
-                      : "bg-amber-500 animate-ping"
-                  }`}
-                />
-                {planApproved
-                  ? "STATUS: DISPATCHED & EXECUTING"
-                  : planRejected
-                  ? "STATUS: FIXED BASELINE RETAINED"
-                  : "PENDING OPERATOR SIGN-OFF"}
-              </span>
-            </div>
-          </div>
-        </CardHeader>
-
-        <CardContent className="space-y-4">
-          {/* Plain-English Executive Summary */}
-          <div className="p-4 rounded-xl bg-background/90 border border-border/80 text-xs sm:text-sm text-foreground space-y-2 shadow-xs">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 font-semibold text-emerald-600 dark:text-emerald-400 text-xs uppercase tracking-wider">
-                <Sparkles className="h-4 w-4" /> Plain-English Solver Rationale
-              </div>
-              <span className="text-[11px] font-mono text-muted-foreground">
-                Confidence: <strong className="text-emerald-600 font-bold">94.8%</strong> (P90 Risk Bound)
-              </span>
-            </div>
-            <p className="leading-relaxed text-muted-foreground">
-              By shifting <strong>Llama-3 Fine-Tuning Run #4</strong> and <strong>Monte Carlo Batch #812</strong> forward into the <strong>09:30 – 13:30 SGT</strong> window, this plan captures curtailed West Texas wind power pricing at <strong>$14.80/MWh</strong>.
-              During the impending <strong>01:00 – 04:00 SGT</strong> ERCOT thermal price spike (forecasted at <strong>$142.50/MWh</strong> due to evening solar ramp-down), flexible crypto mining is throttled and cooling switches to pre-chill thermal reserves, shedding <strong>{formatMw(impact.peakReductionMw)}</strong> of peak facility demand.
-            </p>
-          </div>
-
-          {/* Side-by-Side Impact Matrix (Baseline vs Proposed) */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                <Layers className="h-3.5 w-3.5 text-primary" />
-                Schedule Impact Matrix: Fixed Baseline vs. Optimized Dispatch
-              </span>
-              <span className="text-[11px] text-muted-foreground font-mono">
-                {impact.includedCount} of {impact.totalCount} Workloads Selected
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {/* Metric 1: Cost */}
-              <div className="rounded-xl border border-border bg-card p-3.5 space-y-1.5">
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>24h Energy Cost</span>
-                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-0.5">
-                    <TrendingDown className="h-3 w-3" />
-                    -{impact.savingsPercent.toFixed(1)}%
-                  </span>
-                </div>
-                <div className="flex items-baseline justify-between pt-0.5">
-                  <span className="text-xs text-muted-foreground line-through font-mono">
-                    {formatCurrency(impact.baselineCost)}
-                  </span>
-                  <span className="text-xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
-                    {formatCurrency(impact.optimizedCost)}
-                  </span>
-                </div>
-                <div className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center justify-between border-t border-border/50 pt-1.5">
-                  <span>Net Savings</span>
-                  <span className="font-mono font-bold">+{formatCurrency(impact.netSavings)}</span>
-                </div>
-              </div>
-
-              {/* Metric 2: Peak MW Shed */}
-              <div className="rounded-xl border border-border bg-card p-3.5 space-y-1.5">
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Peak Facility Load</span>
-                  <span className="text-blue-600 dark:text-blue-400 font-semibold flex items-center gap-0.5">
-                    <Zap className="h-3 w-3" />
-                    -{formatMw(impact.peakReductionMw)}
-                  </span>
-                </div>
-                <div className="flex items-baseline justify-between pt-0.5">
-                  <span className="text-xs text-muted-foreground line-through font-mono">
-                    {formatMw(impact.baselinePeakMw)}
-                  </span>
-                  <span className="text-xl font-bold font-mono text-blue-600 dark:text-blue-400">
-                    {formatMw(impact.optimizedPeakMw)}
-                  </span>
-                </div>
-                <div className="text-[11px] text-muted-foreground flex items-center justify-between border-t border-border/50 pt-1.5">
-                  <span>Peak Window Shed</span>
-                  <span className="font-mono font-semibold text-foreground">01:00–04:00 SGT</span>
-                </div>
-              </div>
-
-              {/* Metric 3: Clean Energy Mix */}
-              <div className="rounded-xl border border-border bg-card p-3.5 space-y-1.5">
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Clean Energy Mix</span>
-                  <span className="text-teal-600 dark:text-teal-400 font-semibold flex items-center gap-0.5">
-                    <TrendingUp className="h-3 w-3" />
-                    +{(impact.cleanEnergyPercent - impact.cleanEnergyBaselinePercent).toFixed(1)}%
-                  </span>
-                </div>
-                <div className="flex items-baseline justify-between pt-0.5">
-                  <span className="text-xs text-muted-foreground line-through font-mono">
-                    {impact.cleanEnergyBaselinePercent}%
-                  </span>
-                  <span className="text-xl font-bold font-mono text-teal-600 dark:text-teal-400">
-                    {impact.cleanEnergyPercent}%
-                  </span>
-                </div>
-                <div className="text-[11px] text-muted-foreground flex items-center justify-between border-t border-border/50 pt-1.5">
-                  <span>Carbon Intensity</span>
-                  <span className="font-mono font-semibold text-foreground">214 gCO2/kWh</span>
-                </div>
-              </div>
-
-              {/* Metric 4: SLA Adherence */}
-              <div className="rounded-xl border border-border bg-card p-3.5 space-y-1.5">
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>SLA Adherence</span>
-                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-0.5">
-                    <CheckCircle2 className="h-3 w-3" />
-                    0 Risk
-                  </span>
-                </div>
-                <div className="flex items-baseline justify-between pt-0.5">
-                  <span className="text-xs text-muted-foreground font-mono">
-                    Min Slack: {impact.minSlackHours}h
-                  </span>
-                  <span className="text-xl font-bold font-mono text-foreground">
-                    100%
-                  </span>
-                </div>
-                <div className="text-[11px] text-muted-foreground flex items-center justify-between border-t border-border/50 pt-1.5">
-                  <span>All Deadlines Honored</span>
-                  <span className="font-semibold text-emerald-600 dark:text-emerald-400">Safe</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Interactive Affected Workloads Table with Exclusion Toggles */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                <Cpu className="h-3.5 w-3.5 text-primary" />
-                Affected Workload Schedules & Discretionary Exclusion
-              </span>
-              {!planApproved && !planRejected && (
-                <span className="text-[11px] text-muted-foreground italic">
-                  Toggle checkbox to include/exclude workload from this dispatch
-                </span>
-              )}
-            </div>
-
-            <div className="divide-y divide-border/60 rounded-xl border border-border bg-card overflow-hidden">
-              {workloads.map((item) => {
-                const isExpanded = expandedWorkloadId === item.id
-                return (
-                  <div
-                    key={item.id}
-                    className={`transition-colors ${
-                      !item.included
-                        ? "opacity-60 bg-muted/20"
-                        : "hover:bg-muted/40"
-                    }`}
-                  >
-                    <div className="p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3">
-                      {/* Checkbox & Workload Identity */}
-                      <div className="flex items-start gap-3">
-                        <input
-                          type="checkbox"
-                          id={`toggle-${item.id}`}
-                          checked={item.included}
-                          disabled={planApproved || planRejected}
-                          onChange={() => toggleWorkloadInclusion(item.id)}
-                          className="mt-1 h-4 w-4 rounded border-border text-emerald-600 focus:ring-emerald-500 cursor-pointer disabled:cursor-not-allowed"
-                        />
-                        <div>
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <label
-                              htmlFor={`toggle-${item.id}`}
-                              className="font-semibold text-sm text-foreground cursor-pointer"
-                            >
-                              {item.name}
-                            </label>
-                            <span className="rounded-md bg-muted px-2 py-0.5 text-[10px] font-mono text-muted-foreground">
-                              {item.id}
-                            </span>
-                            <span className="rounded-md bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
-                              {item.type}
-                            </span>
-                            <span className="font-mono text-xs font-semibold text-muted-foreground">
-                              {item.powerKw} kW
-                            </span>
-                          </div>
-                          <p className="text-xs text-muted-foreground font-mono mt-0.5">
-                            {item.cluster}
-                          </p>
-                        </div>
-                      </div>
-
-                      {/* Schedule Window Comparison: Baseline -> Proposed */}
-                      <div className="flex items-center gap-3 sm:gap-6 self-stretch md:self-auto justify-between md:justify-end">
-                        <div className="flex items-center gap-2 text-xs font-mono">
-                          <span className="text-muted-foreground line-through bg-muted/50 px-2 py-1 rounded">
-                            {item.originalWindow}
-                          </span>
-                          <ArrowRight className="h-3.5 w-3.5 text-primary shrink-0" />
-                          <span className="font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded">
-                            {item.proposedWindow}
-                          </span>
-                        </div>
-
-                        <div className="text-right">
-                          <p className="font-mono font-bold text-xs text-emerald-600 dark:text-emerald-400">
-                            +{formatCurrency(item.savingsUsd)}
-                          </p>
-                          <p className="text-[10px] text-muted-foreground">
-                            Slack: {item.slackHours}h
-                          </p>
-                        </div>
-
-                        {/* Expand / Details Toggle */}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setExpandedWorkloadId(isExpanded ? null : item.id)}
-                          className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
-                          aria-label={isExpanded ? "Collapse workload details" : "Expand workload details"}
-                        >
-                          {isExpanded ? (
-                            <ChevronUp className="h-4 w-4" />
-                          ) : (
-                            <ChevronDown className="h-4 w-4" />
-                          )}
-                        </Button>
-                      </div>
-                    </div>
-
-                    {/* Expandable Details Drawer */}
-                    {isExpanded && (
-                      <div className="px-10 pb-3 pt-1 text-xs border-t border-border/40 bg-muted/15 space-y-2">
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 py-1">
-                          <div>
-                            <span className="text-muted-foreground">Shift Rationale:</span>
-                            <p className="font-medium text-foreground mt-0.5">{item.rationale}</p>
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Hard SLA Deadline:</span>
-                            <p className="font-mono font-medium text-foreground mt-0.5">{item.deadline}</p>
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Baseline vs Optimized Cost:</span>
-                            <p className="font-mono font-medium text-foreground mt-0.5">
-                              {formatCurrency(item.baselineCostUsd)} ➔ {formatCurrency(item.optimizedCostUsd)}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        </CardContent>
-
-        {/* Action Footer */}
-        <CardFooter className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-border/60">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="font-mono">
-              Model: XGBoost-LSTM (v2.4) • Dispatch Horizon: 24h • Settlement: ERCOT North
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2 self-end sm:self-auto">
-            {!planApproved && !planRejected ? (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsRejectOpen(true)}
-                  className="text-xs text-destructive hover:bg-destructive/10 hover:border-destructive/30"
-                >
-                  <XCircle className="h-3.5 w-3.5 mr-1.5" />
-                  Reject Plan
-                </Button>
-                <Button
-                  size="sm"
-                  disabled={impact.includedCount === 0}
-                  onClick={() => setIsConfirmOpen(true)}
-                  className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-semibold gap-1.5 shadow-sm"
-                >
-                  <CheckCircle2 className="h-4 w-4" />
-                  Approve & Dispatch ({impact.includedCount} Workloads)
-                </Button>
-              </>
-            ) : (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleResetToEvaluation}
-                  className="text-xs gap-1.5"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  {planApproved ? "Rollback & Modify Schedule" : "Re-evaluate Optimization Plan"}
-                </Button>
-                {planApproved && (
-                  <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-md border border-emerald-500/20">
-                    Live Dispatch Confirmed
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-        </CardFooter>
-      </Card>
-
-      {/* Confirmation Modal */}
-      <DispatchConfirmationModal
-        open={isConfirmOpen}
-        onOpenChange={setIsConfirmOpen}
-        impact={impact}
-        workloads={workloads}
-        onConfirm={handleApproveConfirm}
-      />
-
-      {/* Rejection / Request Changes Modal */}
-      <RejectPlanModal
-        open={isRejectOpen}
-        onOpenChange={setIsRejectOpen}
-        onReject={handleRejectSubmit}
-      />
+export function PlanRecommendation({ plan }: { plan: SchedulePlanDetail }) {
+  const recommendation = plan.recommendation
+  return <section aria-label="Recommendation details" className="space-y-3">
+    <div className="flex flex-wrap items-center gap-2">
+      <span className={`rounded-full border px-3 py-1 text-sm font-semibold ${plan.reviewState === "APPROVED" ? "border-emerald-500 text-emerald-700 dark:text-emerald-400" : plan.reviewState === "STALE" || plan.reviewState === "INVALIDATED" || plan.reviewState === "REJECTED" ? "border-destructive text-destructive" : "border-amber-500 text-amber-700 dark:text-amber-400"}`}>{reviewLabels[plan.reviewState]}</span>
+      <span className="break-all text-xs text-muted-foreground">Run {plan.runId}</span>
     </div>
-  )
+    {plan.invalidationReason && <p role="alert" className="text-sm text-destructive">{plan.invalidationReason}</p>}
+    {recommendation && <>
+      <p className="whitespace-pre-wrap text-sm">{recommendation.plainEnglishExplanation}</p>
+      <dl className="grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-3">
+        <div><dt className="text-muted-foreground">Baseline cost (USD)</dt><dd>{money(recommendation.baselineCostUsd)}</dd></div>
+        <div><dt className="text-muted-foreground">Proposed cost (USD)</dt><dd>{money(recommendation.optimizedCostUsd)}</dd></div>
+        <div><dt className="text-muted-foreground">Projected savings (USD)</dt><dd>{money(recommendation.projectedSavingsUsd)}</dd></div>
+      </dl>
+      {recommendation.status === "NEEDS_ATTENTION" && <p role="status" className="text-sm text-amber-700 dark:text-amber-400">Some jobs have no feasible placement. Review those jobs before approving.</p>}
+      <div className="overflow-x-auto rounded-md border"><table className="w-full text-left text-xs">
+        <caption className="sr-only">Original and recommended job placements in Singapore time</caption>
+        <thead><tr>{["Job", "Original start (SGT)", "Proposed start (SGT)", "Proposed end (SGT)", "Outcome", "Savings (USD)"].map(label => <th key={label} className="p-2">{label}</th>)}</tr></thead>
+        <tbody>{recommendation.items.map(item => <tr key={item.jobId} className="border-t">
+          <td className="p-2">{item.jobName}</td><td className="p-2">{formatSgtDateTime(item.baselineStart)}</td>
+          <td className="p-2">{item.scheduledStart ? formatSgtDateTime(item.scheduledStart) : "Not scheduled"}</td>
+          <td className="p-2">{item.scheduledEnd ? formatSgtDateTime(item.scheduledEnd) : "—"}</td>
+          <td className="p-2">{item.perJobStatus.replaceAll("_", " ").toLowerCase()}{item.reason && <p>{item.reason}</p>}</td>
+          <td className="p-2">{item.savingsUsd == null ? "Unavailable" : money(item.savingsUsd)}</td>
+        </tr>)}</tbody>
+      </table></div>
+    </>}
+  </section>
 }
+
+function money(value: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 4 }).format(value) }

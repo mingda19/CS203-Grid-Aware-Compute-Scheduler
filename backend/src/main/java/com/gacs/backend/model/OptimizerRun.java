@@ -45,4 +45,12 @@ public class OptimizerRun {
     /** JSON snapshot of the {@code gacs.optimiser.*} properties the run used. */
     @Column(name = "solver_config", nullable = false, updatable = false, columnDefinition = "TEXT")
     private String solverConfig;
+
+    /** Canonical text of the run's inputs (jobs, prices, capacity); null for runs stored before GRID-141. */
+    @Column(name = "input_snapshot", updatable = false, columnDefinition = "TEXT")
+    private String inputSnapshot;
+
+    /** SHA-256 of {@link #inputSnapshot}; null when there is no snapshot. */
+    @Column(name = "input_hash", updatable = false, length = 64)
+    private String inputHash;
 }
