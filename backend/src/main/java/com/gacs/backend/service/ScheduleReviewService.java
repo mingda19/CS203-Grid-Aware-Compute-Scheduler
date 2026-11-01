@@ -66,7 +66,8 @@ public class ScheduleReviewService {
                 .solverConfig(json.writeValueAsString(properties))
                 .status(OptimizerRunStatus.valueOf(result.status()))
                 .provenOptimal(result.provenOptimal()).build());
-            plans.save(new OptimizationPlan(run, owner, json.writeValueAsString(result), createdAt));
+            plans.save(new OptimizationPlan(run, owner, json.writeValueAsString(result),
+                StoredScheduleReader.jobIds(result), createdAt));
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Unable to store optimization result", ex);
         }

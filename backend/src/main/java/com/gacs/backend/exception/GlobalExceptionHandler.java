@@ -2,6 +2,7 @@ package com.gacs.backend.exception;
 
 import com.gacs.backend.dto.ApiResponse;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.validation.FieldError;
@@ -42,6 +43,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleIllegalArgument(IllegalArgumentException ex) {
         ApiResponse<Void> response = ApiResponse.fail(ex.getMessage());
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+    }
+
+    @ExceptionHandler(ScheduleExportRejectedException.class)
+    public ResponseEntity<ApiResponse<Map<String, String>>> handleExportRejected(ScheduleExportRejectedException ex) {
+        // Always JSON: export requests ask for the file type in Accept, but a refusal is an error envelope.
+        return ResponseEntity.status(ex.getReason().status())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(new ApiResponse<>(false, ex.getMessage(), Map.of("reason", ex.getReason().name())));
     }
 
     @ExceptionHandler(UnprocessableDataException.class)
