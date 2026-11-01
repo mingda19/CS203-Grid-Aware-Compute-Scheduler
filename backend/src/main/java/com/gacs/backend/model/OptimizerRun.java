@@ -13,10 +13,9 @@ import java.time.Instant;
  * the same {@code /optimize} call, keyed by the same run id) already owns both, and nothing about
  * this table's own purpose - solver provenance for the audit trail - needs a second copy. Any
  * reader that needs a run's status/provenOptimal (e.g. {@code AuditEventService}) looks it up from
- * {@code ScheduleRun} by the shared id. Known gap, not addressed here: a run that fails before
- * {@code ScheduleRun} is ever persisted (solver exception, timeout) has no row in either table
- * today, so {@code OptimizerRunStatus}'s INFEASIBLE/TIMEOUT/FAILED values are not currently
- * reachable from any code path - unrelated to this table's own field set.
+ * {@code ScheduleRun} by the shared id. A solver exception is recorded as a FAILED {@code ScheduleRun}
+ * plus this row (GRID-142); TIMEOUT is not produced, as an exact-solver time-out falls back to the
+ * heuristic plan.
  */
 @Entity
 @Table(name = "optimizer_runs", indexes = {

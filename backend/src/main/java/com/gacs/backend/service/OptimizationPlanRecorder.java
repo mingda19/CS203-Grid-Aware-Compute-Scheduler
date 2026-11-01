@@ -34,6 +34,15 @@ class OptimizationPlanRecorder {
         this.plans = plans;
     }
 
+    /** A run that failed before producing a plan: the run record only, so there is nothing to approve. */
+    @Transactional
+    void recordFailed(String runId, Instant createdAt, String solverName, String solverVersion, String solverConfig,
+                      String inputSnapshot) {
+        runs.save(OptimizerRun.builder().id(runId).createdAt(createdAt).solverName(solverName)
+                .solverVersion(solverVersion).solverConfig(solverConfig).inputSnapshot(inputSnapshot)
+                .inputHash(ScheduleHashUtil.computeSha256(inputSnapshot)).build());
+    }
+
     @Transactional
     void record(String runId, Instant createdAt, String solverName, String solverVersion, String solverConfig,
                User owner, String resultJson, Collection<Long> jobIds, String inputSnapshot, String provenance) {

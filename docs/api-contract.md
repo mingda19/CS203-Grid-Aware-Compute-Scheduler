@@ -925,7 +925,7 @@ The **baseline** of a job is its cost if it started at `originalStartTime` and, 
 }
 ```
 * `runId`: UUID v4 generated per request. Successful API runs atomically persist an `OptimizerRun` (configured solver name, version, configuration snapshot, outcome and optimality) and a linked `OptimizationPlan` with a shared `VARCHAR(36)` run ID enforced by a foreign key. The plan stores the immutable result, authenticated owner's database user ID, UTC creation time, and a separate review state initially `PENDING`. Decision routes reference this ID; the optimizer response shape and optimization `status` are unchanged. Failed optimization requests create neither row. Each call stores the complete result as unbounded `text`; storage growth and retention need review before large-scale use. Authenticated principals without a database user receive `401`. The run's persisted explanation remains scoped to the authenticated operator.
-* `status` (run level): `SCHEDULED` when every job is scheduled or exempt; `NEEDS_ATTENTION` when at least one job is `NO_FEASIBLE_SLOT`.
+* `status` (run level): `SCHEDULED` when every job is scheduled or exempt; `NEEDS_ATTENTION` when at least one job is `NO_FEASIBLE_SLOT`; `INFEASIBLE` when no job at all could be placed. An `INFEASIBLE` run is stored but can never be approved, applied or exported (`403 NOT_APPROVED`). If the solver throws, the response is `503` with `data.runId`; the run is recorded as `FAILED` (with its input snapshot) and has no plan, so decision and export routes return `404`. An exact-solver time-out is not a failure: the heuristic plan is returned with `provenOptimal=false`. Failed optimization requests that never reach the solver (`400`, `401`, `422`) create no rows (GRID-142).
 * `provenOptimal` (run level): `true` when the solver proved that no cheaper schedule exists; `false` when a heuristic fallback produced the plan. A `false` plan still satisfies every window, deadline and capacity rule. Informational only.
 * `optimizedCostUsd` (run level) is the total cost of the proposed schedule. `scheduledStart` is the start of the job's first slot and `scheduledEnd` the end of its last.
 * `items[].allocations[]`: the slots the job uses and the CPU/GPU hours it takes in each. Their sum equals `allocatedCpuHours` / `allocatedGpuHours`.
@@ -994,6 +994,7 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 | 2026-11-01 | §6.6: the JSON export adds `run.createdAt`, `run.solver` and `approval` (GRID-135 AC2). | - |
 | 2026-11-01 | Added §6.7 documenting the audit log queries, with a new `jobId` filter backed by `optimization_plan_jobs`, and the stored schedule (owner only) in the event detail (GRID-134 AC6). | - |
 | 2026-11-01 | §6.4: added *Objective and tie-break order*, documenting the rule `priority` had been reserved for but did not yet affect - the optimiser now orders competing jobs by `priority`, then total resource-hours, then the original `originalStartTime`/`id` fallback (GRID-155). | - |
+| 2026-11-01 | §6.4: added run `status` `INFEASIBLE` (nothing placeable; never approvable or exportable) and `503` with `runId` when the solver fails, recorded as a `FAILED` run with no plan (GRID-142 AC1.3). | - |
 | 2026-11-01 | Added §6.8: automatic material-input invalidation, shared backend execution gating, approved-run application, and plan detail (GRID-11 AC2.3). | - |
 
 ### 6.5 Operator decisions (GRID-11 AC2 / AC2.2)
@@ -1151,7 +1152,7 @@ runId,jobId,jobName,perJobStatus,intervalStartUtc,intervalEndUtc,cpuHours,gpuHou
 | Key | Type | Notes |
 |---|---|---|
 | `runId` | string | UUID |
-| `status` | string | `SCHEDULED` or `NEEDS_ATTENTION` |
+| `status` | string | `SCHEDULED`, `NEEDS_ATTENTION` or `INFEASIBLE` |
 | `provenOptimal` | boolean | |
 | `usedSeededFallbackPrices` | boolean | `true` when the history-based fallback price curve was used |
 | `baselineCostUsd` | number | 4 decimal places |

@@ -54,6 +54,8 @@ public record OptimizeResponseDto(
 
     public static final String STATUS_SCHEDULED = "SCHEDULED";
     public static final String STATUS_NEEDS_ATTENTION = "NEEDS_ATTENTION";
+    /** No job could be placed: nothing executable, so the plan can never be approved or exported (GRID-142). */
+    public static final String STATUS_INFEASIBLE = "INFEASIBLE";
 
     /** Response timestamps: UTC, with the {@code Z} suffix the contract uses. */
     static final String UTC_PATTERN = "yyyy-MM-dd'T'HH:mm:ss'Z'";

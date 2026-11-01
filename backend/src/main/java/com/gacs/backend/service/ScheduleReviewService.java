@@ -7,6 +7,7 @@ import com.gacs.backend.dto.AuditEventResponseDto;
 import com.gacs.backend.dto.OptimizeRequestDto;
 import com.gacs.backend.dto.OptimizeResponseDto;
 import com.gacs.backend.dto.ScheduleDecisionDto;
+import com.gacs.backend.exception.OptimizationFailedException;
 import com.gacs.backend.model.AuditActionType;
 import com.gacs.backend.model.OptimizationPlan;
 import com.gacs.backend.model.User;
@@ -69,8 +70,16 @@ public class ScheduleReviewService {
     public OptimizeResponseDto optimize(OptimizeRequestDto request, String email) {
         User owner = operator(email);
         String provenance = inputs.capture(request, email);
-        return optimizer.optimize(request, email,
-            (result, snapshot) -> recordPlan(result, owner, snapshot, provenance));
+        try {
+            return optimizer.optimize(request, email,
+                (result, snapshot) -> recordPlan(result, owner, snapshot, provenance));
+        } catch (OptimizationFailedException failure) {
+            try {
+                planRecorder.recordFailed(failure.getRunId(), clock.instant(), AopUtils.getTargetClass(solver).getSimpleName(),
+                    AllocationSolver.VERSION, json.writeValueAsString(properties), failure.getSnapshot());
+            } catch (JsonProcessingException ex) { failure.addSuppressed(ex); }
+            throw failure;
+        }
     }
 
     private void recordPlan(OptimizeResponseDto result, User owner, String snapshot, String provenance) {

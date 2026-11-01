@@ -65,6 +65,13 @@ public class GlobalExceptionHandler {
                 .body(new ApiResponse<>(false, ex.getMessage(), Map.of("reason", ex.getReason().name())));
     }
 
+    @ExceptionHandler(OptimizationFailedException.class)
+    public ResponseEntity<ApiResponse<Map<String, String>>> handleOptimizationFailed(OptimizationFailedException ex) {
+        logger.error("Optimiser run {} failed", ex.getRunId(), ex.getCause());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(new ApiResponse<>(false,
+                "The optimiser failed; nothing was scheduled", Map.of("runId", ex.getRunId())));
+    }
+
     @ExceptionHandler(UnprocessableDataException.class)
     public ResponseEntity<ApiResponse<Void>> handleUnprocessableData(UnprocessableDataException ex) {
         ApiResponse<Void> response = ApiResponse.fail(ex.getMessage());
