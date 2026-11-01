@@ -46,6 +46,8 @@ abstract class AbstractJobParseMetadataIntegrationTest {
     @MockitoBean DataFreshnessService dataFreshnessService;
     @MockitoBean ForecastConfidenceAlertService forecastConfidenceAlertService;
     @MockitoBean DataInitializer dataInitializer;
+    @MockitoBean com.gacs.backend.service.ScheduleInputs scheduleInputs;
+    @MockitoBean com.gacs.backend.service.ScheduleExpiryService scheduleExpiryService;
 
     @BeforeEach
     void cleanDatabase() {

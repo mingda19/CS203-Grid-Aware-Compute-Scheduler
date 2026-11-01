@@ -47,7 +47,7 @@ class ConstraintParserInvariantTest {
 
     private final ConstraintParser parser = new RuleBasedConstraintParser();
     private final ConstraintParseService service = new ConstraintParseService(parser,
-            new JobService(mock(JobRepository.class)), Clock.fixed(NOW.toInstant(), ZoneOffset.UTC), ZONE.getId());
+            new JobService(mock(JobRepository.class), org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class)), Clock.fixed(NOW.toInstant(), ZoneOffset.UTC), ZONE.getId());
 
     @Test
     @DisplayName("Random inputs: never throws, same output twice, values in range, evidence points at the text")
@@ -128,7 +128,7 @@ class ConstraintParserInvariantTest {
     /** INVALID exactly when the job validator rejects the fields; otherwise they pass it. */
     private void checkStatus(String text) {
         ConstraintParseResponseDto r = service.parse(new ConstraintParseRequestDto(text, null, ZONE.getId()));
-        JobService validator = new JobService(mock(JobRepository.class));
+        JobService validator = new JobService(mock(JobRepository.class), org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class));
         boolean valid = true;
         try {
             validator.validateTiming(r.fields().originalStartTime(), r.fields().deadline(),

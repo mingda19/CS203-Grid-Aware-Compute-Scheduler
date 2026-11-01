@@ -166,7 +166,11 @@ class ScheduleOptimizationIntegrationTest {
             mockMvc.perform(get("/api/schedules/{runId}/explanation", runId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.runId", is(runId)))
-                .andExpect(jsonPath("$.data.explanation", is(expectedExplanation)));
+                .andExpect(jsonPath("$.data.explanation", is(expectedExplanation)))
+                .andExpect(jsonPath("$.data.items[0].jobId", is(101)))
+                .andExpect(jsonPath("$.data.items[0].whyThisPlacement").isNotEmpty())
+                .andExpect(jsonPath("$.data.items[0].constraints[0].constraintType", is("DEADLINE")))
+                .andExpect(jsonPath("$.data.items[0].constraints[0].explanation").isNotEmpty());
         }
     }
 

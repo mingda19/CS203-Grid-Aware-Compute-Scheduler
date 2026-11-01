@@ -35,7 +35,7 @@ class OptimizationPlanRecorder {
 
     @Transactional
     void record(String runId, Instant createdAt, String solverName, String solverVersion, String solverConfig,
-               User owner, String resultJson, Collection<Long> jobIds) {
+               User owner, String resultJson, Collection<Long> jobIds, String inputSnapshot) {
         OptimizerRun run = runs.save(OptimizerRun.builder()
                 .id(runId)
                 .createdAt(createdAt)
@@ -43,6 +43,8 @@ class OptimizationPlanRecorder {
                 .solverVersion(solverVersion)
                 .solverConfig(solverConfig)
                 .build());
-        plans.save(new OptimizationPlan(run, owner, resultJson, jobIds, createdAt));
+        var plan = new OptimizationPlan(run, owner, resultJson, jobIds, createdAt);
+        plan.recordInputs(inputSnapshot);
+        plans.save(plan);
     }
 }

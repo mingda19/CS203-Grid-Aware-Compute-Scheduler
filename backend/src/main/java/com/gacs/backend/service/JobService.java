@@ -23,8 +23,10 @@ public class JobService {
     );
 
     private final JobRepository jobRepository;
+    private final ScheduleInputs inputs;
 
-    public JobService(JobRepository jobRepository) {
+    public JobService(JobRepository jobRepository, ScheduleInputs inputs) {
+        this.inputs = inputs;
         this.jobRepository = jobRepository;
     }
 
@@ -85,11 +87,13 @@ public class JobService {
      */
     @Transactional
     public JobResponseDto updateJob(Long id, JobRequestDto request, String ownerEmail) {
+        inputs.lock(ownerEmail);
         Job existing = jobRepository.findByIdAndOwnerEmail(id, ownerEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("Job not found with id: " + id));
 
         validateJobConstraints(request);
 
+        var before = ScheduleInputs.state(existing);
         applyParseMetadata(existing, request);
 
         existing.setName(request.getName().trim());
@@ -108,6 +112,10 @@ public class JobService {
             existing.setPriority(JobPriority.fromString(request.getPriority()));
         }
 
+        if (!before.equals(ScheduleInputs.state(existing))) {
+            existing.setSchedulingRevision(existing.getSchedulingRevision() + 1);
+            inputs.invalidate(ownerEmail, id, "Scheduling inputs changed for job " + id);
+        }
         Job updated = jobRepository.save(existing);
         return JobResponseDto.fromEntity(updated);
     }
@@ -142,8 +150,10 @@ public class JobService {
      */
     @Transactional
     public void deleteJob(Long id, String ownerEmail) {
+        inputs.lock(ownerEmail);
         Job existing = jobRepository.findByIdAndOwnerEmail(id, ownerEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("Job not found with id: " + id));
+        inputs.invalidate(ownerEmail, id, "job " + id + " is no longer in your jobs");
         jobRepository.delete(existing);
     }
 

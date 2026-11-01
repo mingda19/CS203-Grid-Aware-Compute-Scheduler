@@ -38,6 +38,9 @@ class ScheduleDecisionIntegrationTest {
         """;
 
     @Autowired MockMvc mvc;
+    @Autowired JobRepository jobs;
+    private Job currentJob;
+    private String request;
     @org.springframework.test.context.bean.override.mockito.MockitoSpyBean OptimizationPlanRepository plans;
     @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.gacs.backend.service.AuditEventService audit;
     @Autowired AuditEventRepository decisions;
@@ -55,6 +58,12 @@ class ScheduleDecisionIntegrationTest {
     @BeforeEach
     void setup() {
         owner = users.save(new User(UUID.randomUUID() + "@test.io", "test-password", "Operator", "ROLE_USER"));
+        var start = java.time.LocalDateTime.now(java.time.ZoneOffset.UTC).plusDays(2).truncatedTo(java.time.temporal.ChronoUnit.HOURS);
+        currentJob = jobs.save(Job.builder().ownerEmail(owner.getEmail()).name("test").cpuHours(1.0).gpuHours(0.0)
+            .originalStartTime(start).deadline(start.plusHours(1)).flexibilityWindowHours(0).build());
+        request = REQUEST.replace("\"id\":1", "\"id\":" + currentJob.getId())
+            .replace("2026-10-20T10:00:00", start.toString() + ":00")
+            .replace("2026-10-20T11:00:00", start.plusHours(1).toString() + ":00");
     }
 
     @AfterEach
@@ -64,6 +73,7 @@ class ScheduleDecisionIntegrationTest {
             plans.deleteById(runId.toString());
             runs.deleteById(runId.toString());
         }
+        jobs.deleteById(currentJob.getId());
         users.deleteById(owner.getId());
     }
 
@@ -71,7 +81,7 @@ class ScheduleDecisionIntegrationTest {
         Instant before = Instant.now();
         String response = mvc.perform(post("/api/schedules/optimize")
                 .header("Authorization", "Bearer " + jwt.generateAccessToken(owner))
-                .contentType(APPLICATION_JSON).content(REQUEST))
+                .contentType(APPLICATION_JSON).content(request))
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         JsonNode result = json.readTree(response).path("data");
         UUID runId = UUID.fromString(result.path("runId").asText());
@@ -200,7 +210,7 @@ class ScheduleDecisionIntegrationTest {
                 .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
             .andExpect(status().isBadRequest());
         mvc.perform(post("/api/schedules/optimize").with(user("missing@test.io"))
-                .contentType(APPLICATION_JSON).content(REQUEST))
+                .contentType(APPLICATION_JSON).content(request))
             .andExpect(status().isUnauthorized());
         assertThat(plans.count()).isEqualTo(before);
         assertThat(runs.count()).isEqualTo(runsBefore);
@@ -267,7 +277,7 @@ class ScheduleDecisionIntegrationTest {
         }).when(plans).save(org.mockito.ArgumentMatchers.any(OptimizationPlan.class));
         try {
             mvc.perform(post("/api/schedules/optimize").with(user(owner.getEmail()))
-                    .contentType(APPLICATION_JSON).content(REQUEST))
+                    .contentType(APPLICATION_JSON).content(request))
                 .andExpect(status().isInternalServerError());
         } finally {
             org.mockito.Mockito.reset(plans);
@@ -286,7 +296,7 @@ class ScheduleDecisionIntegrationTest {
             .when(runs).save(org.mockito.ArgumentMatchers.any(OptimizerRun.class));
         try {
             mvc.perform(post("/api/schedules/optimize").with(user(owner.getEmail()))
-                    .contentType(APPLICATION_JSON).content(REQUEST))
+                    .contentType(APPLICATION_JSON).content(request))
                 .andExpect(status().isInternalServerError());
         } finally {
             org.mockito.Mockito.reset(runs);

@@ -24,7 +24,7 @@ class ConstraintParseServiceTest {
 
     private final JobRepository repository = mock(JobRepository.class);
     private final ConstraintParseService service = new ConstraintParseService(new RuleBasedConstraintParser(),
-            new JobService(repository), Clock.fixed(NOW, ZoneOffset.UTC), "Asia/Singapore");
+            new JobService(repository, org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class)), Clock.fixed(NOW, ZoneOffset.UTC), "Asia/Singapore");
 
     @Test
     @DisplayName("Times are read in SGT by default and returned in UTC")
