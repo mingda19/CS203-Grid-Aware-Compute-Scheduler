@@ -86,6 +86,9 @@ public class ScheduleGate {
                 ? requireMatchingApproval(plan) : null;
             OptimizeResponseDto schedule = reader.read(plan.getResultJson())
                 .orElseThrow(() -> invalidated(plan.getRunId(), "its stored schedule cannot be read"));
+            if (OptimizeResponseDto.STATUS_INFEASIBLE.equals(schedule.status()))
+                throw new ScheduleExportRejectedException(Reason.NOT_APPROVED,
+                    "Schedule run " + plan.getRunId() + " is INFEASIBLE: no job could be placed");
             requireCurrent(plan, schedule, plan.getOwner());
             String mismatch = inputs.mismatch(plan, email);
             if (mismatch != null) throw invalidated(plan.getRunId(), mismatch);

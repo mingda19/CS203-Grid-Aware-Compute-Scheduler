@@ -6,6 +6,8 @@ import com.gacs.backend.dto.OptimizeResponseDto;
 import com.gacs.backend.dto.OptimizeResponseDto.Allocation;
 import com.gacs.backend.dto.OptimizeResponseDto.ScheduleItem;
 import com.gacs.backend.exception.ResourceNotFoundException;
+import com.gacs.backend.exception.OptimizationFailedException;
+import com.gacs.backend.model.OptimizerRunStatus;
 import com.gacs.backend.model.ScheduleExplanation;
 import com.gacs.backend.model.ScheduleRun;
 import com.gacs.backend.repository.ScheduleExplanationRepository;
@@ -85,7 +87,16 @@ public class ScheduleOptimizationService {
     public OptimizeResponseDto optimize(OptimizeRequestDto request, String ownerEmail,
                                         BiConsumer<OptimizeResponseDto, String> afterExplanationPersisted) {
         OptimizationProblem problem = problems.build(request);
-        AllocationResult result = solver.solve(problem);
+        AllocationResult result;
+        try {
+            result = solver.solve(problem);
+        } catch (RuntimeException failure) {
+            // Record the failure (no plan, so nothing to approve or export) and tell the caller its run id.
+            String runId = UUID.randomUUID().toString();
+            runs.save(ScheduleRun.builder().runId(runId).ownerEmail(ownerEmail)
+                    .status(OptimizerRunStatus.FAILED.name()).provenOptimal(false).usedSeededFallbackPrices(problem.prices().isSeeded()).build());
+            throw new OptimizationFailedException(runId, problem.snapshot(), failure);
+        }
         OptimizeResponseDto response = buildResponse(problem, result);
         String snapshot = problem.snapshot();
         recorder.record(result, problem.constraints(), problem.synchronizedGroups(), response, ownerEmail,
@@ -135,7 +146,9 @@ public class ScheduleOptimizationService {
         boolean anyLeftOut = result.outcomes().stream().anyMatch(o -> o.status() == PerJobStatus.NO_FEASIBLE_SLOT);
         return new OptimizeResponseDto(
                 UUID.randomUUID().toString(),
-                anyLeftOut ? OptimizeResponseDto.STATUS_NEEDS_ATTENTION : OptimizeResponseDto.STATUS_SCHEDULED,
+                !anyLeftOut ? OptimizeResponseDto.STATUS_SCHEDULED
+                        : result.outcomes().stream().noneMatch(JobOutcome::scheduled)
+                        ? OptimizeResponseDto.STATUS_INFEASIBLE : OptimizeResponseDto.STATUS_NEEDS_ATTENTION,
                 result.provenOptimal(),
                 baselineCostUsd, optimizedCostUsd, savingsUsd, savingsPercent,
                 explain(result, problem, baselineCostUsd, optimizedCostUsd, savingsUsd, savingsPercent),

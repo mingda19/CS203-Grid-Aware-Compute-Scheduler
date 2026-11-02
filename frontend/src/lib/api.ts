@@ -188,7 +188,7 @@ export interface ScheduleItem {
 
 export interface OptimizeResponse {
   runId: string
-  status: "SCHEDULED" | "NEEDS_ATTENTION"
+  status: "SCHEDULED" | "NEEDS_ATTENTION" | "INFEASIBLE"
   provenOptimal: boolean
   baselineCostUsd: number
   optimizedCostUsd: number

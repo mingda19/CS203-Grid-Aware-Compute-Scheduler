@@ -43,6 +43,17 @@ class HybridAllocationSolverTest {
     }
 
     @Test
+    @DisplayName("An exact solver that runs out of time falls back to a valid, unproven heuristic plan (GRID-142)")
+    void exactTimeoutFallsBackToHeuristic() {
+        HybridAllocationSolver hybrid = new HybridAllocationSolver(COSTS, 300, Duration.ZERO,
+                new AnnealingAllocationSolver(COSTS, 100));
+        AllocationResult result = hybrid.solve(SMALL);
+
+        assertThat(result.provenOptimal()).isFalse();
+        assertThat(ContractRules.violations(SMALL, result)).isEmpty();
+    }
+
+    @Test
     @DisplayName("Size counts each flexible job's hours from its start to its deadline")
     void sizeCountsFlexibleHours() {
         assertThat(HybridAllocationSolver.size(SMALL)).isEqualTo(4 + 4); // the exempt job does not count
