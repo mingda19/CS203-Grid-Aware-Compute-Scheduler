@@ -7,6 +7,7 @@ import com.gacs.backend.dto.AuditEventRequestDto;
 import com.gacs.backend.dto.AuditEventResponseDto;
 import com.gacs.backend.model.AuditActionType;
 import com.gacs.backend.service.AuditEventService;
+import com.gacs.backend.service.ScheduleReviewService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -27,6 +28,7 @@ import org.springframework.web.bind.annotation.*;
 import java.security.Principal;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Controller exposing audit log endpoints per Jira GRID-83 and GRID-134 AC4.
@@ -39,15 +41,19 @@ import java.util.List;
 public class AuditEventController {
 
     private final AuditEventService auditEventService;
+    private final ScheduleReviewService scheduleReviewService;
 
-    public AuditEventController(AuditEventService auditEventService) {
+    public AuditEventController(AuditEventService auditEventService, ScheduleReviewService scheduleReviewService) {
         this.auditEventService = auditEventService;
+        this.scheduleReviewService = scheduleReviewService;
     }
 
     @Operation(
         summary = "Record an audit event",
         description = "Records an immutable audit event for an operator action (APPROVE, REJECT, REVISE, etc.). "
-            + "Requires ROLE_USER or ROLE_ADMIN. Actor identity is strictly extracted server-side from the authenticated security context."
+            + "Schedule decisions use the same ownership, validity and transactional checks as /api/schedules/{runId}/{action}; "
+            + "their schedule hash is computed server-side. Requires ROLE_USER or ROLE_ADMIN. "
+            + "Actor identity is extracted from the authenticated security context."
     )
     @ApiResponses(value = {
         @io.swagger.v3.oas.annotations.responses.ApiResponse(
@@ -71,9 +77,16 @@ public class AuditEventController {
     @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
     @PostMapping
     public ResponseEntity<ApiResponse<AuditEventResponseDto>> recordEvent(
-            @Valid @RequestBody AuditEventRequestDto request
+            @Valid @RequestBody AuditEventRequestDto request, Principal principal
     ) {
-        AuditEventResponseDto event = auditEventService.recordEvent(request);
+        AuditEventResponseDto event = switch (request.actionType()) {
+            case APPROVE, REJECT, REVISE -> {
+                var decision = scheduleReviewService.decide(UUID.fromString(request.runId().trim()),
+                        request.actionType(), request.operatorRationale(), principal.getName());
+                yield auditEventService.getEventById(decision.decisionId());
+            }
+            default -> auditEventService.recordEvent(request);
+        };
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.ok("Audit event recorded successfully", event));
     }

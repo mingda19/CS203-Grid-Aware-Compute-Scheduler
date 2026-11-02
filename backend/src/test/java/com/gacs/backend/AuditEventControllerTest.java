@@ -7,10 +7,13 @@ import com.gacs.backend.dto.AuditEventDetailDto;
 import com.gacs.backend.dto.AuditEventFilter;
 import com.gacs.backend.dto.AuditEventRequestDto;
 import com.gacs.backend.dto.AuditEventResponseDto;
+import com.gacs.backend.dto.ScheduleDecisionDto;
 import com.gacs.backend.exception.GlobalExceptionHandler;
 import com.gacs.backend.exception.ResourceNotFoundException;
 import com.gacs.backend.model.AuditActionType;
+import com.gacs.backend.model.ReviewState;
 import com.gacs.backend.service.AuditEventService;
+import com.gacs.backend.service.ScheduleReviewService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,6 +26,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -50,6 +54,9 @@ class AuditEventControllerTest {
     @MockitoBean
     private AuditEventService auditEventService;
 
+    @MockitoBean
+    private ScheduleReviewService scheduleReviewService;
+
     private final String validRunId = "7f3c1e52-9a0b-4d6e-8c21-5b1f0a9e3d44";
     private final String validHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     private final String validRationale = "Approved schedule after cooling check.";
@@ -75,7 +82,11 @@ class AuditEventControllerTest {
                 validRationale
         );
 
-        when(auditEventService.recordEvent(any(AuditEventRequestDto.class))).thenReturn(responseDto);
+        when(scheduleReviewService.decide(UUID.fromString(validRunId), AuditActionType.APPROVE,
+                validRationale, "operator@gacs.internal")).thenReturn(new ScheduleDecisionDto(
+                1L, UUID.fromString(validRunId), AuditActionType.APPROVE, 1L, validRationale,
+                responseDto.timestamp(), ReviewState.APPROVED));
+        when(auditEventService.getEventById(1L)).thenReturn(responseDto);
 
         mockMvc.perform(post("/api/audit-events").with(
                         org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors
@@ -91,6 +102,8 @@ class AuditEventControllerTest {
                 .andExpect(jsonPath("$.data.runId").value(validRunId))
                 .andExpect(jsonPath("$.data.scheduleHash").value(validHash))
                 .andExpect(jsonPath("$.data.operatorRationale").value(validRationale));
+        verify(scheduleReviewService).decide(UUID.fromString(validRunId), AuditActionType.APPROVE,
+                validRationale, "operator@gacs.internal");
     }
 
     @Test
@@ -119,7 +132,11 @@ class AuditEventControllerTest {
                 validRationale
         );
 
-        when(auditEventService.recordEvent(any(AuditEventRequestDto.class))).thenReturn(responseDto);
+        when(scheduleReviewService.decide(UUID.fromString(validRunId), AuditActionType.APPROVE,
+                validRationale, "operator@gacs.internal")).thenReturn(new ScheduleDecisionDto(
+                2L, UUID.fromString(validRunId), AuditActionType.APPROVE, 1L, validRationale,
+                responseDto.timestamp(), ReviewState.APPROVED));
+        when(auditEventService.getEventById(2L)).thenReturn(responseDto);
 
         mockMvc.perform(post("/api/audit-events")
                         .contentType(MediaType.APPLICATION_JSON)

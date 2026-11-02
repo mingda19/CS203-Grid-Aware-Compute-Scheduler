@@ -24,7 +24,7 @@ def make_db() -> sa.Engine:
             " format TEXT NOT NULL, blob BLOB NOT NULL, trained_through TEXT NOT NULL,"
             " valid_from_date TEXT NOT NULL, valid_to_date TEXT NOT NULL,"
             " metrics TEXT NOT NULL DEFAULT '{}', is_active BOOLEAN NOT NULL DEFAULT 0,"
-            " created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+            " created_at TEXT NOT NULL)"
         ))
         conn.execute(sa.text(
             "CREATE UNIQUE INDEX model_artifacts_one_active ON model_artifacts (model_kind, target) "
@@ -49,6 +49,7 @@ class SaveAndLoadTests(unittest.TestCase):
         self.assertEqual(row["blob"], b"\x00\x01\xff")
         self.assertEqual(row["metrics"], {"mae": 7.0})
         self.assertEqual(row["model_version"], "lstm_y0_1")
+        self.assertIsNotNone(row["created_at"])
 
     def test_no_active_row_returns_none(self):
         engine = make_db()

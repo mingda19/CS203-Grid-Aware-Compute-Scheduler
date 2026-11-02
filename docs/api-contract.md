@@ -1266,6 +1266,12 @@ Example (the schedule from the CSV example; shown indented here for reading, but
 
 Both routes require `ROLE_USER` or `ROLE_ADMIN`; every such user can read every audit event.
 
+`POST /api/audit-events` remains a compatibility entry point for decisions. `APPROVE`, `REJECT`, and
+`REVISE` use the same owner-scoped transaction and validity checks as the schedule decision endpoints.
+The run ID must be a UUID; missing or unowned plans return 404. The recorded hash is computed from
+the stored schedule, rather than trusting the supplied `scheduleHash`. Prefer the schedule decision
+endpoints for new clients.
+
 #### `GET /api/audit-events`
 Returns audit events newest first, a page at a time, in the standard envelope (`data.content`, `data.totalElements`, `data.totalPages`, `data.number`, `data.size`). Every filter is optional, and filters combine with AND.
 

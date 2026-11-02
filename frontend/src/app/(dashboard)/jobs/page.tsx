@@ -2,24 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
-import {
-  BriefcaseBusiness,
-  Eye,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Trash2,
-  Sparkles,
-  TrendingUp,
-  CheckCircle2,
-  AlertTriangle,
-  Clock,
-  Calendar,
-  Server,
-  Check,
-  ArrowRight,
-  SlidersHorizontal,
-} from "lucide-react"
+import { BriefcaseBusiness, Eye, Pencil, Plus, RefreshCw, Trash2, Sparkles, TrendingUp, Clock, Calendar, Server, Check, ArrowRight, SlidersHorizontal } from "lucide-react"
 import {
   jobsApi,
   optimizerApi,
@@ -28,7 +11,6 @@ import {
   type ComputeJob,
   type ComputeJobPayload,
   type JobPriority,
-  type OptimizeJobInput,
   type OptimizeResponse,
   type ScheduleItem,
   type FacilityConfig,
@@ -47,7 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
-import { toInputDate, toApiUtcDate } from "@/lib/job-form-utils"
+import { toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
 import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
 
@@ -115,6 +97,8 @@ export default function JobsPage() {
   const [optimizing, setOptimizing] = React.useState(false)
   const [optimizationPlan, setOptimizationPlan] = React.useState<OptimizeResponse | null>(null)
   const [optimizeOpen, setOptimizeOpen] = React.useState(false)
+  const [jobToDelete, setJobToDelete] = React.useState<ComputeJob | null>(null)
+  const [deletingJob, setDeletingJob] = React.useState(false)
 
   const [jobExplanations, setJobExplanations] = React.useState<JobExplanation[]>([])
   const [explanationLoading, setExplanationLoading] = React.useState(false)
@@ -145,23 +129,11 @@ export default function JobsPage() {
     location: "LZ_NORTH",
   })
   const [facilityLoading, setFacilityLoading] = React.useState(true)
+  const [facilityError, setFacilityError] = React.useState<string | null>(null)
+  const [facilityDirty, setFacilityDirty] = React.useState(false)
   const [facilitySaving, setFacilitySaving] = React.useState(false)
   const [facilitySavedMsg, setFacilitySavedMsg] = React.useState<string | null>(null)
   const [facilityExpanded, setFacilityExpanded] = React.useState(false)
-
-  const loadFacility = React.useCallback(async () => {
-    setFacilityLoading(true)
-    try {
-      const response = await facilityApi.get()
-      if (response.data) {
-        setFacility(response.data)
-      }
-    } catch {
-      // Keep sensible defaults if network or first time
-    } finally {
-      setFacilityLoading(false)
-    }
-  }, [])
 
   const handleSaveFacility = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
@@ -173,9 +145,10 @@ export default function JobsPage() {
         maxCpuHours: Number(facility.maxCpuHours) || 0,
         maxGpuHours: Number(facility.maxGpuHours) || 0,
       })
-      if (response.data) {
-        setFacility(response.data)
-      }
+      if (!response.success || !response.data) throw new Error(response.message || "Could not save facility settings")
+      setFacility(response.data)
+      setFacilityError(null)
+      setFacilityDirty(false)
       setFacilitySavedMsg("Facility envelope updated & saved to database!")
       setTimeout(() => setFacilitySavedMsg(null), 3500)
     } catch (err) {
@@ -186,6 +159,7 @@ export default function JobsPage() {
   }
 
   const applyPreset = (presetName: string, cpu: number, gpu: number, loc = "LZ_NORTH") => {
+    setFacilityDirty(true)
     setFacility((prev) => ({
       ...prev,
       name: presetName,
@@ -222,12 +196,18 @@ export default function JobsPage() {
         if (active) setLoading(false)
       })
 
-    void loadFacility()
+    facilityApi.get().then(response => {
+      if (!active) return
+      if (!response.success || !response.data) throw new Error(response.message || "Could not load facility settings")
+      setFacility(response.data)
+    }).catch(error => {
+      if (active) setFacilityError(error instanceof Error ? error.message : "Could not load facility settings")
+    }).finally(() => { if (active) setFacilityLoading(false) })
 
     return () => {
       active = false
     }
-  }, [loadFacility])
+  }, [])
 
   const openCreate = () => {
     setEditing(null)
@@ -339,14 +319,18 @@ export default function JobsPage() {
     }
   }
 
-  const remove = async (job: ComputeJob) => {
-    if (!window.confirm(`Delete “${job.name}”? This cannot be undone.`)) return
+  const handleConfirmDeleteJob = async () => {
+    if (!jobToDelete) return
+    setDeletingJob(true)
     setError("")
     try {
-      await jobsApi.remove(job.id)
-      setJobs((current) => current.filter((item) => item.id !== job.id))
+      await jobsApi.remove(jobToDelete.id)
+      setJobs((current) => current.filter((item) => item.id !== jobToDelete.id))
+      setJobToDelete(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not delete job")
+    } finally {
+      setDeletingJob(false)
     }
   }
 
@@ -360,24 +344,13 @@ export default function JobsPage() {
     setOptimizing(true)
 
     // Build optimize payload ensuring originalStartTime is truncated to the hour
-    const optimizeJobs: OptimizeJobInput[] = jobs.map((j) => {
-      let startStr = j.originalStartTime
-      if (startStr.includes("T")) {
-        const [d, t] = startStr.split("T")
-        const hh = t.slice(0, 2)
-        startStr = `${d}T${hh}:00:00`
-      }
-      return {
-        id: j.id,
-        name: j.name,
-        cpuHours: j.cpuHours,
-        gpuHours: j.gpuHours,
-        originalStartTime: startStr,
-        deadline: j.deadline,
-        flexibilityWindowHours: j.flexibilityWindowHours,
-        isExempt: j.isExempt,
-      }
-    })
+    const schedulableJobs = jobs.filter(job => !["CANCELLED", "COMPLETED", "RUNNING"].includes(job.status))
+    if (!schedulableJobs.length) {
+      setError("No pending jobs are available for optimization.")
+      setOptimizing(false)
+      return
+    }
+    const optimizeJobs = schedulableJobs.map(toOptimizeJobInput)
 
     try {
       const response = await optimizerApi.optimize({
@@ -385,8 +358,8 @@ export default function JobsPage() {
         forecastLocation: facility.location || "LZ_NORTH",
         horizonHours: 48,
         clusterCapacity: {
-          maxConcurrentCpuHours: Number(facility.maxCpuHours) || 256.0,
-          maxConcurrentGpuHours: Number(facility.maxGpuHours) || 64.0,
+          maxConcurrentCpuHours: Number(facility.maxCpuHours),
+          maxConcurrentGpuHours: Number(facility.maxGpuHours),
         },
       })
       if (!response.success || !response.data) {
@@ -440,7 +413,7 @@ export default function JobsPage() {
           </Button>
           <Button
             onClick={runOptimization}
-            disabled={optimizing || jobs.length === 0}
+            disabled={optimizing || loading || facilityLoading || facilitySaving || facilityDirty || !!facilityError || jobs.length === 0}
             className="bg-teal-600 text-white hover:bg-teal-700 font-semibold shadow-xs"
           >
             <Sparkles className="mr-2 h-4 w-4" />
@@ -449,6 +422,8 @@ export default function JobsPage() {
         </div>
       </div>
 
+      {facilityError && <p role="alert" className="text-sm text-destructive">{facilityError}. Save the facility settings below or reload the page before running optimization.</p>}
+      {facilityDirty && <p role="status" className="text-sm text-muted-foreground">Save your facility settings before running optimization.</p>}
       {/* Facility & Cluster Hardware Envelope Card */}
       <Card className="border border-border bg-card shadow-xs overflow-hidden">
         <div className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/60 bg-muted/20">
@@ -462,7 +437,7 @@ export default function JobsPage() {
                   Facility Hardware & Capacity Envelope
                 </h3>
                 <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-semibold">
-                  Saved in DB
+                  {facilityLoading ? "Loading" : facilityError ? "Unavailable" : facilityDirty ? "Unsaved changes" : "Saved"}
                 </span>
               </div>
               <p className="text-xs text-muted-foreground mt-0.5">
@@ -564,7 +539,7 @@ export default function JobsPage() {
               <Field label="Facility / Cluster Name">
                 <Input
                   value={facility.name}
-                  onChange={(e) => setFacility({ ...facility, name: e.target.value })}
+                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, name: e.target.value }) }}
                   placeholder="e.g. Austin Primary Cluster"
                   required
                 />
@@ -576,7 +551,7 @@ export default function JobsPage() {
                   min="0"
                   step="any"
                   value={facility.maxCpuHours}
-                  onChange={(e) => setFacility({ ...facility, maxCpuHours: Number(e.target.value) })}
+                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, maxCpuHours: Number(e.target.value) }) }}
                   required
                 />
               </Field>
@@ -587,7 +562,7 @@ export default function JobsPage() {
                   min="0"
                   step="any"
                   value={facility.maxGpuHours}
-                  onChange={(e) => setFacility({ ...facility, maxGpuHours: Number(e.target.value) })}
+                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, maxGpuHours: Number(e.target.value) }) }}
                   required
                 />
               </Field>
@@ -595,7 +570,7 @@ export default function JobsPage() {
               <Field label="ERCOT Settlement Location">
                 <select
                   value={facility.location}
-                  onChange={(e) => setFacility({ ...facility, location: e.target.value })}
+                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, location: e.target.value }) }}
                   className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs font-semibold text-foreground focus:ring-1 focus:ring-primary"
                 >
                   <option value="LZ_NORTH">LZ_NORTH (North Hub)</option>
@@ -739,7 +714,7 @@ export default function JobsPage() {
                             size="icon"
                             variant="ghost"
                             aria-label={`Delete ${job.name}`}
-                            onClick={() => void remove(job)}
+                            onClick={() => setJobToDelete(job)}
                           >
                             <Trash2 className="h-4 w-4 text-destructive" />
                           </Button>
@@ -1105,6 +1080,56 @@ export default function JobsPage() {
           )}
           <DialogFooter>
             <Button onClick={() => setViewOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Compute Job Confirmation Dialog */}
+      <Dialog open={!!jobToDelete} onOpenChange={(open) => { if (!open && !deletingJob) setJobToDelete(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete compute job</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete <strong className="text-foreground">{jobToDelete?.name}</strong>? This action cannot be undone and will remove all associated resource specifications.
+            </DialogDescription>
+          </DialogHeader>
+
+          {jobToDelete && (
+            <div className="rounded-lg border bg-muted/40 p-3 text-xs space-y-1.5 text-muted-foreground">
+              <div className="flex justify-between">
+                <span>Priority:</span>
+                <span className="font-medium text-foreground">{jobToDelete.priority}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Resources:</span>
+                <span className="font-medium text-foreground">{jobToDelete.cpuHours} CPU-hrs · {jobToDelete.gpuHours} GPU-hrs</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Baseline Start (SGT):</span>
+                <span className="font-medium text-foreground">{formatSgtDateTime(jobToDelete.originalStartTime)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Deadline (SGT):</span>
+                <span className="font-medium text-foreground">{formatSgtDateTime(jobToDelete.deadline)}</span>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              onClick={() => setJobToDelete(null)}
+              disabled={deletingJob}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deletingJob}
+              onClick={() => void handleConfirmDeleteJob()}
+            >
+              {deletingJob ? "Deleting…" : "Delete compute job"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

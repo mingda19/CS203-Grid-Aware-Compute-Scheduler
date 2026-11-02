@@ -1,21 +1,7 @@
 "use client"
 
 import * as React from "react"
-import {
-  TrendingDown,
-  TrendingUp,
-  Wind,
-  Sun,
-  Zap,
-  Calendar,
-  AlertTriangle,
-  Info,
-  Clock,
-  ArrowUpRight,
-  Sparkles,
-  RefreshCw,
-  Search,
-} from "lucide-react"
+import { TrendingDown, TrendingUp, Calendar, RefreshCw, Search } from "lucide-react"
 import {
   Line,
   XAxis,
@@ -24,7 +10,7 @@ import {
   ResponsiveContainer,
   LineChart,
 } from "recharts"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DataStatusBadge } from "@/components/ui/data-status-badge"
@@ -36,13 +22,7 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart"
 import { UnifiedPriceTimeline, type ForecastTelemetry } from "@/components/forecasts/UnifiedPriceTimeline"
-import {
-  formatSgtDateTime,
-  formatSgtChartTick,
-  formatSgtDate,
-  formatSgtTime,
-  sgtDateToUtcIso,
-} from "@/lib/date-utils"
+import { formatSgtChartTick, sgtDateToUtcIso } from "@/lib/date-utils"
 
 const chartConfig = {
   price: {
@@ -68,21 +48,17 @@ export default function ForecastsPage() {
   })
 
   const [pricePoints, setPricePoints] = React.useState<PricePoint[]>([])
-  const [pricesLoading, setPricesLoading] = React.useState(false)
+  const [loadedHistory, setLoadedHistory] = React.useState<string | null>(null)
+  const historyQuery = `${hubLocation}:${dateRange.startDate}:${dateRange.endDate}`
+  const pricesLoading = showAdvancedHistory && loadedHistory !== historyQuery
   const [pricesError, setPricesError] = React.useState<string | null>(null)
 
   // Fetch custom historical range if advanced drawer is opened
   React.useEffect(() => {
     if (!showAdvancedHistory) return
-    if (dateRange.startDate > dateRange.endDate) {
-      setPricePoints([])
-      setPricesError(null)
-      return
-    }
+    if (dateRange.startDate > dateRange.endDate) return
 
     let cancelled = false
-    setPricesLoading(true)
-    setPricesError(null)
 
     // Convert SGT date range boundaries to UTC ISO strings for backend
     const startUtc = sgtDateToUtcIso(dateRange.startDate, false).slice(0, 10)
@@ -98,18 +74,19 @@ export default function ForecastsPage() {
         if (cancelled) return
         if (!response.success || !response.data) throw new Error(response.message || "Unable to load price history")
         setPricePoints(response.data.points.filter((point) => point.sppUsdMwh != null))
+        setPricesError(null)
       })
       .catch((error: unknown) => {
         if (!cancelled) setPricesError(error instanceof Error ? error.message : "Unable to load price history")
       })
       .finally(() => {
-        if (!cancelled) setPricesLoading(false)
+        if (!cancelled) setLoadedHistory(historyQuery)
       })
 
     return () => {
       cancelled = true
     }
-  }, [showAdvancedHistory, dateRange, hubLocation])
+  }, [showAdvancedHistory, dateRange, hubLocation, historyQuery])
 
   const chartCustomPricePoints = React.useMemo(() => {
     return pricePoints.map((point) => {
@@ -136,7 +113,7 @@ export default function ForecastsPage() {
             <DataStatusBadge
               size="sm"
               status={telemetry?.isLoading ? "cached" : telemetry?.avgLmp != null ? "live" : "unavailable"}
-              source={`ERCOT Settlement Point Price & XGBoost ML Predictions (${hubLocation})`}
+              source={`ERCOT settlements and stored model predictions (${hubLocation})`}
             />
           </div>
           <p className="text-sm text-muted-foreground mt-1">

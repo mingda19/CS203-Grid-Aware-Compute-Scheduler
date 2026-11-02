@@ -1,32 +1,8 @@
 "use client"
 
 import * as React from "react"
-import {
-  ChevronLeft,
-  ChevronRight,
-  Calendar as CalendarIcon,
-  Clock,
-  Plus,
-  Search,
-  Filter,
-  Check,
-  X,
-  Server,
-  Zap,
-  DollarSign,
-  AlertCircle,
-  Play,
-  Pause,
-  ChevronDown,
-  Info,
-  CalendarDays,
-  SlidersHorizontal,
-  RefreshCw,
-  Sliders,
-  CheckSquare,
-  Square,
-  Sparkles,
-} from "lucide-react"
+import { useRouter } from "next/navigation"
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, Plus, Search, Check, X, Server, Zap, DollarSign, CalendarDays, SlidersHorizontal, RefreshCw, Sparkles } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { workloadScheduleApi, type WorkloadSchedule } from "@/lib/api"
@@ -145,17 +121,12 @@ function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
   }
 }
 
-function makeUtcTimestamp(dateStr: string, hour: number, minute: number): string {
-  const [year, month, day] = dateStr.split("-").map(Number)
-  // Input date and hour are in Singapore Time (SGT, UTC+8). Convert to UTC (-8h)
-  return new Date(Date.UTC(year, month - 1, day, hour - 8, minute)).toISOString().slice(0, 19)
-}
-
 type CalendarViewMode = "week" | "month" | "day" | "schedule"
 
 const HOURS_OF_DAY = Array.from({ length: 24 }, (_, i) => i)
 
 export function GoogleCalendarView() {
+  const router = useRouter()
   const [currentDate, setCurrentDate] = React.useState<Date>(new Date())
   const [viewMode, setViewMode] = React.useState<CalendarViewMode>("week")
   const [events, setEvents] = React.useState<CalendarEvent[]>([])
@@ -173,35 +144,24 @@ export function GoogleCalendarView() {
     "Grid Alert": true,
   })
 
-  // Quick event creation modal state
-  const [isCreateModalOpen, setIsCreateModalOpen] = React.useState(false)
-  const [newEventTitle, setNewEventTitle] = React.useState("")
-  const [newEventType, setNewEventType] = React.useState<WorkloadType>("ML Training")
-  const [newEventStartHour, setNewEventStartHour] = React.useState(9)
-  const [newEventDuration, setNewEventDuration] = React.useState(3)
-  const [newEventCluster, setNewEventCluster] = React.useState("64x NVIDIA H100 SXM5")
-  const [newEventPowerKw, setNewEventPowerKw] = React.useState(1200)
-
-  const loadSchedules = React.useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const response = await workloadScheduleApi.list()
+  const [refreshKey, setRefreshKey] = React.useState(0)
+  React.useEffect(() => {
+    let active = true
+    workloadScheduleApi.list().then(response => {
+      if (!active) return
       if (!response.success || !response.data) throw new Error(response.message || "Unable to load schedules")
       setEvents(response.data.map(scheduleToEvent))
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Unable to load schedules")
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  React.useEffect(() => { void loadSchedules() }, [loadSchedules])
+    }).catch(error => {
+      if (active) setLoadError(error instanceof Error ? error.message : "Unable to load schedules")
+    }).finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [refreshKey])
 
   // Current time representation for live red line
   const now = new Date()
   const todayStr = toDateStr(now)
-  const currentHourDecimal = now.getHours() + now.getMinutes() / 60
+  const sgtNow = getSgtHoursMinutes(now)
+  const currentHourDecimal = sgtNow.hours + sgtNow.minutes / 60
 
   // Filter events
   const filteredEvents = React.useMemo(() => {
@@ -416,39 +376,6 @@ export function GoogleCalendarView() {
     return `${hour - 12} PM`
   }
 
-  // Handle adding new workload
-  const handleCreateEvent = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!newEventTitle.trim() || saving) return
-    setSaving(true)
-    setLoadError(null)
-    try {
-      const dateStr = toDateStr(currentDate)
-      const response = await workloadScheduleApi.create({
-        title: newEventTitle.trim(),
-        type: newEventType,
-        cluster: newEventCluster,
-        powerKw: newEventPowerKw,
-        savings: null,
-        startUtc: makeUtcTimestamp(dateStr, newEventStartHour, 0),
-        endUtc: makeUtcTimestamp(dateStr, newEventStartHour + newEventDuration, 0),
-        notes: "Manually scheduled workload via Calendar overview.",
-      })
-      if (!response.success || !response.data) throw new Error(response.message || "Unable to create schedule")
-      const newEvent = scheduleToEvent(response.data)
-      setEvents((prev) => [...prev, newEvent].sort((a, b) =>
-        a.dateStr.localeCompare(b.dateStr) || a.startHour - b.startHour || a.startMinute - b.startMinute
-      ))
-      setIsCreateModalOpen(false)
-      setNewEventTitle("")
-      setSelectedEvent(newEvent)
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Unable to create schedule")
-    } finally {
-      setSaving(false)
-    }
-  }
-
   const handleUpdateStatus = async (event: CalendarEvent, status: CalendarEvent["status"]) => {
     const id = Number(event.id)
     if (!Number.isInteger(id)) return
@@ -507,7 +434,7 @@ export function GoogleCalendarView() {
             <div className="hidden sm:block">
               <span className="font-semibold text-sm tracking-tight">GACS Schedule</span>
               <span className="text-[10px] ml-1.5 px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-medium">
-                Live Overview
+                Saved schedules
               </span>
             </div>
           </div>
@@ -521,7 +448,7 @@ export function GoogleCalendarView() {
             Today
           </Button>
 
-          <Button variant="ghost" size="sm" onClick={() => void loadSchedules()} disabled={loading} title="Refresh schedules" className="h-8 w-8 p-0">
+          <Button variant="ghost" size="sm" onClick={() => { setLoading(true); setLoadError(null); setRefreshKey(key => key + 1) }} disabled={loading} title="Refresh schedules" className="h-8 w-8 p-0">
             <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
           </Button>
 
@@ -624,11 +551,11 @@ export function GoogleCalendarView() {
           {/* "+ Create" button Google Calendar Style */}
           <Button
             size="sm"
-            onClick={() => setIsCreateModalOpen(true)}
+            onClick={() => router.push("/approvals")}
             className="h-8 px-3 text-xs bg-primary text-primary-foreground hover:bg-primary/90 rounded-md font-medium shadow-xs gap-1.5"
           >
             <Plus className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">New Schedule</span>
+            <span className="hidden sm:inline">Review schedules</span>
           </Button>
         </div>
       </header>
@@ -644,13 +571,13 @@ export function GoogleCalendarView() {
           <aside className="w-64 border-r border-border bg-card/40 flex flex-col p-3.5 gap-4 overflow-y-auto select-none shrink-0 transition-all">
             {/* Quick Action Button */}
             <button
-              onClick={() => setIsCreateModalOpen(true)}
+              onClick={() => router.push("/approvals")}
               className="flex items-center gap-2.5 px-4 py-2.5 rounded-full border border-border shadow-xs bg-background hover:shadow-md hover:bg-muted/30 transition-all text-xs font-semibold text-foreground group"
             >
               <div className="h-5 w-5 rounded-full bg-blue-500/10 text-blue-600 flex items-center justify-center group-hover:rotate-90 transition-transform">
                 <Plus className="h-3.5 w-3.5" />
               </div>
-              <span>Schedule Workload</span>
+              <span>Review approvals</span>
             </button>
 
             {/* Mini Month Calendar */}
@@ -773,7 +700,7 @@ export function GoogleCalendarView() {
                 <span>Grid Price Dispatch</span>
               </div>
               <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Color-coded blocks represent optimized execution windows calculated from wholesale grid nodal prices.
+                Calendar entries come from approved schedules. Status updates record scheduling state; they do not control compute hardware.
               </p>
             </div>
           </aside>
@@ -790,7 +717,7 @@ export function GoogleCalendarView() {
               <div className="sticky top-0 z-20 flex border-b border-border bg-card/95 backdrop-blur-sm">
                 {/* Time gutter spacer */}
                 <div className="w-16 shrink-0 border-r border-border/80 flex items-end justify-center pb-2 text-[10px] font-mono text-muted-foreground">
-                  UTC
+                  SGT
                 </div>
                 {/* 7 Days headers */}
                 <div className="grid grid-cols-7 flex-1 divide-x divide-border/80">
@@ -890,7 +817,7 @@ export function GoogleCalendarView() {
                                   {ev.title}
                                 </span>
                                 <span className="text-[9px] font-mono shrink-0 px-1 rounded bg-background/60 text-foreground font-medium">
-                                  {ev.powerKw > 0 ? `${ev.powerKw} kW` : "ALERT"}
+                                  {ev.powerKw > 0 ? `Est. $Est. {ev.powerKw} kW` : "ALERT"}
                                 </span>
                               </div>
 
@@ -1029,10 +956,10 @@ export function GoogleCalendarView() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setIsCreateModalOpen(true)}
+                  onClick={() => router.push("/approvals")}
                   className="text-xs"
                 >
-                  <Plus className="h-3.5 w-3.5 mr-1" /> Add to this day
+                  <Plus className="h-3.5 w-3.5 mr-1" /> Review approvals
                 </Button>
               </div>
 
@@ -1090,7 +1017,7 @@ export function GoogleCalendarView() {
                           <div className="flex items-center justify-between">
                             <span className={cn("font-bold text-sm", ev.colorScheme.text)}>{ev.title}</span>
                             <span className="text-xs font-mono px-2 py-0.5 rounded bg-background/80 font-bold">
-                              {ev.powerKw} kW
+                              Est. {ev.powerKw} kW
                             </span>
                           </div>
                           <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground">
@@ -1180,7 +1107,7 @@ export function GoogleCalendarView() {
 
                       <div className="flex items-center gap-4 self-end sm:self-center">
                         <div className="text-right">
-                          <div className="text-xs font-mono font-bold text-foreground">{ev.powerKw} kW</div>
+                          <div className="text-xs font-mono font-bold text-foreground">Est. {ev.powerKw} kW</div>
                           <div className="text-[11px] font-mono font-semibold text-emerald-600 dark:text-emerald-400">
                             {ev.savings}
                           </div>
@@ -1251,7 +1178,7 @@ export function GoogleCalendarView() {
                 <CalendarIcon className="h-4 w-4 text-blue-500 shrink-0" />
                 <span className="font-medium text-foreground">
                   {selectedEvent.dateStr} • {String(selectedEvent.startHour).padStart(2, "0")}:
-                  {String(selectedEvent.startMinute).padStart(2, "0")} UTC ({selectedEvent.durationHours} hours)
+                  {String(selectedEvent.startMinute).padStart(2, "0")} SGT ({selectedEvent.durationHours} hours)
                 </span>
               </div>
 
@@ -1265,21 +1192,21 @@ export function GoogleCalendarView() {
               <div className="flex items-center gap-3 text-muted-foreground">
                 <Zap className="h-4 w-4 text-amber-500 shrink-0" />
                 <span>
-                  Power Draw: <strong className="text-foreground">{selectedEvent.powerKw} kW</strong>
+                  Estimated power: <strong className="text-foreground">{selectedEvent.powerKw} kW</strong>
                 </span>
               </div>
 
               <div className="flex items-center gap-3 text-muted-foreground">
                 <DollarSign className="h-4 w-4 text-emerald-500 shrink-0" />
                 <span>
-                  Grid Tariff Optimization:{" "}
+                  Projected savings:{" "}
                   <strong className="text-emerald-600 dark:text-emerald-400">{selectedEvent.savings}</strong>
                 </span>
               </div>
 
               {selectedEvent.notes && (
                 <div className="p-3 rounded-lg bg-muted/60 border border-border/80 text-muted-foreground mt-2">
-                  <div className="font-semibold text-foreground text-[11px] mb-1">Dispatch Notes</div>
+                  <div className="font-semibold text-foreground text-[11px] mb-1">Schedule notes</div>
                   <p className="text-[11px] leading-relaxed">{selectedEvent.notes}</p>
                 </div>
               )}
@@ -1293,7 +1220,7 @@ export function GoogleCalendarView() {
                 disabled={saving}
                 className="text-xs h-8"
               >
-                Cancel Schedule
+                Remove calendar entry
               </Button>
 
               <div className="flex items-center gap-2">
@@ -1311,7 +1238,7 @@ export function GoogleCalendarView() {
                   disabled={saving}
                   className="text-xs h-8 bg-primary text-primary-foreground"
                 >
-                  {selectedEvent.status === "Running" ? "Pause Job" : "Dispatch Now"}
+                  {selectedEvent.status === "Running" ? "Mark scheduled" : "Mark running"}
                 </Button>
               </div>
             </div>
@@ -1319,132 +1246,7 @@ export function GoogleCalendarView() {
         </div>
       )}
 
-      {/* 4. CREATE NEW WORKLOAD MODAL */}
-      {isCreateModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
-          <div
-            className="w-full max-w-md rounded-2xl bg-card border border-border shadow-2xl p-6 relative animate-in zoom-in-95 duration-150"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              onClick={() => setIsCreateModalOpen(false)}
-              className="absolute top-4 right-4 h-8 w-8 rounded-full hover:bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground"
-            >
-              <X className="h-4 w-4" />
-            </button>
 
-            <h3 className="text-base font-bold text-foreground mb-1">Schedule New Workload</h3>
-            <p className="text-xs text-muted-foreground mb-4">Add a compute job or maintenance window to the calendar</p>
-
-            <form onSubmit={handleCreateEvent} className="space-y-3.5 text-xs">
-              <div>
-                <label className="block font-medium text-foreground mb-1">Workload Name</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Llama-3-70B Fine-Tuning #5"
-                  value={newEventTitle}
-                  onChange={(e) => setNewEventTitle(e.target.value)}
-                  className="w-full h-8 px-3 rounded-lg bg-muted/60 border border-border focus:bg-background focus:outline-none focus:ring-1 focus:ring-primary text-xs"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-medium text-foreground mb-1">Category</label>
-                  <select
-                    value={newEventType}
-                    onChange={(e) => setNewEventType(e.target.value as WorkloadType)}
-                    className="w-full h-8 px-2 rounded-lg bg-muted/60 border border-border focus:bg-background focus:outline-none focus:ring-1 focus:ring-primary text-xs"
-                  >
-                    <option value="ML Training">ML Training</option>
-                    <option value="Crypto Mining">Crypto Mining</option>
-                    <option value="HPC Batch">HPC Batch</option>
-                    <option value="HVAC Pre-Cool">HVAC Pre-Cool</option>
-                    <option value="Grid Alert">Grid Peak Alert</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-medium text-foreground mb-1">Cluster</label>
-                  <select
-                    value={newEventCluster}
-                    onChange={(e) => setNewEventCluster(e.target.value)}
-                    className="w-full h-8 px-2 rounded-lg bg-muted/60 border border-border focus:bg-background focus:outline-none focus:ring-1 focus:ring-primary text-xs"
-                  >
-                    <option value="64x NVIDIA H100 SXM5">64x NVIDIA H100 SXM5</option>
-                    <option value="128x NVIDIA H100 SXM5">128x NVIDIA H100 SXM5</option>
-                    <option value="Slurm HPC Cluster (96 Nodes)">Slurm HPC Cluster</option>
-                    <option value="Antminer S19 Pro+ Pod 2">Antminer S19 Pod</option>
-                    <option value="Trane Centrifugal Chiller Bank">Trane Chiller Bank</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="block font-medium text-foreground mb-1">Start Hour</label>
-                  <select
-                    value={newEventStartHour}
-                    onChange={(e) => setNewEventStartHour(Number(e.target.value))}
-                    className="w-full h-8 px-2 rounded-lg bg-muted/60 border border-border focus:bg-background focus:outline-none focus:ring-1 focus:ring-primary text-xs font-mono"
-                  >
-                    {HOURS_OF_DAY.map((h) => (
-                      <option key={h} value={h}>
-                        {formatHour(h)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-medium text-foreground mb-1">Duration (Hrs)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="24"
-                    value={newEventDuration}
-                    onChange={(e) => setNewEventDuration(Number(e.target.value))}
-                    className="w-full h-8 px-2 rounded-lg bg-muted/60 border border-border focus:bg-background focus:outline-none focus:ring-1 focus:ring-primary text-xs font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label className="block font-medium text-foreground mb-1">Power (kW)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="50"
-                    value={newEventPowerKw}
-                    onChange={(e) => setNewEventPowerKw(Number(e.target.value))}
-                    className="w-full h-8 px-2 rounded-lg bg-muted/60 border border-border focus:bg-background focus:outline-none focus:ring-1 focus:ring-primary text-xs font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-border mt-4">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsCreateModalOpen(false)}
-                  className="text-xs h-8"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={saving}
-                  className="text-xs h-8 bg-primary text-primary-foreground"
-                >
-                  {saving ? "Saving…" : "Add to Calendar"}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

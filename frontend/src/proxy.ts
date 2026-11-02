@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import type { NextRequest } from "next/server"
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   // Ignore internal Next.js assets, public assets, or APIs
@@ -16,13 +16,8 @@ export function middleware(request: NextRequest) {
 
   const isLoggedIn = request.cookies.get("gacs_logged_in")?.value === "true"
 
-  // If attempting to visit /login while already logged in, redirect to dashboard
-  if (pathname.startsWith("/login")) {
-    if (isLoggedIn) {
-      return NextResponse.redirect(new URL("/", request.url))
-    }
-    return NextResponse.next()
-  }
+  // The client verifies the session; a stale presence cookie must not prevent sign-in.
+  if (pathname.startsWith("/login")) return NextResponse.next()
 
   // If visiting any protected page without being logged in, redirect to /login
   if (!isLoggedIn) {

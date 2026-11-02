@@ -22,7 +22,7 @@ export interface AuthResponse {
 
 import { filenameFromContentDisposition } from "./download-utils"
 
-export interface ApiResponse<T = any> {
+export interface ApiResponse<T = unknown> {
   success: boolean
   message: string
   data?: T
@@ -331,7 +331,13 @@ export interface DownloadedFile {
   filename: string
 }
 
-const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080").replace(/\/+$/, "")
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL ||
+  (process.env.NODE_ENV === "production" ? "" : "http://localhost:8080")).replace(/\/+$/, "")
+
+function apiUrl(endpoint: string): string {
+  if (!API_BASE_URL) throw new Error("The application is not connected to its API. Contact your administrator.")
+  return `${API_BASE_URL}${endpoint}`
+}
 
 // Storage keys
 const ACCESS_TOKEN_KEY = "gacs_access_token"
@@ -390,7 +396,7 @@ export class ApiRequestError extends Error {
 }
 
 async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const url = `${API_BASE_URL}${endpoint}`
+  const url = apiUrl(endpoint)
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
@@ -650,7 +656,7 @@ async function readExportError(
 
 /** GET a file with the JWT attached, refreshing the access token once if the security layer rejects it. */
 async function fetchFileWithAuth(endpoint: string, accept: string): Promise<Response> {
-  const url = `${API_BASE_URL}${endpoint}`
+  const url = apiUrl(endpoint)
   if (!getAccessToken() && typeof window !== "undefined") {
     try {
       await authApi.refreshToken()
@@ -837,7 +843,8 @@ export function getStoredUser(): User | null {
     if (data && !document.cookie.includes(`${COOKIE_NAME}=true`)) {
       document.cookie = `${COOKIE_NAME}=true; path=/; max-age=${maxAge}; SameSite=Lax`
     }
-    const { _maxAgeSeconds, ...user } = data
+    const user = { ...data }
+    delete user._maxAgeSeconds
     return user as User
   } catch {
     return null

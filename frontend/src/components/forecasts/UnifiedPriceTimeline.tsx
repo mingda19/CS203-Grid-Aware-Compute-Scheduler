@@ -12,27 +12,12 @@ import {
   ReferenceLine,
   Tooltip as RechartsTooltip,
 } from "recharts"
-import {
-  TrendingUp,
-  TrendingDown,
-  RefreshCw,
-  Clock,
-  Zap,
-  Sparkles,
-  Layers,
-  ChevronDown,
-  Info,
-} from "lucide-react"
+import { RefreshCw, Sparkles } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { DataStatusBadge } from "@/components/ui/data-status-badge"
 import { priceApi, type PricePoint, type PriceForecastPoint } from "@/lib/api"
-import {
-  formatSgtDateTime,
-  formatSgtChartTick,
-  formatSgtTime,
-  sgtDateToUtcIso,
-} from "@/lib/date-utils"
+import { formatSgtDateTime, formatSgtChartTick } from "@/lib/date-utils"
 
 export type HorizonPreset = "24h" | "48h" | "7d"
 
@@ -61,7 +46,6 @@ export interface UnifiedPriceTimelineProps {
   variant?: "full" | "compact"
   className?: string
   height?: number
-  showWorkloadWindows?: boolean
   onTelemetryChange?: (telemetry: ForecastTelemetry) => void
 }
 
@@ -76,7 +60,7 @@ export interface TimelineDataPoint {
   forecastLower: number | null
   isForecast: boolean
   isTransition?: boolean
-  cleanSharePercent: number
+  cleanSharePercent: number | null
   modelVersion?: string
 }
 
@@ -86,7 +70,6 @@ export function UnifiedPriceTimeline({
   variant = "full",
   className = "",
   height,
-  showWorkloadWindows = false,
   onTelemetryChange,
 }: UnifiedPriceTimelineProps) {
   const [internalHub, setInternalHub] = React.useState("LZ_NORTH")
@@ -103,12 +86,19 @@ export function UnifiedPriceTimeline({
   const [horizon, setHorizon] = React.useState<HorizonPreset>("24h")
   const [historyPoints, setHistoryPoints] = React.useState<PricePoint[]>([])
   const [forecastPoints, setForecastPoints] = React.useState<PriceForecastPoint[]>([])
-  const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
   const [refreshTrigger, setRefreshTrigger] = React.useState(0)
+  const [loadedQuery, setLoadedQuery] = React.useState<string | null>(null)
+  const queryKey = `${activeHub}:${horizon}:${refreshTrigger}`
+  const isLoading = loadedQuery !== queryKey
+  const [nowMs, setNowMs] = React.useState(() => Date.now())
+  React.useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   // Determine history days & forecast hours based on preset
-  const { historyDays, forecastHours, label } = React.useMemo(() => {
+  const { historyDays, forecastHours } = React.useMemo(() => {
     switch (horizon) {
       case "48h":
         return { historyDays: 2, forecastHours: 48, label: "Past 48h Actuals + 48h ML Forecast" }
@@ -123,8 +113,6 @@ export function UnifiedPriceTimeline({
   // Fetch both historical settlement actuals and ML forecast
   React.useEffect(() => {
     let cancelled = false
-    setIsLoading(true)
-    setError(null)
 
     const now = new Date()
     const startDate = new Date(now)
@@ -146,6 +134,7 @@ export function UnifiedPriceTimeline({
       .then(([historyRes, forecastRes]) => {
         if (cancelled) return
 
+        setError(null)
         let hist: PricePoint[] = []
         let fore: PriceForecastPoint[] = []
 
@@ -174,13 +163,13 @@ export function UnifiedPriceTimeline({
         }
       })
       .finally(() => {
-        if (!cancelled) setIsLoading(false)
+        if (!cancelled) setLoadedQuery(queryKey)
       })
 
     return () => {
       cancelled = true
     }
-  }, [activeHub, historyDays, forecastHours, refreshTrigger])
+  }, [activeHub, historyDays, forecastHours, queryKey])
 
   // Construct continuous unified dataset
   const { chartData, nowPointKey, summaryStats, telemetry } = React.useMemo(() => {
@@ -198,8 +187,6 @@ export function UnifiedPriceTimeline({
       if (p.sppUsdMwh == null) continue
       const rawUtc = p.intervalStartUtc.endsWith("Z") ? p.intervalStartUtc : `${p.intervalStartUtc}Z`
       const price = Number(p.sppUsdMwh)
-      // Estimate clean generation share inversely correlated with high peak price
-      const cleanShare = Math.min(Math.max(Math.round(85 - price * 0.4), 18), 88)
 
       data.push({
         key: rawUtc,
@@ -211,7 +198,7 @@ export function UnifiedPriceTimeline({
         forecastUpper: null,
         forecastLower: null,
         isForecast: false,
-        cleanSharePercent: cleanShare,
+        cleanSharePercent: null,
       })
     }
 
@@ -230,20 +217,18 @@ export function UnifiedPriceTimeline({
         return tA - tB
       })
 
-    // Bridge transition: give the last actual point a forecastPrice as well so the line connects seamlessly
+    // Display-only anchor: start the purple line at the last published price.
+    // The point stays a settlement point; source forecasts and summary values are unchanged.
     if (data.length > 0 && futureForecasts.length > 0) {
-      const lastActual = data[data.length - 1]
-      lastActual.forecastPrice = lastActual.actualPrice
-      lastActual.forecastUpper = lastActual.actualPrice
-      lastActual.forecastLower = lastActual.actualPrice
-      lastActual.isTransition = true
+      const lastPublished = data[data.length - 1]
+      lastPublished.forecastPrice = lastPublished.actualPrice
+      lastPublished.isTransition = true
     }
 
     // 3. Map future forecast points
     for (const f of futureForecasts) {
       const rawUtc = f.intervalStartUtc.endsWith("Z") ? f.intervalStartUtc : `${f.intervalStartUtc}Z`
       const price = Number(f.predictedPrice)
-      const cleanShare = Math.min(Math.max(Math.round(85 - price * 0.4), 18), 88)
 
       data.push({
         key: rawUtc,
@@ -252,11 +237,11 @@ export function UnifiedPriceTimeline({
         fullTimeSgt: formatSgtDateTime(rawUtc),
         actualPrice: null,
         forecastPrice: price,
-        forecastUpper: +(price * 1.12).toFixed(2),
-        forecastLower: +Math.max(price * 0.88, 0).toFixed(2),
+        forecastUpper: null,
+        forecastLower: null,
         isForecast: true,
         modelVersion: f.modelVersion,
-        cleanSharePercent: cleanShare,
+        cleanSharePercent: null,
       })
     }
 
@@ -277,26 +262,34 @@ export function UnifiedPriceTimeline({
 
     const avgLmp = allPrices.length > 0 ? allPrices.reduce((a, b) => a + b, 0) / allPrices.length : null
 
-    // Impending Peak Spike (prioritize upcoming forecast intervals, fallback to timeline)
-    const forecastTimelinePoints = data.filter((d) => d.isForecast && !d.isTransition)
-    const peakSource = forecastTimelinePoints.length > 0 ? forecastTimelinePoints : data
+    // Evaluate future actionable intervals (at or after current time), including settled actuals and forecasts
+    const futureTimelinePoints = data.filter((d) => {
+      const ptMs = new Date(d.rawUtc).getTime()
+      return ptMs >= nowMs && !d.isTransition
+    })
+    // Fallback if nowMs is beyond the data window (e.g. historical archive view)
+    const actionableSource = futureTimelinePoints.length > 0
+      ? futureTimelinePoints
+      : data.filter((d) => d.isForecast && !d.isTransition)
+
+    // Impending Peak Spike
     let peakPrice: number | null = null
     let peakUtc: string | null = null
 
-    for (const pt of peakSource) {
-      const val = pt.isForecast ? pt.forecastPrice : (pt.actualPrice ?? pt.forecastPrice)
+    for (const pt of actionableSource) {
+      const val = pt.actualPrice ?? pt.forecastPrice
       if (val != null && (peakPrice == null || val > peakPrice)) {
         peakPrice = val
         peakUtc = pt.rawUtc
       }
     }
 
-    // Lowest Opportunity Price (prioritize upcoming forecast intervals, fallback to timeline)
+    // Lowest Opportunity Price (lowest upcoming price, prioritizing settled actuals if present, otherwise forecast)
     let lowestPrice: number | null = null
     let lowestUtc: string | null = null
 
-    for (const pt of peakSource) {
-      const val = pt.isForecast ? pt.forecastPrice : (pt.actualPrice ?? pt.forecastPrice)
+    for (const pt of actionableSource) {
+      const val = pt.actualPrice ?? pt.forecastPrice
       if (val != null && (lowestPrice == null || val < lowestPrice)) {
         lowestPrice = val
         lowestUtc = pt.rawUtc
@@ -306,20 +299,12 @@ export function UnifiedPriceTimeline({
     const peakWindow = peakUtc ? `${formatSgtChartTick(peakUtc, true)} SGT` : "—"
     const lowestWindow = lowestUtc ? `${formatSgtChartTick(lowestUtc, true)} SGT` : "—"
 
-    // Clean energy estimations
-    const cleanShares = data.map((d) => d.cleanSharePercent).filter((v) => typeof v === "number")
-    const avgCleanShare = cleanShares.length > 0
-      ? cleanShares.reduce((a, b) => a + b, 0) / cleanShares.length
-      : null
-    const maxCleanShare = cleanShares.length > 0 ? Math.max(...cleanShares) : null
-
-    const windRatio = activeHub === "LZ_WEST" ? 0.80 : activeHub === "LZ_SOUTH" ? 0.60 : 0.70
-    const solarRatio = 1 - windRatio
-    const estWindShare = avgCleanShare != null ? +(avgCleanShare * windRatio).toFixed(1) : null
-    const estSolarShare = avgCleanShare != null ? +(avgCleanShare * solarRatio).toFixed(1) : null
+    const avgCleanShare = null
+    const maxCleanShare = null
+    const estWindShare = null
+    const estSolarShare = null
 
     // Determine the boundary "Now" timestamp key using actual current time (Date.now())
-    const nowMs = Date.now()
     let resolvedNowKey = ""
 
     // Find the interval currently active (start <= now < nextStart)
@@ -375,7 +360,7 @@ export function UnifiedPriceTimeline({
       },
       telemetry: computedTelemetry,
     }
-  }, [historyPoints, forecastPoints, horizon, activeHub, isLoading])
+  }, [historyPoints, forecastPoints, activeHub, isLoading, nowMs])
 
   const onTelemetryChangeRef = React.useRef(onTelemetryChange)
   React.useEffect(() => {
@@ -401,13 +386,13 @@ export function UnifiedPriceTimeline({
               </CardTitle>
               <DataStatusBadge
                 size="sm"
-                status={isLoading ? "cached" : error ? "unavailable" : historyPoints.length > 0 ? "live" : "demo"}
-                source={`Unified ERCOT Settlement & XGBoost ML Predictions (${activeHub})`}
+                status={isLoading ? "cached" : error ? "unavailable" : historyPoints.length > 0 || forecastPoints.length > 0 ? "live" : "unavailable"}
+                source={`ERCOT settlements and stored model predictions (${activeHub})`}
                 updatedAt={historyPoints[historyPoints.length - 1]?.intervalStartUtc ? `${historyPoints[historyPoints.length - 1].intervalStartUtc}Z` : null}
               />
             </div>
             <CardDescription className="text-xs text-muted-foreground mt-0.5">
-              Historical actual settlements (solid emerald) transitioning seamlessly into future model forecasts (dashed violet) at Now (SGT).
+              Recorded settlements (emerald) and model forecasts (violet). All times are shown in SGT.
             </CardDescription>
           </div>
 
@@ -487,7 +472,7 @@ export function UnifiedPriceTimeline({
           </div>
           <div className="flex items-center gap-1.5">
             <span className="h-0.5 w-5 border-t-2 border-dashed border-violet-500 inline-block" />
-            <span className="text-violet-600 dark:text-violet-400 font-semibold">ML Forecast (±12% Corridor)</span>
+            <span className="text-violet-600 dark:text-violet-400 font-semibold">Model forecast</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
@@ -525,11 +510,6 @@ export function UnifiedPriceTimeline({
                     <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
                   </linearGradient>
 
-                  {/* Violet corridor gradient for forecast confidence band */}
-                  <linearGradient id="violetConfidenceGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.16} />
-                    <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.02} />
-                  </linearGradient>
                 </defs>
 
                 <CartesianGrid strokeDasharray="3 3" opacity={0.12} vertical={false} />
@@ -586,18 +566,6 @@ export function UnifiedPriceTimeline({
                           </span>
                         </div>
 
-                        {isFc && pt.forecastUpper && pt.forecastLower && (
-                          <div className="flex items-center justify-between text-[11px] text-muted-foreground font-mono">
-                            <span>±12% Band:</span>
-                            <span>${pt.forecastLower.toFixed(1)} – ${pt.forecastUpper.toFixed(1)}</span>
-                          </div>
-                        )}
-
-                        <div className="flex items-center justify-between text-[11px] text-teal-600 dark:text-teal-400 pt-1 border-t border-border/40">
-                          <span>Est. Clean Energy:</span>
-                          <span className="font-mono font-semibold">{pt.cleanSharePercent}% Clean</span>
-                        </div>
-
                         <div className="text-[10px] text-muted-foreground/75 font-mono pt-0.5">
                           {pt.fullTimeSgt}
                         </div>
@@ -622,16 +590,6 @@ export function UnifiedPriceTimeline({
                     }}
                   />
                 )}
-
-                {/* Shaded Forecast Corridor (Upper Bound) */}
-                <Area
-                  type="monotone"
-                  dataKey="forecastUpper"
-                  stroke="none"
-                  fill="url(#violetConfidenceGrad)"
-                  connectNulls={false}
-                  isAnimationActive={false}
-                />
 
                 {/* Historical Actual Settlement Price Area Fill */}
                 <Area

@@ -1,42 +1,14 @@
 "use client"
 
 import * as React from "react"
-import {
-  Zap,
-  LayoutDashboard,
-  CalendarClock,
-  BriefcaseBusiness,
-  TrendingDown,
-  BatteryCharging,
-  CheckCircle2,
-  FileText,
-  Settings,
-  Bell,
-  Search,
-  Menu,
-  Sun,
-  Moon,
-  ShieldCheck,
-  ChevronRight,
-  Sparkles,
-  LogOut,
-  SlidersHorizontal,
-  HelpCircle,
-  Clock,
-} from "lucide-react"
+import { Zap, LayoutDashboard, CalendarClock, BriefcaseBusiness, TrendingDown, CheckCircle2, FileText, Bell, Menu, Sun, Moon, ShieldCheck, ChevronRight, Sparkles, LogOut, HelpCircle, Clock } from "lucide-react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { formatSgtTime, formatSgtDateTime } from "@/lib/date-utils"
+
 
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet"
+
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Separator } from "@/components/ui/separator"
 import { useIsMobile } from "@/components/ui/use-mobile"
@@ -44,12 +16,11 @@ import { DataStatusBadge, type DataStatusType } from "@/components/ui/data-statu
 import {
   authApi,
   freshnessApi,
-  getAccessToken,
-  getStoredUser,
   removeStoredUser,
   type FreshnessNotification,
   type User,
 } from "@/lib/api"
+import { freshnessSummary } from "@/lib/data-freshness"
 import { mergeFreshnessNotifications } from "@/lib/notification-utils"
 
 interface AppShellProps {
@@ -67,7 +38,8 @@ export function AppShell({ children }: AppShellProps) {
   const [tourStep, setTourStep] = React.useState(0)
   const [notifications, setNotifications] = React.useState<FreshnessNotification[]>([])
   const [notificationsOpen, setNotificationsOpen] = React.useState(false)
-  const [systemDataStatus, setSystemDataStatus] = React.useState<DataStatusType>("demo")
+  const [notificationError, setNotificationError] = React.useState<string | null>(null)
+  const [systemDataStatus, setSystemDataStatus] = React.useState<DataStatusType>("unavailable")
   const [systemDataTimestamp, setSystemDataTimestamp] = React.useState<string | null>(null)
 
   const pathname = usePathname()
@@ -93,7 +65,7 @@ export function AppShell({ children }: AppShellProps) {
     },
     {
       title: "Understand the forecast",
-      description: "Price & Wind Forecast compares expected electricity prices with planned compute use. Higher bars or peaks indicate times when energy may cost more.",
+      description: "Price Forecast compares recorded settlement prices with model predictions. Peaks indicate times when electricity may cost more.",
       target: "forecasts-root",
       href: "/forecasts",
     },
@@ -106,29 +78,24 @@ export function AppShell({ children }: AppShellProps) {
   ]
 
   React.useEffect(() => {
-    const user = getStoredUser()
-    if (!user) {
-      router.push("/login")
-      return
-    }
-    setCurrentUser(user)
-    setIsAuthChecking(false)
-
-    const onboardingKey = `gacs-onboarding-complete:${user.email.toLowerCase()}`
-    if (window.localStorage.getItem(onboardingKey) !== "true") {
-      setTourStep(-1)
-      setTourOpen(true)
-    }
-
-    // If access token is missing, attempt restoring it via refresh token
-    const token = getAccessToken()
-    if (!token) {
-      authApi.refreshToken().catch(() => {
-        // If refresh also fails, clear state and redirect
-        removeStoredUser()
-        router.push("/login")
-      })
-    }
+    let active = true
+    authApi.getMe().then(response => {
+      if (!active) return
+      if (!response.success || !response.data) throw new Error("Session unavailable")
+      const user = response.data
+      setCurrentUser(user)
+      setIsAuthChecking(false)
+      const onboardingKey = `gacs-onboarding-complete:${user.email.toLowerCase()}`
+      if (window.localStorage.getItem(onboardingKey) !== "true") {
+        setTourStep(-1)
+        setTourOpen(true)
+      }
+    }).catch(() => {
+      if (!active) return
+      removeStoredUser()
+      router.replace("/login")
+    })
+    return () => { active = false }
   }, [router])
 
   React.useEffect(() => {
@@ -138,21 +105,15 @@ export function AppShell({ children }: AppShellProps) {
     const pollFreshness = async () => {
       try {
         const response = await freshnessApi.getStatus()
-        if (cancelled || !response.data) return
+        if (cancelled) return
+        if (!response.success || !response.data) throw new Error("Data status unavailable")
         setNotifications((previous) => mergeFreshnessNotifications(previous, response.data?.notifications ?? []))
         setSystemDataTimestamp(response.data.checkedAt)
-        const datasets = response.data.datasets || []
-        const isHealthy = datasets.length > 0 && datasets.every((d) => d.status === "HEALTHY")
-        const isStale = datasets.some((d) => d.status === "STALE")
-        if (isHealthy) {
-          setSystemDataStatus("live")
-        } else if (isStale) {
-          setSystemDataStatus("cached")
-        } else {
-          setSystemDataStatus("demo")
-        }
+        setSystemDataStatus(freshnessSummary(response.data).status)
       } catch {
-        setSystemDataStatus("demo")
+        if (cancelled) return
+        setSystemDataTimestamp(null)
+        setSystemDataStatus("unavailable")
       }
     }
 
@@ -167,11 +128,13 @@ export function AppShell({ children }: AppShellProps) {
   const unreadNotifications = notifications.filter((notification) => !notification.read)
 
   const markNotificationRead = async (notification: FreshnessNotification) => {
-    setNotifications((previous) => previous.map((item) => item.id === notification.id ? { ...item, read: true } : item))
+    setNotificationError(null)
     try {
-      await freshnessApi.markNotificationRead(notification.id)
+      const response = await freshnessApi.markNotificationRead(notification.id)
+      if (!response.success) throw new Error("Unable to save notification status")
+      setNotifications(previous => previous.map(item => item.id === notification.id ? { ...item, read: true } : item))
     } catch {
-      // Keep the local item readable if the server is temporarily unavailable.
+      setNotificationError("Could not mark the notification as read. Please try again.")
     }
   }
 
@@ -229,10 +192,10 @@ export function AppShell({ children }: AppShellProps) {
   }
 
   const navItems: NavItem[] = [
-    { label: "Live Grid & Overview", icon: LayoutDashboard, href: "/overview", active: pathname === "/overview" || pathname === "/" },
+    { label: "Operations Overview", icon: LayoutDashboard, href: "/overview", active: pathname === "/overview" || pathname === "/" },
     { label: "Workload Scheduler", icon: CalendarClock, href: "/workloads", active: pathname?.startsWith("/workloads") },
     { label: "Compute Jobs", icon: BriefcaseBusiness, href: "/jobs", active: pathname?.startsWith("/jobs") },
-    { label: "Price & Wind Forecast", icon: TrendingDown, href: "/forecasts", active: pathname?.startsWith("/forecasts") },
+    { label: "Price Forecast", icon: TrendingDown, href: "/forecasts", active: pathname?.startsWith("/forecasts") },
     { label: "Pending Approvals", icon: CheckCircle2, href: "/approvals", active: pathname?.startsWith("/approvals") },
     { label: "Historical Audit Logs", icon: FileText, href: "/audit", active: pathname?.startsWith("/audit") },
   ]
@@ -265,8 +228,8 @@ export function AppShell({ children }: AppShellProps) {
           </span>
         </div>
         <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
-          <span>Target Savings</span>
-          <span className="font-mono font-bold text-foreground">15–25%</span>
+          <span>Prices</span>
+          <span className="font-mono font-bold text-foreground">USD / MWh</span>
         </div>
       </div>
 
@@ -339,7 +302,7 @@ export function AppShell({ children }: AppShellProps) {
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-xs font-semibold text-foreground truncate">
-              {currentUser?.fullName || currentUser?.email?.split("@")[0] || "Elena Vance"}
+              {currentUser?.fullName || currentUser?.email?.split("@")[0] || "Account"}
             </p>
             <p className="text-[11px] text-muted-foreground truncate">
               {currentUser?.role === "ROLE_ADMIN"
@@ -412,13 +375,7 @@ export function AppShell({ children }: AppShellProps) {
               <span className="sr-only">Open menu</span>
             </Button>
 
-            <div className="relative hidden sm:block w-64 md:w-80">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search workloads, node clusters, runs..."
-                className="pl-9 h-9 text-xs bg-background/60"
-              />
-            </div>
+
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
@@ -439,12 +396,6 @@ export function AppShell({ children }: AppShellProps) {
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
-
-            {/* Environment Badge */}
-            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              DEMO SANDBOX
-            </span>
 
             {/* Standardized System Data Freshness Status */}
             <div className="hidden lg:block">
@@ -504,6 +455,7 @@ export function AppShell({ children }: AppShellProps) {
                     <h2 className="text-sm font-semibold">Notifications</h2>
                     <span className="text-[11px] text-muted-foreground">Data freshness</span>
                   </div>
+                  {notificationError && <p role="alert" className="mb-2 text-xs text-destructive">{notificationError}</p>}
                   {notifications.length === 0 ? (
                     <p className="py-5 text-center text-xs text-muted-foreground">No data alerts.</p>
                   ) : (
@@ -533,8 +485,7 @@ export function AppShell({ children }: AppShellProps) {
               size="sm"
               className="h-9 gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs font-semibold"
               onClick={() => {
-                const el = document.getElementById("approvals")
-                if (el) el.scrollIntoView({ behavior: "smooth" })
+                router.push("/jobs")
               }}
             >
               <Sparkles className="h-3.5 w-3.5" />

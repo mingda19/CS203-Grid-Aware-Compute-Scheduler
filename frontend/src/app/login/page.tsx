@@ -9,9 +9,6 @@ import {
   Mail,
   User as UserIcon,
   ArrowRight,
-  Sparkles,
-  Server,
-  Cpu,
   CheckCircle,
   AlertCircle,
   KeyRound,
@@ -19,7 +16,6 @@ import {
   ArrowLeft,
   Eye,
   EyeOff,
-  ExternalLink,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -27,51 +23,14 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { authApi, getStoredUser, setStoredUser } from "@/lib/api"
+import { authApi, getStoredUser, setStoredUser, removeStoredUser } from "@/lib/api"
 
 type AuthMode = "login" | "register" | "verify-otp"
-type LoginTab = "standard" | "demo"
-
-const DEMO_PERSONAS = [
-  {
-    id: "admin",
-    name: "System Administrator",
-    email: "admin@datacenter.io",
-    password: "Admin@2026!",
-    role: "ADMIN",
-    description: "Manage users, view audits, & configure solver policies",
-    icon: ShieldCheck,
-    badgeClass: "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400",
-  },
-  {
-    id: "operator",
-    name: "Elena Vance",
-    email: "elena.vance@datacenter.io",
-    password: "P@ssw0rd2026!",
-    role: "OPERATOR",
-    description: "Primary grid operator: inspect forecasts & approve dispatches",
-    icon: Server,
-    badgeClass: "bg-sky-500/20 text-sky-600 dark:text-sky-400",
-  },
-  {
-    id: "hpc",
-    name: "Marcus Chen",
-    email: "marcus.chen@hpc-grid.org",
-    password: "P@ssw0rd2026!",
-    role: "RESEARCHER",
-    description: "HPC workload engineer: schedule ML fine-tuning jobs",
-    icon: Cpu,
-    badgeClass: "bg-purple-500/20 text-purple-600 dark:text-purple-400",
-  },
-]
-
 export default function LoginPage() {
   const router = useRouter()
 
   // State
   const [mode, setMode] = React.useState<AuthMode>("login")
-  const [loginTab, setLoginTab] = React.useState<LoginTab>("standard")
   const [fullName, setFullName] = React.useState("")
   const [email, setEmail] = React.useState("")
   const [password, setPassword] = React.useState("")
@@ -84,12 +43,16 @@ export default function LoginPage() {
   const [successMessage, setSuccessMessage] = React.useState<string | null>(null)
   const [resendCooldown, setResendCooldown] = React.useState(0)
 
-  // If already authenticated, redirect to dashboard
+  // Verify a cached session before leaving the sign-in page.
   React.useEffect(() => {
-    const user = getStoredUser()
-    if (user) {
-      router.push("/")
-    }
+    if (!getStoredUser()) return
+    let active = true
+    authApi.getMe().then(response => {
+      if (!active) return
+      if (response.success && response.data) router.replace("/")
+      else removeStoredUser()
+    }).catch(() => { if (active) removeStoredUser() })
+    return () => { active = false }
   }, [router])
 
   // Resend countdown timer
@@ -118,42 +81,11 @@ export default function LoginPage() {
         return
       }
 
-      if (response.user) {
-        setStoredUser(response.user, response.refreshExpiresIn)
-      }
-      setSuccessMessage("Authentication verified. Loading operations cockpit...")
-      setTimeout(() => {
-        router.push("/")
-      }, 400)
-    } catch (err: any) {
-      setErrorMessage(err.message || "Invalid work email or password.")
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  // Handle Demo Persona 1-Click Launch (never exposes plaintext password in input form)
-  const handleLaunchDemoPersona = async (persona: (typeof DEMO_PERSONAS)[number]) => {
-    setIsLoading(true)
-    setErrorMessage(null)
-    setSuccessMessage(null)
-
-    try {
-      const response = await authApi.login({
-        email: persona.email,
-        password: persona.password,
-        rememberMe: true,
-      })
-
-      if (response.user) {
-        setStoredUser(response.user, response.refreshExpiresIn)
-      }
-      setSuccessMessage(`Signed in as ${persona.name}. Loading sandbox...`)
-      setTimeout(() => {
-        router.push("/")
-      }, 350)
-    } catch (err: any) {
-      setErrorMessage(err.message || "Failed to launch demo session.")
+      if (!response.success || !response.user) throw new Error(response.message || "Sign-in failed. Please try again.")
+      setStoredUser(response.user, response.refreshExpiresIn)
+      router.replace("/")
+    } catch (err: unknown) {
+      setErrorMessage((err instanceof Error ? err.message : "") || "Invalid work email or password.")
     } finally {
       setIsLoading(false)
     }
@@ -173,11 +105,12 @@ export default function LoginPage() {
         fullName: fullName || email.split("@")[0],
       })
 
+      if (!response.success) throw new Error(response.message || "Registration failed")
       setSuccessMessage(response.message || "Verification code sent to your email. Enter it below.")
       setMode("verify-otp")
       setResendCooldown(60)
-    } catch (err: any) {
-      setErrorMessage(err.message || "Registration failed. Please check your details.")
+    } catch (err: unknown) {
+      setErrorMessage((err instanceof Error ? err.message : "") || "Registration failed. Please check your details.")
     } finally {
       setIsLoading(false)
     }
@@ -191,13 +124,14 @@ export default function LoginPage() {
     setSuccessMessage(null)
 
     try {
-      await authApi.verifyOtp({ email, otp: otpCode.trim() })
+      const response = await authApi.verifyOtp({ email, otp: otpCode.trim() })
+      if (!response.success) throw new Error(response.message || "Verification failed")
 
       setSuccessMessage("Account verified successfully! Please sign in with your password.")
       setMode("login")
       setPassword("")
-    } catch (err: any) {
-      setErrorMessage(err.message || "Invalid or expired OTP code.")
+    } catch (err: unknown) {
+      setErrorMessage((err instanceof Error ? err.message : "") || "Invalid or expired OTP code.")
     } finally {
       setIsLoading(false)
     }
@@ -213,8 +147,8 @@ export default function LoginPage() {
       const response = await authApi.resendOtp({ email })
       setSuccessMessage(response.message || "A fresh OTP code has been dispatched to your email.")
       setResendCooldown(60)
-    } catch (err: any) {
-      setErrorMessage(err.message || "Failed to resend OTP. Please try again.")
+    } catch (err: unknown) {
+      setErrorMessage((err instanceof Error ? err.message : "") || "Failed to resend OTP. Please try again.")
     } finally {
       setIsLoading(false)
     }
@@ -234,7 +168,7 @@ export default function LoginPage() {
         <div className="text-center space-y-2">
           <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-[11px] font-mono font-semibold text-emerald-600 dark:text-emerald-400 shadow-xs">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span>DEMO SANDBOX · ERCOT NORTH</span>
+            <span>GRID-AWARE COMPUTE SCHEDULER</span>
           </div>
 
           <div className="flex items-center justify-center gap-2 pt-1">
@@ -253,46 +187,9 @@ export default function LoginPage() {
         {/* Auth Card */}
         <Card className="border border-border/80 bg-card/90 backdrop-blur-xl shadow-2xl">
           <CardHeader className="space-y-2 pb-3">
-            {mode === "login" && (
-              <div className="flex rounded-lg bg-muted/60 p-1 text-xs">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLoginTab("standard")
-                    setErrorMessage(null)
-                  }}
-                  className={`flex-1 py-1.5 rounded-md font-medium transition-all ${
-                    loginTab === "standard"
-                      ? "bg-background text-foreground shadow-xs font-semibold"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  Standard Sign-In
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLoginTab("demo")
-                    setErrorMessage(null)
-                  }}
-                  className={`flex-1 py-1.5 rounded-md font-medium transition-all flex items-center justify-center gap-1.5 ${
-                    loginTab === "demo"
-                      ? "bg-background text-foreground shadow-xs font-semibold"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <Sparkles className="h-3 w-3 text-emerald-500" />
-                  <span>Launch Demo</span>
-                </button>
-              </div>
-            )}
-
             <div className="flex items-center justify-between pt-1">
               <CardTitle className="text-base font-bold text-foreground">
-                {mode === "login" &&
-                  (loginTab === "standard"
-                    ? "Enter Account Credentials"
-                    : "Select Demo Persona")}
+                {mode === "login" && "Enter Account Credentials"}
                 {mode === "register" && "Create an Account"}
                 {mode === "verify-otp" && "Verify Email with OTP"}
               </CardTitle>
@@ -311,10 +208,7 @@ export default function LoginPage() {
               )}
             </div>
             <CardDescription className="text-xs">
-              {mode === "login" &&
-                (loginTab === "standard"
-                  ? "Authenticate to access dispatch schedules, real-time LMP, and approvals."
-                  : "One-click access with pre-configured operational roles. No password typing required.")}
+              {mode === "login" && "Sign in to manage compute jobs, price forecasts, and schedule approvals."}
               {mode === "register" &&
                 "Enter your work credentials to register. A 6-digit OTP will be dispatched."}
               {mode === "verify-otp" && `Enter the 6-digit code sent to ${email}.`}
@@ -346,7 +240,7 @@ export default function LoginPage() {
             )}
 
             {/* TAB 1: STANDARD SIGN-IN FORM */}
-            {mode === "login" && loginTab === "standard" && (
+            {mode === "login" && (
               <form onSubmit={handleLogin} className="space-y-3.5">
                 <div className="space-y-1.5">
                   <Label htmlFor="login-email" className="text-xs font-semibold">
@@ -375,7 +269,7 @@ export default function LoginPage() {
                     <button
                       type="button"
                       onClick={() => {
-                        alert("For password reset assistance, please contact your cluster administrator or use Demo Mode.")
+                        setSuccessMessage("For password reset assistance, contact your administrator.")
                       }}
                       className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
                     >
@@ -462,56 +356,6 @@ export default function LoginPage() {
               </form>
             )}
 
-            {/* TAB 2: DEMO SANDBOX LAUNCHER */}
-            {mode === "login" && loginTab === "demo" && (
-              <div className="space-y-2.5">
-                <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-muted-foreground">
-                  <p className="text-foreground font-semibold flex items-center gap-1.5">
-                    <Sparkles className="h-3.5 w-3.5 text-emerald-500" />
-                    Pre-seeded Interactive Personas
-                  </p>
-                  <p className="text-[11px] mt-0.5">
-                    Choose a role below to simulate real-time ERCOT dispatch workflows without manual credentials.
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  {DEMO_PERSONAS.map((persona) => {
-                    const PersonaIcon = persona.icon
-                    return (
-                      <button
-                        key={persona.id}
-                        type="button"
-                        onClick={() => handleLaunchDemoPersona(persona)}
-                        disabled={isLoading}
-                        className="w-full flex items-center justify-between p-3 rounded-lg border border-border/80 hover:border-emerald-500/60 hover:bg-emerald-500/5 transition-all text-left text-xs group cursor-pointer disabled:opacity-50"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground group-hover:text-emerald-500 group-hover:bg-emerald-500/10 transition-colors">
-                            <PersonaIcon className="h-4 w-4" />
-                          </div>
-                          <div>
-                            <div className="font-semibold text-foreground flex items-center gap-2">
-                              {persona.name}
-                              <span
-                                className={`text-[9px] px-1.5 py-0.2 rounded font-mono font-semibold ${persona.badgeClass}`}
-                              >
-                                {persona.role}
-                              </span>
-                            </div>
-                            <div className="text-[11px] text-muted-foreground mt-0.5">
-                              {persona.description}
-                            </div>
-                          </div>
-                        </div>
-                        <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-emerald-500 group-hover:translate-x-0.5 transition-all shrink-0" />
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-
             {/* MODE: REGISTER FORM */}
             {mode === "register" && (
               <form onSubmit={handleRegister} className="space-y-3">
@@ -524,7 +368,7 @@ export default function LoginPage() {
                     <Input
                       id="reg-fullname"
                       type="text"
-                      placeholder="Elena Vance"
+                      placeholder="Full name"
                       value={fullName}
                       onChange={(e) => setFullName(e.target.value)}
                       required
@@ -664,20 +508,9 @@ export default function LoginPage() {
           <CardFooter className="flex items-center justify-between border-t border-border/50 py-3 text-[11px] text-muted-foreground">
             <div className="flex items-center gap-1.5">
               <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
-              <span>Spring Boot API · JWT HttpOnly</span>
+              <span>Account authentication</span>
             </div>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="underline decoration-dotted cursor-help text-[10px]">
-                    Compliance Scope
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="top" className="text-[11px] max-w-xs">
-                  Targeted for NERC-CIP reliability standards and SOC2 Type II audit logging requirements.
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+
           </CardFooter>
         </Card>
       </div>
