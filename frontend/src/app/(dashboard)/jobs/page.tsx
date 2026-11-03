@@ -2,37 +2,20 @@
 
 import * as React from "react"
 import Link from "next/link"
-import {
-  BriefcaseBusiness,
-  Eye,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Trash2,
-  Sparkles,
-  TrendingUp,
-  CheckCircle2,
-  AlertTriangle,
-  Clock,
-  Calendar,
-  Server,
-  Check,
-  ArrowRight,
-  SlidersHorizontal,
-} from "lucide-react"
+import { BriefcaseBusiness, Eye, Pencil, Plus, RefreshCw, Trash2, Sparkles, TrendingUp, Clock, Calendar, Server, Check, ArrowRight, SlidersHorizontal } from "lucide-react"
 import {
   jobsApi,
   optimizerApi,
   facilityApi,
-  workloadScheduleApi,
+  type JobExplanation,
   type ComputeJob,
   type ComputeJobPayload,
-  type OptimizeJobInput,
+  type JobPriority,
   type OptimizeResponse,
   type ScheduleItem,
   type FacilityConfig,
 } from "@/lib/api"
-import { formatSgtDateTime, SGT_TIMEZONE } from "@/lib/date-utils"
+import { formatSgtDateTime } from "@/lib/date-utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -45,6 +28,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
+import { toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
+import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
+import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
 
 type FormState = {
   name: string
@@ -53,7 +40,11 @@ type FormState = {
   originalStartTime: string
   deadline: string
   flexibilityWindowHours: string
+  priority: JobPriority
   isExempt: boolean
+  rawConstraints?: string | null
+  parsedAt?: string | null
+  confirmationOutcome?: ComputeJobPayload["confirmationOutcome"]
 }
 
 const blankForm = (): FormState => ({
@@ -63,37 +54,31 @@ const blankForm = (): FormState => ({
   originalStartTime: "",
   deadline: "",
   flexibilityWindowHours: "0",
+  priority: "NORMAL",
   isExempt: false,
 })
 
-// The API uses timezone-free LocalDateTime strings that represent UTC. Convert
-// them explicitly so datetime-local inputs always show Singapore wall time.
-const toInputDate = (value?: string) => {
-  if (!value) return ""
-  const iso = value.endsWith("Z") || value.includes("+") ? value : `${value}Z`
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: SGT_TIMEZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date(iso))
-  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? ""
-  return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`
-}
-
-const toApiUtcDate = (value: string, onTheHour = false) => {
-  const [date, time] = value.split("T")
-  const [year, month, day] = date.split("-").map(Number)
-  const [hour, minute] = time.split(":").map(Number)
-  const finalMinute = onTheHour ? 0 : minute
-  const utc = new Date(Date.UTC(year, month - 1, day, hour - 8, finalMinute, 0))
-  return utc.toISOString().slice(0, 19)
-}
-
 const displayDate = (value?: string) => (value ? formatSgtDateTime(value) : "—")
+
+const getWindowDurationText = (start: string, end: string) => {
+  if (!start || !end) return ""
+  try {
+    const [d1, t1] = start.split("T")
+    const [y1, m1, day1] = d1.split("-").map(Number)
+    const [h1, min1] = t1.split(":").map(Number)
+    const [d2, t2] = end.split("T")
+    const [y2, m2, day2] = d2.split("-").map(Number)
+    const [h2, min2] = t2.split(":").map(Number)
+    const date1 = new Date(Date.UTC(y1, m1 - 1, day1, h1, min1))
+    const date2 = new Date(Date.UTC(y2, m2 - 1, day2, h2, min2))
+    const diffHours = (date2.getTime() - date1.getTime()) / (1000 * 60 * 60)
+    if (diffHours < 0) return "⚠️ Deadline is before start time"
+    if (diffHours === 0) return "0 hours (starts at deadline)"
+    return `${diffHours % 1 === 0 ? diffHours : diffHours.toFixed(1)} hours span`
+  } catch {
+    return ""
+  }
+}
 
 export default function JobsPage() {
   const [jobs, setJobs] = React.useState<ComputeJob[]>([])
@@ -105,14 +90,36 @@ export default function JobsPage() {
   const [viewOpen, setViewOpen] = React.useState(false)
   const [editing, setEditing] = React.useState<ComputeJob | null>(null)
   const [viewing, setViewing] = React.useState<ComputeJob | null>(null)
+  const [parseReviewPending, setParseReviewPending] = React.useState(false)
   const [form, setForm] = React.useState<FormState>(blankForm)
 
   // Optimizer state
   const [optimizing, setOptimizing] = React.useState(false)
   const [optimizationPlan, setOptimizationPlan] = React.useState<OptimizeResponse | null>(null)
   const [optimizeOpen, setOptimizeOpen] = React.useState(false)
-  const [applyingSchedule, setApplyingSchedule] = React.useState(false)
-  const [applySuccessMessage, setApplySuccessMessage] = React.useState<string | null>(null)
+  const [jobToDelete, setJobToDelete] = React.useState<ComputeJob | null>(null)
+  const [deletingJob, setDeletingJob] = React.useState(false)
+
+  const [jobExplanations, setJobExplanations] = React.useState<JobExplanation[]>([])
+  const [explanationLoading, setExplanationLoading] = React.useState(false)
+  const [explanationError, setExplanationError] = React.useState("")
+  const explanationRequest = React.useRef(0)
+
+  const loadExplanations = async (runId: string) => {
+    const requestId = ++explanationRequest.current
+    setExplanationLoading(true)
+    setExplanationError("")
+    setJobExplanations([])
+    try {
+      const response = await optimizerApi.explanation(runId)
+      if (!response.success || !response.data) throw new Error(response.message || "Could not load explanations")
+      if (requestId === explanationRequest.current) setJobExplanations(response.data.items ?? [])
+    } catch {
+      if (requestId === explanationRequest.current) setExplanationError("Could not load recommendation explanations.")
+    } finally {
+      if (requestId === explanationRequest.current) setExplanationLoading(false)
+    }
+  }
 
   // Facility & Cluster Envelope state (stored in DB per user)
   const [facility, setFacility] = React.useState<FacilityConfig>({
@@ -122,23 +129,11 @@ export default function JobsPage() {
     location: "LZ_NORTH",
   })
   const [facilityLoading, setFacilityLoading] = React.useState(true)
+  const [facilityError, setFacilityError] = React.useState<string | null>(null)
+  const [facilityDirty, setFacilityDirty] = React.useState(false)
   const [facilitySaving, setFacilitySaving] = React.useState(false)
   const [facilitySavedMsg, setFacilitySavedMsg] = React.useState<string | null>(null)
   const [facilityExpanded, setFacilityExpanded] = React.useState(false)
-
-  const loadFacility = React.useCallback(async () => {
-    setFacilityLoading(true)
-    try {
-      const response = await facilityApi.get()
-      if (response.data) {
-        setFacility(response.data)
-      }
-    } catch {
-      // Keep sensible defaults if network or first time
-    } finally {
-      setFacilityLoading(false)
-    }
-  }, [])
 
   const handleSaveFacility = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
@@ -150,9 +145,10 @@ export default function JobsPage() {
         maxCpuHours: Number(facility.maxCpuHours) || 0,
         maxGpuHours: Number(facility.maxGpuHours) || 0,
       })
-      if (response.data) {
-        setFacility(response.data)
-      }
+      if (!response.success || !response.data) throw new Error(response.message || "Could not save facility settings")
+      setFacility(response.data)
+      setFacilityError(null)
+      setFacilityDirty(false)
       setFacilitySavedMsg("Facility envelope updated & saved to database!")
       setTimeout(() => setFacilitySavedMsg(null), 3500)
     } catch (err) {
@@ -163,6 +159,7 @@ export default function JobsPage() {
   }
 
   const applyPreset = (presetName: string, cpu: number, gpu: number, loc = "LZ_NORTH") => {
+    setFacilityDirty(true)
     setFacility((prev) => ({
       ...prev,
       name: presetName,
@@ -199,21 +196,29 @@ export default function JobsPage() {
         if (active) setLoading(false)
       })
 
-    void loadFacility()
+    facilityApi.get().then(response => {
+      if (!active) return
+      if (!response.success || !response.data) throw new Error(response.message || "Could not load facility settings")
+      setFacility(response.data)
+    }).catch(error => {
+      if (active) setFacilityError(error instanceof Error ? error.message : "Could not load facility settings")
+    }).finally(() => { if (active) setFacilityLoading(false) })
 
     return () => {
       active = false
     }
-  }, [loadFacility])
+  }, [])
 
   const openCreate = () => {
     setEditing(null)
+    setParseReviewPending(false)
     setForm(blankForm())
     setError("")
     setFormOpen(true)
   }
 
   const openEdit = (job: ComputeJob) => {
+    setParseReviewPending(false)
     setEditing(job)
     setError("")
     setForm({
@@ -223,7 +228,11 @@ export default function JobsPage() {
       originalStartTime: toInputDate(job.originalStartTime),
       deadline: toInputDate(job.deadline),
       flexibilityWindowHours: String(job.flexibilityWindowHours),
+      priority: job.priority ?? "NORMAL",
       isExempt: job.isExempt,
+      rawConstraints: job.rawConstraints,
+      parsedAt: job.parsedAt,
+      confirmationOutcome: job.confirmationOutcome,
     })
     setFormOpen(true)
   }
@@ -242,6 +251,10 @@ export default function JobsPage() {
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError("")
+    if (parseReviewPending) {
+      setError("Confirm the proposed constraints or discard the text changes before saving.")
+      return
+    }
     const cpuHours = Number(form.cpuHours)
     const gpuHours = Number(form.gpuHours)
     const flexibilityWindowHours = Number(form.flexibilityWindowHours)
@@ -261,7 +274,11 @@ export default function JobsPage() {
       originalStartTime: toApiUtcDate(form.originalStartTime, true),
       deadline: toApiUtcDate(form.deadline, false),
       flexibilityWindowHours,
+      priority: form.priority,
       isExempt: form.isExempt,
+      rawConstraints: form.rawConstraints,
+      parsedAt: form.parsedAt,
+      confirmationOutcome: form.confirmationOutcome,
     }
     setSaving(true)
     try {
@@ -286,6 +303,7 @@ export default function JobsPage() {
       originalStartTime: job.originalStartTime,
       deadline: job.deadline,
       flexibilityWindowHours: job.flexibilityWindowHours,
+      priority: job.priority ?? "NORMAL",
       isExempt,
     }
     try {
@@ -301,14 +319,18 @@ export default function JobsPage() {
     }
   }
 
-  const remove = async (job: ComputeJob) => {
-    if (!window.confirm(`Delete “${job.name}”? This cannot be undone.`)) return
+  const handleConfirmDeleteJob = async () => {
+    if (!jobToDelete) return
+    setDeletingJob(true)
     setError("")
     try {
-      await jobsApi.remove(job.id)
-      setJobs((current) => current.filter((item) => item.id !== job.id))
+      await jobsApi.remove(jobToDelete.id)
+      setJobs((current) => current.filter((item) => item.id !== jobToDelete.id))
+      setJobToDelete(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not delete job")
+    } finally {
+      setDeletingJob(false)
     }
   }
 
@@ -320,27 +342,15 @@ export default function JobsPage() {
     }
     setError("")
     setOptimizing(true)
-    setApplySuccessMessage(null)
 
     // Build optimize payload ensuring originalStartTime is truncated to the hour
-    const optimizeJobs: OptimizeJobInput[] = jobs.map((j) => {
-      let startStr = j.originalStartTime
-      if (startStr.includes("T")) {
-        const [d, t] = startStr.split("T")
-        const hh = t.slice(0, 2)
-        startStr = `${d}T${hh}:00:00`
-      }
-      return {
-        id: j.id,
-        name: j.name,
-        cpuHours: j.cpuHours,
-        gpuHours: j.gpuHours,
-        originalStartTime: startStr,
-        deadline: j.deadline,
-        flexibilityWindowHours: j.flexibilityWindowHours,
-        isExempt: j.isExempt,
-      }
-    })
+    const schedulableJobs = jobs.filter(job => !["CANCELLED", "COMPLETED", "RUNNING"].includes(job.status))
+    if (!schedulableJobs.length) {
+      setError("No pending jobs are available for optimization.")
+      setOptimizing(false)
+      return
+    }
+    const optimizeJobs = schedulableJobs.map(toOptimizeJobInput)
 
     try {
       const response = await optimizerApi.optimize({
@@ -348,8 +358,8 @@ export default function JobsPage() {
         forecastLocation: facility.location || "LZ_NORTH",
         horizonHours: 48,
         clusterCapacity: {
-          maxConcurrentCpuHours: Number(facility.maxCpuHours) || 256.0,
-          maxConcurrentGpuHours: Number(facility.maxGpuHours) || 64.0,
+          maxConcurrentCpuHours: Number(facility.maxCpuHours),
+          maxConcurrentGpuHours: Number(facility.maxGpuHours),
         },
       })
       if (!response.success || !response.data) {
@@ -357,41 +367,11 @@ export default function JobsPage() {
       }
       setOptimizationPlan(response.data)
       setOptimizeOpen(true)
+      void loadExplanations(response.data.runId)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Optimization failed")
     } finally {
       setOptimizing(false)
-    }
-  }
-
-  // Push scheduled items to workload-schedules for Calendar and Queue view
-  const applyScheduleToCalendar = async () => {
-    if (!optimizationPlan || !optimizationPlan.items) return
-    setApplyingSchedule(true)
-    setApplySuccessMessage(null)
-    try {
-      let createdCount = 0
-      for (const item of optimizationPlan.items) {
-        if (item.scheduledStart && item.scheduledEnd) {
-          const powerEst = Math.round(item.allocatedCpuHours * 5 + item.allocatedGpuHours * 25) || 500
-          await workloadScheduleApi.create({
-            title: item.jobName,
-            type: item.allocatedGpuHours > 0 ? "ML Training" : "HPC Batch",
-            cluster: "Cluster Primary",
-            powerKw: powerEst,
-            savings: item.savingsUsd != null ? `$${item.savingsUsd.toFixed(2)}` : null,
-            startUtc: item.scheduledStart.replace("Z", ""),
-            endUtc: item.scheduledEnd.replace("Z", ""),
-            notes: item.perJobStatus + (item.reason ? `: ${item.reason}` : ""),
-          })
-          createdCount++
-        }
-      }
-      setApplySuccessMessage(`Successfully applied ${createdCount} optimized jobs to Workload Calendar!`)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not apply schedule")
-    } finally {
-      setApplyingSchedule(false)
     }
   }
 
@@ -433,7 +413,7 @@ export default function JobsPage() {
           </Button>
           <Button
             onClick={runOptimization}
-            disabled={optimizing || jobs.length === 0}
+            disabled={optimizing || loading || facilityLoading || facilitySaving || facilityDirty || !!facilityError || jobs.length === 0}
             className="bg-teal-600 text-white hover:bg-teal-700 font-semibold shadow-xs"
           >
             <Sparkles className="mr-2 h-4 w-4" />
@@ -442,6 +422,8 @@ export default function JobsPage() {
         </div>
       </div>
 
+      {facilityError && <p role="alert" className="text-sm text-destructive">{facilityError}. Save the facility settings below or reload the page before running optimization.</p>}
+      {facilityDirty && <p role="status" className="text-sm text-muted-foreground">Save your facility settings before running optimization.</p>}
       {/* Facility & Cluster Hardware Envelope Card */}
       <Card className="border border-border bg-card shadow-xs overflow-hidden">
         <div className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/60 bg-muted/20">
@@ -455,7 +437,7 @@ export default function JobsPage() {
                   Facility Hardware & Capacity Envelope
                 </h3>
                 <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-semibold">
-                  Saved in DB
+                  {facilityLoading ? "Loading" : facilityError ? "Unavailable" : facilityDirty ? "Unsaved changes" : "Saved"}
                 </span>
               </div>
               <p className="text-xs text-muted-foreground mt-0.5">
@@ -557,7 +539,7 @@ export default function JobsPage() {
               <Field label="Facility / Cluster Name">
                 <Input
                   value={facility.name}
-                  onChange={(e) => setFacility({ ...facility, name: e.target.value })}
+                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, name: e.target.value }) }}
                   placeholder="e.g. Austin Primary Cluster"
                   required
                 />
@@ -569,7 +551,7 @@ export default function JobsPage() {
                   min="0"
                   step="any"
                   value={facility.maxCpuHours}
-                  onChange={(e) => setFacility({ ...facility, maxCpuHours: Number(e.target.value) })}
+                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, maxCpuHours: Number(e.target.value) }) }}
                   required
                 />
               </Field>
@@ -580,7 +562,7 @@ export default function JobsPage() {
                   min="0"
                   step="any"
                   value={facility.maxGpuHours}
-                  onChange={(e) => setFacility({ ...facility, maxGpuHours: Number(e.target.value) })}
+                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, maxGpuHours: Number(e.target.value) }) }}
                   required
                 />
               </Field>
@@ -588,7 +570,7 @@ export default function JobsPage() {
               <Field label="ERCOT Settlement Location">
                 <select
                   value={facility.location}
-                  onChange={(e) => setFacility({ ...facility, location: e.target.value })}
+                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, location: e.target.value }) }}
                   className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs font-semibold text-foreground focus:ring-1 focus:ring-primary"
                 >
                   <option value="LZ_NORTH">LZ_NORTH (North Hub)</option>
@@ -620,23 +602,6 @@ export default function JobsPage() {
           className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
         >
           {error}
-        </div>
-      )}
-
-      {applySuccessMessage && (
-        <div
-          role="status"
-          className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300 flex items-center justify-between"
-        >
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4" />
-            {applySuccessMessage}
-          </div>
-          <Button asChild size="sm" variant="ghost" className="text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 text-xs">
-            <Link href="/workloads">
-              Open Workload Calendar →
-            </Link>
-          </Button>
         </div>
       )}
 
@@ -680,7 +645,7 @@ export default function JobsPage() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[820px] text-left text-sm">
+              <table className="w-full min-w-[920px] text-left text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
                     <th className="px-3 py-3">Name</th>
@@ -688,6 +653,7 @@ export default function JobsPage() {
                     <th className="px-3 py-3">Original start (SGT)</th>
                     <th className="px-3 py-3">Deadline (SGT)</th>
                     <th className="px-3 py-3">Flexibility</th>
+                    <th className="px-3 py-3">Priority</th>
                     <th className="px-3 py-3">Exemption</th>
                     <th className="px-3 py-3">Status</th>
                     <th className="px-3 py-3">Actions</th>
@@ -703,6 +669,7 @@ export default function JobsPage() {
                       <td className="px-3 py-3">{displayDate(job.originalStartTime)}</td>
                       <td className="px-3 py-3">{displayDate(job.deadline)}</td>
                       <td className="px-3 py-3">{`${job.flexibilityWindowHours}h`}</td>
+                      <td className="px-3 py-3">{job.priority ?? "NORMAL"}</td>
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-2">
                           <Checkbox
@@ -747,7 +714,7 @@ export default function JobsPage() {
                             size="icon"
                             variant="ghost"
                             aria-label={`Delete ${job.name}`}
-                            onClick={() => void remove(job)}
+                            onClick={() => setJobToDelete(job)}
                           >
                             <Trash2 className="h-4 w-4 text-destructive" />
                           </Button>
@@ -878,7 +845,8 @@ export default function JobsPage() {
                     </thead>
                     <tbody className="divide-y divide-border/60">
                       {optimizationPlan.items.map((item: ScheduleItem) => (
-                        <tr key={item.jobId} className="hover:bg-muted/20">
+                        <React.Fragment key={item.jobId}>
+                        <tr className="hover:bg-muted/20">
                           <td className="py-2.5 px-3 font-medium text-foreground">{item.jobName}</td>
                           <td className="py-2.5 px-3">
                             <span
@@ -908,6 +876,16 @@ export default function JobsPage() {
                             {item.savingsUsd != null ? `$${item.savingsUsd.toFixed(2)}` : "—"}
                           </td>
                         </tr>
+                        <tr><td colSpan={6} className="px-3 pb-3 pt-1">
+                          <RecommendationExplanation
+                            item={item}
+                            explanation={jobExplanations.find((entry) => entry.jobId === item.jobId)}
+                            loading={explanationLoading}
+                            error={explanationError}
+                            onRetry={() => void loadExplanations(optimizationPlan.runId)}
+                          />
+                        </td></tr>
+                        </React.Fragment>
                       ))}
                     </tbody>
                   </table>
@@ -917,29 +895,16 @@ export default function JobsPage() {
           )}
 
           <DialogFooter className="flex flex-col sm:flex-row gap-2 justify-between">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={applyScheduleToCalendar}
-                disabled={applyingSchedule || !optimizationPlan}
-                className="gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
-              >
-                <Calendar className="h-3.5 w-3.5" />
-                {applyingSchedule ? "Applying to Calendar…" : "Apply to Workload Calendar"}
-              </Button>
-              {applySuccessMessage && (
-                <Button
-                  type="button"
-                  asChild
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5 text-xs"
-                >
-                  <Link href="/workloads">
-                    Open Calendar <ArrowRight className="h-3.5 w-3.5" />
+            {optimizationPlan && (
+              <div className="space-y-2">
+                <Button type="button" asChild className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700">
+                  <Link href={`/approvals?runId=${encodeURIComponent(optimizationPlan.runId)}`}>
+                    Review and approve <ArrowRight className="h-3.5 w-3.5" />
                   </Link>
                 </Button>
-              )}
-            </div>
+                <p className="text-xs text-muted-foreground">Approve this recommendation before adding it to the calendar.</p>
+              </div>
+            )}
             <Button type="button" onClick={() => setOptimizeOpen(false)}>
               Close
             </Button>
@@ -949,7 +914,7 @@ export default function JobsPage() {
 
       {/* Create / Edit Form Dialog */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
           <form onSubmit={submit}>
             <DialogHeader>
               <DialogTitle>{editing ? "Edit compute job" : "Create compute job"}</DialogTitle>
@@ -957,6 +922,31 @@ export default function JobsPage() {
                 Enter resource requirements and allowed scheduling window. Times are shown in Singapore time (SGT).
               </DialogDescription>
             </DialogHeader>
+            {formOpen && <ConstraintParseReview
+              draft={{
+                originalStartTime: form.originalStartTime ? toApiUtcDate(form.originalStartTime, true) : null,
+                deadline: form.deadline ? toApiUtcDate(form.deadline) : null,
+                flexibilityWindowHours: form.flexibilityWindowHours === "" ? null : Number(form.flexibilityWindowHours),
+                priority: form.priority,
+                isExempt: form.isExempt,
+              }}
+              confirmedSource={form.rawConstraints ?? ""}
+              onPendingChange={setParseReviewPending}
+              onConfirm={(result, rawConstraints) => {
+                setForm((current) => ({
+                  ...current,
+                  originalStartTime: result.fields.originalStartTime ? toInputDate(result.fields.originalStartTime) : "",
+                  deadline: result.fields.deadline ? toInputDate(result.fields.deadline) : "",
+                  flexibilityWindowHours: result.fields.flexibilityWindowHours == null ? "" : String(result.fields.flexibilityWindowHours),
+                  priority: result.fields.priority ?? current.priority,
+                  isExempt: result.fields.isExempt ?? current.isExempt,
+                  rawConstraints,
+                  parsedAt: result.parsedAt,
+                  confirmationOutcome: "CONFIRMED",
+                }))
+                setError("")
+              }}
+            />}
             <div className="grid gap-4 py-5 sm:grid-cols-2">
               <Field label="Job name">
                 <Input
@@ -989,23 +979,38 @@ export default function JobsPage() {
                   />
                 </Field>
               </div>
-              <Field label="Original start time (SGT - On the hour)">
-                <Input
-                  type="datetime-local"
-                  step="3600"
-                  required
+              <Field label="Original start time (SGT)">
+                <JobDateTimePicker
+                  id="job-original-start"
                   value={form.originalStartTime}
-                  onChange={(e) => setForm({ ...form, originalStartTime: e.target.value })}
+                  onChange={(val) => setForm({ ...form, originalStartTime: val })}
+                  placeholder="Select start date & hour (SGT)..."
+                  mode="start"
+                  required
                 />
               </Field>
               <Field label="Deadline (SGT)">
-                <Input
-                  type="datetime-local"
-                  required
+                <JobDateTimePicker
+                  id="job-deadline"
                   value={form.deadline}
-                  onChange={(e) => setForm({ ...form, deadline: e.target.value })}
+                  onChange={(val) => setForm({ ...form, deadline: val })}
+                  placeholder="Select deadline (SGT)..."
+                  mode="deadline"
+                  minDateTime={form.originalStartTime}
+                  required
                 />
               </Field>
+              {form.originalStartTime && form.deadline && (
+                <div className="rounded-md bg-muted/50 p-2.5 text-xs flex items-center justify-between border border-border/60">
+                  <span className="text-muted-foreground flex items-center gap-1.5">
+                    <Clock className="h-3.5 w-3.5 text-emerald-500" />
+                    <span>Scheduling Window:</span>
+                  </span>
+                  <span className={`font-mono font-medium ${form.deadline < form.originalStartTime ? "text-destructive font-semibold" : "text-foreground"}`}>
+                    {getWindowDurationText(form.originalStartTime, form.deadline)}
+                  </span>
+                </div>
+              )}
               <Field label="Flexibility window (hours)">
                 <Input
                   type="number"
@@ -1015,6 +1020,18 @@ export default function JobsPage() {
                   value={form.flexibilityWindowHours}
                   onChange={(e) => setForm({ ...form, flexibilityWindowHours: e.target.value })}
                 />
+              </Field>
+              <Field label="Priority">
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  value={form.priority}
+                  onChange={(e) => setForm({ ...form, priority: e.target.value as JobPriority })}
+                >
+                  <option value="CRITICAL">CRITICAL</option>
+                  <option value="HIGH">HIGH</option>
+                  <option value="NORMAL">NORMAL</option>
+                  <option value="LOW">LOW</option>
+                </select>
               </Field>
               <div className="flex items-center gap-3 self-end rounded-md border p-3 text-sm">
                 <Checkbox
@@ -1033,7 +1050,7 @@ export default function JobsPage() {
               <Button type="button" variant="outline" onClick={() => setFormOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={saving} className="bg-emerald-600 text-white hover:bg-emerald-700">
+              <Button type="submit" disabled={saving || parseReviewPending} className="bg-emerald-600 text-white hover:bg-emerald-700">
                 {saving ? "Saving…" : editing ? "Save changes" : "Create job"}
               </Button>
             </DialogFooter>
@@ -1057,11 +1074,62 @@ export default function JobsPage() {
               <Detail label="Original start" value={displayDate(viewing.originalStartTime)} />
               <Detail label="Deadline" value={displayDate(viewing.deadline)} />
               <Detail label="Flexibility" value={`${viewing.flexibilityWindowHours} hours`} />
+              <Detail label="Priority" value={viewing.priority ?? "NORMAL"} />
               <Detail label="Exempt" value={viewing.isExempt ? "Yes" : "No"} />
             </dl>
           )}
           <DialogFooter>
             <Button onClick={() => setViewOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Compute Job Confirmation Dialog */}
+      <Dialog open={!!jobToDelete} onOpenChange={(open) => { if (!open && !deletingJob) setJobToDelete(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete compute job</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete <strong className="text-foreground">{jobToDelete?.name}</strong>? This action cannot be undone and will remove all associated resource specifications.
+            </DialogDescription>
+          </DialogHeader>
+
+          {jobToDelete && (
+            <div className="rounded-lg border bg-muted/40 p-3 text-xs space-y-1.5 text-muted-foreground">
+              <div className="flex justify-between">
+                <span>Priority:</span>
+                <span className="font-medium text-foreground">{jobToDelete.priority}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Resources:</span>
+                <span className="font-medium text-foreground">{jobToDelete.cpuHours} CPU-hrs · {jobToDelete.gpuHours} GPU-hrs</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Baseline Start (SGT):</span>
+                <span className="font-medium text-foreground">{formatSgtDateTime(jobToDelete.originalStartTime)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Deadline (SGT):</span>
+                <span className="font-medium text-foreground">{formatSgtDateTime(jobToDelete.deadline)}</span>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              onClick={() => setJobToDelete(null)}
+              disabled={deletingJob}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deletingJob}
+              onClick={() => void handleConfirmDeleteJob()}
+            >
+              {deletingJob ? "Deleting…" : "Delete compute job"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

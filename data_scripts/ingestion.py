@@ -127,10 +127,23 @@ def _parse_database_url(database_url: str) -> sa.engine.URL:
     )
 
 
+UPSERT_CHUNK_ROWS = 1000  # see upsert_dataframe's docstring
+
+
 def upsert_dataframe(engine: sa.Engine, table: str, df: pd.DataFrame, key_cols: list[str]) -> tuple[int, int]:
-    """INSERT ... ON CONFLICT(key_cols) DO UPDATE the rows of `df` into `table`.
-    Returns (rows_added, rows_total_in_table_now). Portable across the
-    postgresql and sqlite dialects (both support ON CONFLICT upserts the same way)."""
+    """INSERT ... ON CONFLICT(key_cols) DO UPDATE the rows of `df` into `table`,
+    UPSERT_CHUNK_ROWS at a time in one transaction. Returns (rows_added,
+    rows_total_in_table_now). Portable across the postgresql and sqlite
+    dialects (both support ON CONFLICT upserts the same way).
+
+    Chunked, not one INSERT for the whole frame: a one-shot historical
+    backfill (ingestion.py --since) can hand this tens of thousands of rows
+    at once - confirmed directly that a single INSERT that size reliably
+    drops the connection against Supabase's pooler ("server closed the
+    connection unexpectedly"), where the exact same data chunked into
+    UPSERT_CHUNK_ROWS-row statements succeeds. The daily ingestion path
+    (a handful of rows per run) never gets close to this, so it was never
+    hit until a real multi-month backfill was attempted."""
     if df.empty:
         with engine.begin() as conn:
             total = conn.execute(sa.text(f"SELECT COUNT(*) FROM {table}")).scalar_one()
@@ -169,15 +182,17 @@ def upsert_dataframe(engine: sa.Engine, table: str, df: pd.DataFrame, key_cols: 
 
     with engine.begin() as conn:
         before = conn.execute(sa.text(f"SELECT COUNT(*) FROM {table}")).scalar_one()
-        stmt = dialect_insert(tbl).values(records)
-        if update_cols:
-            stmt = stmt.on_conflict_do_update(
-                index_elements=key_cols,
-                set_={c: getattr(stmt.excluded, c) for c in update_cols},
-            )
-        else:
-            stmt = stmt.on_conflict_do_nothing(index_elements=key_cols)
-        conn.execute(stmt)
+        for start in range(0, len(records), UPSERT_CHUNK_ROWS):
+            chunk = records[start:start + UPSERT_CHUNK_ROWS]
+            stmt = dialect_insert(tbl).values(chunk)
+            if update_cols:
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=key_cols,
+                    set_={c: getattr(stmt.excluded, c) for c in update_cols},
+                )
+            else:
+                stmt = stmt.on_conflict_do_nothing(index_elements=key_cols)
+            conn.execute(stmt)
         after = conn.execute(sa.text(f"SELECT COUNT(*) FROM {table}")).scalar_one()
 
     return after - before, after
@@ -289,22 +304,75 @@ def fetch_weather(client: openmeteo_requests.Client, dataset: WeatherDataset,
     return pd.concat(frames, ignore_index=True)
 
 
+WEATHER_FETCH_CHUNK_DAYS = 30  # see update_weather's docstring
+WEATHER_FETCH_RETRIES = 4
+WEATHER_FETCH_RETRY_BACKOFF_S = 5.0  # doubles each retry: 5s, 10s, 20s, 40s
+
+
+def _fetch_weather_chunk_with_retries(client, dataset, locations, start_date: str, end_date: str) -> pd.DataFrame:
+    """fetch_weather, retrying on openmeteo_requests.Client.OpenMeteoRequestsError
+    (confirmed directly: Open-Meteo's historical-forecast endpoint intermittently
+    times out server-side mid-stream - "Unexpected error while streaming data:
+    timeoutReached" - on some chunks but not others at the same size, worse for
+    heavier datasets like "wind" (9 hourly_vars, the most of any WeatherDataset)
+    than lighter ones; this doesn't set an HTTP status code, so make_openmeteo_client's
+    own urllib3 Retry/backoff (which only triggers on connection failures or
+    specific status codes) never sees it at all - this needs its own retry,
+    one level up)."""
+    from openmeteo_requests.Client import OpenMeteoRequestsError
+    for attempt in range(WEATHER_FETCH_RETRIES):
+        try:
+            return fetch_weather(client, dataset, locations, start_date, end_date)
+        except OpenMeteoRequestsError:
+            if attempt == WEATHER_FETCH_RETRIES - 1:
+                raise
+            delay = WEATHER_FETCH_RETRY_BACKOFF_S * (2 ** attempt)
+            logger.warning("[weather:%s] %s..%s timed out (attempt %d/%d) - retrying in %.0fs", dataset.name,
+                           start_date, end_date, attempt + 1, WEATHER_FETCH_RETRIES, delay)
+            time.sleep(delay)
+
+
 def update_weather(engine: sa.Engine, client: openmeteo_requests.Client, dataset: WeatherDataset,
                    start_date: str, end_date: str) -> tuple[int, int]:
+    """Fetch and upsert start_date..end_date, WEATHER_FETCH_CHUNK_DAYS at a
+    time (with retries per chunk - see _fetch_weather_chunk_with_retries).
+    Chunked, not one request for the whole range: confirmed directly that a
+    ~4.6-year single request times out server-side - the normal daily
+    ingestion path (a handful of days per run) never gets close to this, so
+    it was never hit until a real multi-year backfill was attempted (same
+    shape of gap as upsert_dataframe's own row-count chunking, added for the
+    same reason on the DB-write side)."""
     locations = fetch_locations_by_description(engine, dataset.description)
-    new = fetch_weather(client, dataset, locations, start_date, end_date)
-    cols = ["location_id", "time"] + dataset.hourly_vars
-    # Select using Open-Meteo's own variable casing (e.g. "temperature_1000hPa" -
-    # the API is case-sensitive about it), then lowercase for the DB column names
-    # (e.g. "temperature_1000hpa" - see Wind.java). Same class of bug as the EIA
-    # uppercase-fuel-code columns; fixed generically here so it can't recur for
-    # any other Open-Meteo variable with mixed-case naming.
-    new = new[cols].rename(columns=str.lower)
-    return upsert_dataframe(engine, dataset.table, new, ["location_id", "time"])
+    added_total, after = 0, 0
+    chunk_start = pd.Timestamp(start_date)
+    end = pd.Timestamp(end_date)
+    while chunk_start <= end:
+        chunk_end = min(chunk_start + pd.Timedelta(days=WEATHER_FETCH_CHUNK_DAYS - 1), end)
+        new = _fetch_weather_chunk_with_retries(client, dataset, locations, chunk_start.date().isoformat(),
+                                                chunk_end.date().isoformat())
+        cols = ["location_id", "time"] + dataset.hourly_vars
+        # Select using Open-Meteo's own variable casing (e.g. "temperature_1000hPa" -
+        # the API is case-sensitive about it), then lowercase for the DB column names
+        # (e.g. "temperature_1000hpa" - see Wind.java). Same class of bug as the EIA
+        # uppercase-fuel-code columns; fixed generically here so it can't recur for
+        # any other Open-Meteo variable with mixed-case naming.
+        new = new[cols].rename(columns=str.lower)
+        added, after = upsert_dataframe(engine, dataset.table, new, ["location_id", "time"])
+        added_total += added
+        chunk_start = chunk_end + pd.Timedelta(days=1)
+    return added_total, after
 
 
-def update_all_weather(engine: sa.Engine, reference_date: date | None = None) -> None:
-    """Fetch yesterday through +3 days (UTC) for all 4 weather datasets.
+def update_all_weather(engine: sa.Engine, reference_date: date | None = None, since: date | None = None) -> None:
+    """Fetch (since or yesterday) through +3 days (UTC) for all 4 weather
+    datasets. `since` (--since) backfills history, same as
+    update_all_eia_data/update_all_dam_prices - previously this function had
+    no such parameter at all, so main() had nothing to pass it even if it had
+    tried to (it didn't - see run_ingestion()/main() history): --since
+    silently did nothing for weather while still correctly backfilling EIA
+    and DAM. One call, not chunked by day - see this module's own history
+    for whether a large `since` backfill needs chunking against Open-Meteo's
+    historical-forecast endpoint before relying on this for a multi-month gap.
 
     Through +3 days, not just tomorrow, on purpose: predictions.py predicts
     y_0 (2 days out) and y_1 (3 days out), and needs the target day's
@@ -322,10 +390,10 @@ def update_all_weather(engine: sa.Engine, reference_date: date | None = None) ->
     failed outright."""
     client = make_openmeteo_client()
     today = reference_date or datetime.now(timezone.utc).date()
-    yesterday = today - timedelta(days=1)
+    start = min(since, today - timedelta(days=1)) if since else today - timedelta(days=1)
     furthest_target = today + timedelta(days=3)
     for dataset in WEATHER_DATASETS:
-        added, total = update_weather(engine, client, dataset, yesterday.isoformat(), furthest_target.isoformat())
+        added, total = update_weather(engine, client, dataset, start.isoformat(), furthest_target.isoformat())
         logger.info("[weather:%s] +%d new, %d total in %s", dataset.name, added, total, dataset.table)
 
 
@@ -616,7 +684,7 @@ def main() -> None:
     try:
         result = run_ingestion(
             engine,
-            weather_fn=(lambda eng: update_all_weather(eng)) if "weather" in only else (lambda eng: None),
+            weather_fn=(lambda eng: update_all_weather(eng, since=args.since)) if "weather" in only else (lambda eng: None),
             eia_fn=(lambda eng: update_all_eia_data(eng, since=args.since)) if "eia" in only else (lambda eng: None),
             dam_fn=(lambda eng: update_all_dam_prices(eng, since=args.since)) if "dam" in only else (lambda eng: None),
         )

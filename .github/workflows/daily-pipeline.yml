@@ -8,7 +8,7 @@ on:
     # queuing delay, since huge numbers of repos across GitHub schedule
     # there too. Confirmed directly against this repo's own run history
     # (GET /repos/.../actions/workflows/daily-pipeline.yml/runs)
-    - cron: '57 20 * * *'
+    - cron: '30 19 * * *'
   push:
     branches:
       - model/retraining
@@ -89,7 +89,9 @@ jobs:
             exit "$status"
           fi
 
-      - name: Run Price Predictions
+      - name: Run LSTM Price Predictions
+        id: predict_lstm
+        continue-on-error: true
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
@@ -100,4 +102,38 @@ jobs:
           if [ -n "${{ github.event.inputs.horizon }}" ]; then
             args+=(--horizon "${{ github.event.inputs.horizon }}")
           fi
-          python predictions.py "${args[@]}"
+          python predict_lstm.py "${args[@]}"
+
+      - name: Run LEAR Price Predictions
+        id: predict_lear
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          args=()
+          if [ -n "${{ github.event.inputs.anchor_date }}" ]; then
+            args+=(--date "${{ github.event.inputs.anchor_date }}")
+          fi
+          if [ -n "${{ github.event.inputs.horizon }}" ]; then
+            args+=(--horizon "${{ github.event.inputs.horizon }}")
+          fi
+          python predict_lear.py "${args[@]}"
+
+      # Each prediction step above runs regardless of the other's outcome
+      # (continue-on-error: true) - a bug or outage in one model kind must
+      # not block the other from serving its own predictions
+      # (predict_lstm.py/predict_lear.py module docstrings). This step is
+      # what actually fails the job (and surfaces which one) if either did.
+      - name: Check prediction outcomes
+        if: always()
+        run: |
+          failed=0
+          if [ "${{ steps.predict_lstm.outcome }}" != "success" ]; then
+            echo "::error::predict_lstm.py failed"
+            failed=1
+          fi
+          if [ "${{ steps.predict_lear.outcome }}" != "success" ]; then
+            echo "::error::predict_lear.py failed"
+            failed=1
+          fi
+          exit $failed

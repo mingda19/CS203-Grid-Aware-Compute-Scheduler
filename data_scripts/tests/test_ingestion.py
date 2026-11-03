@@ -104,6 +104,30 @@ class UpsertTests(unittest.TestCase):
         added, total = ing.upsert_dataframe(self.engine, "prices", empty, ["interval_start_utc", "location"])
         self.assertEqual((added, total), (0, 0))
 
+    def test_a_dataframe_spanning_several_chunks_upserts_completely(self):
+        # A one-shot historical backfill can hand this tens of thousands of
+        # rows in one call - a single INSERT that size reliably drops the
+        # connection against Supabase's pooler (confirmed directly running a
+        # real --since backfill), which is why upsert_dataframe chunks at
+        # all. 3.5 chunks here, well past the boundary, on an otherwise
+        # ordinary small in-memory DB - this pins the chunking loop's own
+        # correctness (every row present, upserts still dedupe across a
+        # chunk boundary), not the connection-size issue chunking exists for.
+        n = int(ing.UPSERT_CHUNK_ROWS * 3.5)
+        times = pd.date_range("2025-01-01", periods=n, freq="h")
+        df = pd.DataFrame({"interval_start_utc": [t.isoformat() for t in times],
+                           "location": "LZ_NORTH", "price": range(n)})
+        added, total = ing.upsert_dataframe(self.engine, "prices", df, ["interval_start_utc", "location"])
+        self.assertEqual((added, total), (n, n))
+        self.assertEqual(len(self.read_all()), n)
+
+        # Rerun with the last chunk's worth of rows corrected - exercises an
+        # update (not insert) landing inside a specific chunk.
+        corrected = df.tail(ing.UPSERT_CHUNK_ROWS // 2).assign(price=lambda d: d["price"] + 1000)
+        added, total = ing.upsert_dataframe(self.engine, "prices", corrected, ["interval_start_utc", "location"])
+        self.assertEqual((added, total), (0, n))
+        self.assertEqual(self.read_all()["price"].max(), n - 1 + 1000)
+
 
 # --------------------------------------------------------------------------- #
 # Location lookup by description - the `location` table (seeded independently,
@@ -190,6 +214,165 @@ class WeatherFetchTests(unittest.TestCase):
         self.assertEqual(out["location_id"].iloc[0], 5)
         self.assertEqual(client.calls[0]["latitude"], [32.78])
         self.assertEqual(out["temperature_2m"].tolist(), [9.4, 7.8])
+
+
+class FetchWeatherRetryTests(unittest.TestCase):
+    """_fetch_weather_chunk_with_retries exists because Open-Meteo's
+    historical-forecast endpoint intermittently times out server-side mid-
+    stream (OpenMeteoRequestsError, no HTTP status code - confirmed directly
+    that this doesn't trigger make_openmeteo_client's own urllib3 Retry at
+    all) - worth its own test since a real retry was only ever observed via
+    a live, flaky network call, never deterministically. time.sleep is
+    monkeypatched so this doesn't actually wait out the backoff."""
+
+    def setUp(self):
+        self._real_sleep = ing.time.sleep
+        self.sleeps = []
+        ing.time.sleep = lambda s: self.sleeps.append(s)
+
+    def tearDown(self):
+        ing.time.sleep = self._real_sleep
+
+    def test_succeeds_after_transient_failures(self):
+        from openmeteo_requests.Client import OpenMeteoRequestsError
+        dataset = ing.WeatherDataset(name="x", table="x", description="x", hourly_vars=[])
+        calls = []
+
+        def flaky(client, dataset, locations, start_date, end_date):
+            calls.append((start_date, end_date))
+            if len(calls) < 3:
+                raise OpenMeteoRequestsError("timeoutReached")
+            return pd.DataFrame({"ok": [1]})
+
+        real_fetch = ing.fetch_weather
+        ing.fetch_weather = flaky
+        try:
+            out = ing._fetch_weather_chunk_with_retries(None, dataset, None, "2022-01-01", "2022-02-01")
+        finally:
+            ing.fetch_weather = real_fetch
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(out["ok"].iloc[0], 1)
+        self.assertEqual(len(self.sleeps), 2)  # 2 retries before the 3rd (successful) attempt
+        self.assertEqual(self.sleeps, [5.0, 10.0])  # WEATHER_FETCH_RETRY_BACKOFF_S doubling
+
+    def test_raises_after_exhausting_retries(self):
+        from openmeteo_requests.Client import OpenMeteoRequestsError
+        dataset = ing.WeatherDataset(name="x", table="x", description="x", hourly_vars=[])
+
+        def always_fails(client, dataset, locations, start_date, end_date):
+            raise OpenMeteoRequestsError("timeoutReached")
+
+        real_fetch = ing.fetch_weather
+        ing.fetch_weather = always_fails
+        try:
+            with self.assertRaises(OpenMeteoRequestsError):
+                ing._fetch_weather_chunk_with_retries(None, dataset, None, "2022-01-01", "2022-02-01")
+        finally:
+            ing.fetch_weather = real_fetch
+        self.assertEqual(len(self.sleeps), ing.WEATHER_FETCH_RETRIES - 1)
+
+
+class UpdateWeatherChunkingTests(unittest.TestCase):
+    """update_weather previously made one Open-Meteo request for the whole
+    start_date..end_date range - confirmed directly that a ~4.6-year single
+    request times out server-side, where the same range chunked at
+    WEATHER_FETCH_CHUNK_DAYS succeeds. No network: fetch_locations_by_description
+    and fetch_weather are monkeypatched to capture the date range each chunk
+    actually requests, against a real (in-memory) target table so the upsert
+    side of update_weather still runs for real."""
+
+    def setUp(self):
+        self.engine = make_engine()
+        with self.engine.begin() as conn:
+            conn.execute(sa.text(
+                "CREATE TABLE weather_test (location_id INTEGER, time TEXT, temperature_2m REAL, "
+                "PRIMARY KEY (location_id, time))"
+            ))
+        self.dataset = ing.WeatherDataset(
+            name="x", table="weather_test", description="x", hourly_vars=["temperature_2m"],
+        )
+        self.calls = []
+        self._real_locations, self._real_fetch = ing.fetch_locations_by_description, ing.fetch_weather
+        ing.fetch_locations_by_description = lambda engine, description: pd.DataFrame(
+            {"location_id": [1], "latitude": [0.0], "longitude": [0.0]})
+
+        def fake_fetch_weather(client, dataset, locations, start_date, end_date):
+            self.calls.append((start_date, end_date))
+            hours = pd.date_range(start_date, pd.Timestamp(end_date) + pd.Timedelta(days=1), freq="h",
+                                  inclusive="left")
+            return pd.DataFrame({"location_id": 1, "time": hours, "temperature_2m": 1.0})
+
+        ing.fetch_weather = fake_fetch_weather
+
+    def tearDown(self):
+        ing.fetch_locations_by_description, ing.fetch_weather = self._real_locations, self._real_fetch
+
+    def test_splits_a_long_range_at_the_chunk_boundary(self):
+        ing.update_weather(self.engine, client=None, dataset=self.dataset,
+                           start_date="2022-01-29", end_date="2026-11-05")
+        starts = [s for s, _ in self.calls]
+        ends = [e for _, e in self.calls]
+        self.assertEqual(starts[0], "2022-01-29")
+        self.assertEqual(ends[-1], "2026-11-05")
+        # Every chunk but the last is exactly WEATHER_FETCH_CHUNK_DAYS long, contiguous, no gaps/overlaps.
+        for i in range(len(self.calls) - 1):
+            self.assertEqual(pd.Timestamp(ends[i]) - pd.Timestamp(starts[i]),
+                             pd.Timedelta(days=ing.WEATHER_FETCH_CHUNK_DAYS - 1))
+            self.assertEqual(pd.Timestamp(starts[i + 1]), pd.Timestamp(ends[i]) + pd.Timedelta(days=1))
+        self.assertGreater(len(self.calls), 1)
+
+    def test_a_short_range_is_a_single_chunk(self):
+        ing.update_weather(self.engine, client=None, dataset=self.dataset,
+                           start_date="2026-11-01", end_date="2026-11-05")
+        self.assertEqual(self.calls, [("2026-11-01", "2026-11-05")])
+
+    def test_rows_from_every_chunk_land_in_the_table(self):
+        added, total = ing.update_weather(self.engine, client=None, dataset=self.dataset,
+                                          start_date="2022-01-29", end_date="2022-06-01")
+        expected_hours = len(pd.date_range("2022-01-29", pd.Timestamp("2022-06-01") + pd.Timedelta(days=1),
+                                           freq="h", inclusive="left"))
+        self.assertEqual((added, total), (expected_hours, expected_hours))
+        with self.engine.begin() as conn:
+            count = conn.execute(sa.text("SELECT COUNT(*) FROM weather_test")).scalar_one()
+        self.assertEqual(count, expected_hours)
+
+
+class UpdateAllWeatherSinceTests(unittest.TestCase):
+    """update_all_weather(engine, since=...) previously had no `since`
+    parameter at all - main() had nothing to pass it even if it had tried to,
+    so --since silently did nothing for weather while still correctly
+    backfilling EIA/DAM (both of which do thread `since` through). No network:
+    make_openmeteo_client and update_weather are monkeypatched to capture the
+    date range actually requested, without calling Open-Meteo or touching a DB."""
+
+    def setUp(self):
+        self.calls = []
+        self._real_client, self._real_update = ing.make_openmeteo_client, ing.update_weather
+        ing.make_openmeteo_client = lambda: object()
+        ing.update_weather = lambda engine, client, dataset, start_date, end_date: (
+            self.calls.append((dataset.name, start_date, end_date)), (0, 0))[1]
+
+    def tearDown(self):
+        ing.make_openmeteo_client, ing.update_weather = self._real_client, self._real_update
+
+    def test_since_extends_the_start_date_back(self):
+        ing.update_all_weather(None, reference_date=date(2026, 11, 2), since=date(2026, 2, 1))
+        starts = {start for _, start, _ in self.calls}
+        ends = {end for _, _, end in self.calls}
+        self.assertEqual(starts, {"2026-02-01"})
+        self.assertEqual(ends, {"2026-11-05"})  # reference_date + 3 days, unaffected by since
+        self.assertEqual(len(self.calls), len(ing.WEATHER_DATASETS))
+
+    def test_no_since_keeps_the_normal_yesterday_start(self):
+        ing.update_all_weather(None, reference_date=date(2026, 11, 2))
+        starts = {start for _, start, _ in self.calls}
+        self.assertEqual(starts, {"2026-11-01"})
+
+    def test_since_in_the_future_relative_to_yesterday_is_not_used(self):
+        # since is a backfill request, never a way to shrink the normal window.
+        ing.update_all_weather(None, reference_date=date(2026, 11, 2), since=date(2026, 11, 2))
+        starts = {start for _, start, _ in self.calls}
+        self.assertEqual(starts, {"2026-11-01"})
 
 
 # --------------------------------------------------------------------------- #

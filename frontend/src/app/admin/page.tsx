@@ -3,29 +3,12 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import {
-  ShieldCheck,
-  ShieldAlert,
-  Users,
-  UserCheck,
-  UserX,
-  Search,
-  ArrowLeft,
-  RefreshCw,
-  AlertCircle,
-  CheckCircle2,
-  Lock,
-  ArrowUpRight,
-  Shield,
-  Clock,
-  LogOut,
-  Zap,
-} from "lucide-react"
+import { ShieldCheck, ShieldAlert, Users, UserCheck, Search, ArrowLeft, RefreshCw, AlertCircle, CheckCircle2, Shield, Clock, LogOut, Zap } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { adminApi, authApi, getStoredUser, removeStoredUser, type User } from "@/lib/api"
+import { adminApi, authApi, removeStoredUser, type User } from "@/lib/api"
 
 export default function AdminPage() {
   const router = useRouter()
@@ -39,49 +22,37 @@ export default function AdminPage() {
   const [actionLoadingId, setActionLoadingId] = React.useState<number | null>(null)
   const [feedback, setFeedback] = React.useState<{ type: "success" | "error"; message: string } | null>(null)
 
-  // Auth Guard
+  // Resolve administrator access from the authenticated API response.
   React.useEffect(() => {
-    const user = getStoredUser()
-    if (!user) {
-      router.push("/login")
-      return
-    }
-    setCurrentUser(user)
-    if (user.role === "ROLE_ADMIN") {
-      setIsAuthorized(true)
-    } else {
-      setIsAuthorized(false)
-      setIsLoading(false)
-    }
+    let active = true
+    authApi.getMe().then(response => {
+      if (!active) return
+      if (!response.success || !response.data) throw new Error("Session unavailable")
+      setCurrentUser(response.data)
+      const authorized = response.data.role === "ROLE_ADMIN"
+      setIsAuthorized(authorized)
+      if (!authorized) setIsLoading(false)
+    }).catch(() => {
+      if (!active) return
+      removeStoredUser()
+      router.replace("/login")
+    })
+    return () => { active = false }
   }, [router])
 
-  // Fetch Users
-  const fetchUsers = React.useCallback(async () => {
-    setIsLoading(true)
-    setFeedback(null)
-    try {
-      const response = await adminApi.getAllUsers()
-      if (response.data) {
-        setUsers(response.data)
-      }
-    } catch (err: any) {
-      const isForbidden = err?.message?.includes("403") || err?.message?.includes("Forbidden")
-      setFeedback({
-        type: "error",
-        message: isForbidden
-          ? "Your session expired when the backend restarted. Please log in again with an administrator account."
-          : (err.message || "Failed to load registered users."),
-      })
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
-
+  const [usersReload, setUsersReload] = React.useState(0)
   React.useEffect(() => {
-    if (isAuthorized) {
-      fetchUsers()
-    }
-  }, [isAuthorized, fetchUsers])
+    if (!isAuthorized) return
+    let active = true
+    adminApi.getAllUsers().then(response => {
+      if (!active) return
+      if (!response.success || !response.data) throw new Error(response.message || "Could not load registered users")
+      setUsers(response.data)
+    }).catch(error => {
+      if (active) setFeedback({ type: "error", message: error instanceof Error ? error.message : "Could not load registered users" })
+    }).finally(() => { if (active) setIsLoading(false) })
+    return () => { active = false }
+  }, [isAuthorized, usersReload])
 
   // Handle Role Change
   const handleToggleRole = async (targetUser: User) => {
@@ -117,10 +88,10 @@ export default function AdminPage() {
           message: `Successfully updated ${targetUser.fullName || targetUser.email}'s role to ${newRole}.`,
         })
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setFeedback({
         type: "error",
-        message: err.message || "Could not update user role.",
+        message: (err instanceof Error ? err.message : "") || "Could not update user role.",
       })
     } finally {
       setActionLoadingId(null)
@@ -248,7 +219,7 @@ export default function AdminPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={fetchUsers}
+            onClick={() => { setIsLoading(true); setFeedback(null); setUsersReload(key => key + 1) }}
             disabled={isLoading}
             className="h-8 gap-1.5 text-xs cursor-pointer"
           >

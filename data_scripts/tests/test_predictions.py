@@ -246,26 +246,43 @@ class WritePredictionsTests(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 # Confidence score - this is the FINAL value written to
 # predicted_price.confidence_score (nothing downstream converts it again -
-# see predictions.py's REFERENCE_RMSE comment and confidence_scores()
-# docstring), so its own bounds are what every consumer (the public API, the
-# low-confidence alert service) relies on.
+# see predictions.py's load_reference_rmse/confidence_scores docstrings), so
+# its own bounds are what every consumer (the public API, the low-confidence
+# alert service) relies on. The reference now lives only in `rmse_reference`
+# (recompute_reference_rmse.py) - no hand-maintained fallback dict - so
+# every test here builds a real (if minimal) rmse_reference table.
 # --------------------------------------------------------------------------- #
+
+# A real lstm/y0 reference (model/reports/eval_holdout_y0_2026-10-13.md), used
+# as realistic test values rather than inventing arbitrary numbers.
+REFERENCE = [44.74, 39.72, 42.22, 33.21, 11.51, 8.72, 6.99, 6.93, 7.01, 7.00, 8.23, 9.29, 9.79,
+            8.94, 8.46, 8.67, 8.37, 8.47, 9.38, 11.06, 13.94, 15.83, 15.46, 23.23]
+
+
+def make_rmse_reference_engine(rows: dict[tuple[str, str, int], float]) -> sa.Engine:
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        conn.execute(sa.text("CREATE TABLE rmse_reference (model_kind TEXT, target TEXT, hour_utc INTEGER, "
+                            "rmse REAL)"))
+        for (kind, horizon, hour), rmse in rows.items():
+            conn.execute(sa.text("INSERT INTO rmse_reference VALUES (:k, :t, :h, :r)"),
+                        {"k": kind, "t": horizon, "h": hour, "r": rmse})
+    return engine
+
 
 class ConfidenceScoreTests(unittest.TestCase):
     def test_score_stays_within_0_to_100_across_a_wide_range_of_ratios(self):
-        # Exercise the formula directly against a real REFERENCE_RMSE key,
-        # bypassing decayed_abs_residuals_by_hour entirely - this test pins
+        # Exercise the formula directly against a real reference, bypassing
+        # decayed_abs_residuals_by_hour entirely - this test pins
         # confidence_scores()'s own bounds, not the decay/residual plumbing
         # feeding it. 1e9 stands in for "arbitrarily large" rather than inf:
         # a real decayed residual is always a finite price-error magnitude.
-        kind, horizon = next(iter(pred.REFERENCE_RMSE))
+        kind, horizon = "lstm", "y0"
+        engine = make_rmse_reference_engine({(kind, horizon, h): REFERENCE[h] for h in range(24)})
         ratios = [0.0, 0.001, 0.5, 1.0, 2.0, 10.0, 1000.0, 1e9]
-        decayed_by_hour = {
-            hour: ratio * pred.REFERENCE_RMSE[(kind, horizon)][hour]
-            for hour, ratio in enumerate(ratios)
-        }
+        decayed_by_hour = {hour: ratio * REFERENCE[hour] for hour, ratio in enumerate(ratios)}
 
-        scores = pred.confidence_scores(kind, horizon, decayed_by_hour)
+        scores = pred.confidence_scores(kind, horizon, decayed_by_hour, engine=engine)
 
         for hour, ratio in enumerate(ratios):
             score = scores[hour]
@@ -278,13 +295,24 @@ class ConfidenceScoreTests(unittest.TestCase):
                           sorted(scores_sorted, reverse=True))
 
     def test_missing_live_history_is_nan_not_a_fabricated_score(self):
-        kind, horizon = next(iter(pred.REFERENCE_RMSE))
-        scores = pred.confidence_scores(kind, horizon, {})  # no live history at all yet
+        kind, horizon = "lstm", "y0"
+        engine = make_rmse_reference_engine({(kind, horizon, h): REFERENCE[h] for h in range(24)})
+        scores = pred.confidence_scores(kind, horizon, {}, engine=engine)  # no live history at all yet
         self.assertEqual(len(scores), 24)
         self.assertTrue(all(np.isnan(v) for v in scores.values()))
 
     def test_unknown_kind_or_horizon_is_nan(self):
-        scores = pred.confidence_scores("not-a-real-kind", "y0", {0: 10.0})
+        engine = make_rmse_reference_engine({("lstm", "y0", h): REFERENCE[h] for h in range(24)})
+        scores = pred.confidence_scores("not-a-real-kind", "y0", {0: 10.0}, engine=engine)
+        self.assertTrue(np.isnan(scores[0]))
+
+    def test_no_reference_table_at_all_is_nan_not_a_crash(self):
+        # rmse_reference is created by the backend's RmseReference entity
+        # (ddl-auto=update) - a brand-new deployment that hasn't booted the
+        # backend yet shouldn't make predictions.py crash, just lose confidence
+        # scoring until it has (load_reference_rmse's own docstring).
+        engine = sa.create_engine("sqlite:///:memory:")
+        scores = pred.confidence_scores("lstm", "y0", {0: 10.0}, engine=engine)
         self.assertTrue(np.isnan(scores[0]))
 
 

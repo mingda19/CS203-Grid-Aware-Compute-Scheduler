@@ -36,28 +36,41 @@ Open-Meteo data has no such gap, so at prediction time they are expected to be
 no-ops (each has an `if not missing.any(): continue` guard). They're still run
 defensively, in case a live fetch has a transient gap for a specific hour.
 
-Two model types are served per horizon, chosen by the model file's extension:
-  .json  XGBoost (the default) - one row of FEATURE_COLUMNS per anchor hour.
-  .pt    seq2seq LSTM (model/lstm_model.py, trained by model/train_lstm.py) -
-         168h of history + the target day's known-ahead inputs. Its artifact
-         carries its own feature list, scalers, price transform and
-         lead_hours, and torch is only imported on this path.
+Three model types are known, chosen by the model file's extension (local
+file) or `model_artifacts.format` (Supabase):
+  .pt / "torch"    seq2seq LSTM (model/lstm_model.py, trained by
+                   model/train_lstm.py). 168h of history + the target day's
+                   known-ahead inputs. Its artifact carries its own feature
+                   list, scalers, price transform and lead_hours, and torch
+                   is only imported on this path.
+  .joblib / "joblib"  LEAR (model/lear_model.py) - a per-hour LASSO ensemble,
+                   Lago et al. 2021. Both LSTM and LEAR are in production
+                   (model/reports/eval_holdout_y0_2026-11-01.md: LEAR beats
+                   even LSTM, MAE 7.07 vs 9.09 at y0); predict_lstm.py and
+                   predict_lear.py each serve one, independently, so neither
+                   kind failing blocks the other.
+  .json            XGBoost - retired from serving entirely (model/reports/
+                   eval_holdout_y0_2026-10-13.md: LSTM beat it by a
+                   statistically significant margin, DM p=0.0000, at every
+                   hour of the day on both targets, and XGBoost itself was
+                   worse than the naive same-hour-yesterday baseline). No
+                   model_artifacts row, no predict_*.py script - kept only as
+                   a comparison baseline in model/evaluate.py, loadable here
+                   from a local .json file for that script's own use.
 
-Usage:
-  python predictions.py                       # both horizons, anchored on today (UTC) - the normal daily run
-  python predictions.py --date 2026-03-02     # anchor on that UTC date instead of today
-  python predictions.py --horizon y0          # only the 48h-ahead target
-  python predictions.py --model-y0 ../model/models/lstm_y0_full.pt   # same, with the LSTM
+This module is the shared library (feature engineering, confidence scoring,
+DB writes) for predict_lstm.py and predict_lear.py - it has no CLI of its
+own. For local-file testing/dev against a specific artifact, use either
+script's --model-path (production loads from Supabase instead - see
+run_predictions_from_supabase).
 
-Or import: from predictions import run_predictions
+Import: from predictions import run_predictions, run_predictions_from_supabase
 """
 
 from __future__ import annotations
 
-import argparse
 import logging
 import sys
-import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -66,7 +79,6 @@ import holidays
 import numpy as np
 import pandas as pd
 import sqlalchemy as sa
-import xgboost as xgb
 
 import ingestion as ing
 
@@ -74,8 +86,6 @@ logger = logging.getLogger("predictions")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 MODEL_DIR = SCRIPT_DIR.parent / "model"
-DEFAULT_MODEL_PATH_Y0 = MODEL_DIR / "models" / "xgboost_y0_full.json"
-DEFAULT_MODEL_PATH_Y1 = MODEL_DIR / "models" / "xgboost_y1_full.json"
 DEFAULT_LOCATION = "LZ_NORTH"
 # Hours from the anchor day ("now") to each target day's start - model/model.md S9.
 LEAD_HOURS = {"y0": 48, "y1": 72}
@@ -84,29 +94,16 @@ LEAD_HOURS = {"y0": 48, "y1": 72}
 WINSORIZE_LOWER = -1393.85
 WINSORIZE_UPPER = 1506.55
 
-# Reference RMSE per (model kind, horizon, hour-of-day UTC of the TARGET hour),
-# measured once on model/evaluate.py's held-out run (model/reports/
-# forecasts_holdout_y0.parquet / forecasts_holdout_y1.parquet) - hand-updated
-# whenever a model is retrained, same "fixed constant" pattern as
-# WINSORIZE_LOWER/WINSORIZE_UPPER above. Used as the denominator of a raw
-# uncertainty ratio (how a recent run of real-world errors for this exact slot
-# compares to what held-out evaluation said to expect), which confidence_scores()
-# below converts to the bounded (0, 100] score actually written to the DB -
-# nothing downstream (the API, the alert service) converts it again.
-REFERENCE_RMSE: dict[tuple[str, str], list[float]] = {
-    ("xgb", "y0"):  [60.12, 53.73, 48.09, 38.24, 20.49, 17.81, 12.59, 14.20,
-                     15.62, 20.16, 21.80, 24.86, 25.21, 26.20, 20.70, 16.44,
-                     16.45, 15.44, 16.25, 17.61, 19.51, 25.67, 27.16, 35.22],
-    ("lstm", "y0"): [44.74, 39.72, 42.22, 33.21, 11.51,  8.72,  6.99,  6.93,
-                       7.01,  7.00,  8.23,  9.29,  9.79,  8.94,  8.46,  8.67,
-                       8.37,  8.47,  9.38, 11.06, 13.94, 15.83, 15.46, 23.23],
-    ("xgb", "y1"):  [60.38, 54.94, 49.21, 37.36, 19.17, 17.79, 12.38, 12.56,
-                     10.30, 10.91, 12.21, 14.30, 17.58, 17.69, 13.79, 13.45,
-                     12.69, 14.10, 14.88, 16.57, 19.35, 23.83, 24.80, 35.08],
-    ("lstm", "y1"): [46.40, 42.50, 42.13, 32.97, 11.38,  8.55,  6.56,  6.18,
-                       6.07,  6.04,  7.27,  8.57,  8.99,  8.91,  9.53,  9.78,
-                       9.17,  9.21, 10.58, 13.27, 17.30, 19.79, 19.53, 25.67],
-}
+# Reference RMSE per (model kind, horizon, hour-of-day UTC of the TARGET
+# hour) lives in Supabase (`rmse_reference`, recomputed periodically by
+# recompute_reference_rmse.py from real recent residuals - model/model.md's
+# continuous-learning section, point 4), not a hand-maintained dict here -
+# load_reference_rmse() below reads it directly. Used as the denominator of
+# a raw uncertainty ratio (how a recent run of real-world errors for this
+# exact slot compares to what that recompute said to expect), which
+# confidence_scores() converts to the bounded (0, 100] score actually
+# written to the DB - nothing downstream (the API, the alert service)
+# converts it again.
 CONFIDENCE_LOOKBACK_DAYS = 21  # enough for a 7-day-halflife EWM to shed its startup transient
 CONFIDENCE_HALFLIFE_DAYS = 7
 MIN_CONFIDENCE_SAMPLES = 3  # fewer points make "decay" meaningless - that hour is left out, not guessed
@@ -341,17 +338,39 @@ def decayed_abs_residuals_by_hour(df: pd.DataFrame, min_samples: int = MIN_CONFI
     return out
 
 
-def confidence_scores(kind: str, horizon: str, decayed_by_hour: dict[int, float]) -> dict[int, float]:
+def load_reference_rmse(engine: sa.Engine, kind: str, horizon: str) -> list[float] | None:
+    """24-hour RMSE reference from `rmse_reference` (recomputed periodically
+    by recompute_reference_rmse.py from real recent residuals - model/model.md's
+    continuous-learning section, point 4). None if the table has no complete
+    row yet for this (kind, horizon) - e.g. a brand-new model kind before its
+    first recompute cycle has run - or doesn't exist yet at all (rmse_reference
+    is created by the backend's RmseReference entity, ddl-auto=update, which
+    may not have booted yet in a brand-new deployment, or at all in an
+    offline test's minimal DB): a missing reference degrading confidence
+    scores rather than crashing predictions outright is the same philosophy
+    as decayed_abs_residuals_by_hour returning {} for "no live history yet"."""
+    query = sa.text("SELECT hour_utc, rmse FROM rmse_reference WHERE model_kind = :kind AND target = :horizon")
+    try:
+        with engine.begin() as conn:
+            rows = dict(conn.execute(query, {"kind": kind, "horizon": horizon}).all())
+    except sa.exc.DBAPIError:
+        rows = {}
+    return [rows[h] for h in range(24)] if len(rows) == 24 else None
+
+
+def confidence_scores(kind: str, horizon: str, decayed_by_hour: dict[int, float],
+                      engine: sa.Engine) -> dict[int, float]:
     """{hour: confidence percentage} for all 24 hours, from the raw ratio
-    `decayed_abs_residual / REFERENCE_RMSE[(kind, horizon)][hour]` mapped
-    through `100 / (1 + ratio)`: bounded (0, 100], parameter-free, and with a
+    `decayed_abs_residual / reference_rmse[hour]` mapped through
+    `100 / (1 + ratio)`: bounded (0, 100], parameter-free, and with a
     deliberately legible midpoint - exactly 50 means recent errors are
     sitting right at the reference RMSE (the "expected" error level); above
     50 is better than the reference, below is worse. This is the FINAL value
     written to `predicted_price.confidence_score` - nothing downstream
     converts it again. NaN (never 0, never 100) wherever decayed_by_hour has
-    no entry for that hour (no live history yet for this slot)."""
-    ref = REFERENCE_RMSE.get((kind, horizon))
+    no entry for that hour (no live history yet for this slot), or
+    load_reference_rmse(engine, kind, horizon) has none for it either."""
+    ref = load_reference_rmse(engine, kind, horizon)
     out: dict[int, float] = {}
     for hour in range(24):
         residual = decayed_by_hour.get(hour)
@@ -483,8 +502,8 @@ def build_features(engine: sa.Engine, anchor_times: pd.DatetimeIndex, location: 
 # --------------------------------------------------------------------------- #
 
 def _lstm_module():
-    """model/lstm_model.py, imported on first use: it pulls in torch, which an
-    XGBoost-only deployment doesn't need to have installed."""
+    """model/lstm_model.py, imported on first use - same reasoning as
+    _xgb_module() below, just for the model type actually in production."""
     if str(MODEL_DIR) not in sys.path:
         sys.path.insert(0, str(MODEL_DIR))
     import lstm_model
@@ -496,20 +515,65 @@ def _lstm_module():
     return lstm_model
 
 
+def _xgb_module():
+    """xgboost, imported on first use: XGBoost is retired from serving (see
+    the module docstring), so a production deployment running only the
+    default LSTM models doesn't need the package installed at all - only
+    someone deliberately pointing --model-y0/--model-y1 at a .json file does."""
+    import xgboost
+    return xgboost
+
+
+def _lear_module():
+    """model/lear_model.py, imported on first use - same reasoning as
+    _lstm_module()/_xgb_module(): a deployment running only LSTM (predict_lstm.py)
+    doesn't need sklearn/joblib pulled in, and vice versa for predict_lear.py."""
+    if str(MODEL_DIR) not in sys.path:
+        sys.path.insert(0, str(MODEL_DIR))
+    import lear_model
+    return lear_model
+
+
 def load_model(path: Path):
-    """Returns (kind, model): ("xgb", XGBRegressor) for a .json file, or
+    """Returns (kind, model): ("xgb", XGBRegressor) for a .json file,
     ("lstm", LSTMForecaster in eval mode, its artifact dict on .artifact) for
-    a .pt file."""
+    a .pt file, or ("lear", LEARForecaster, its artifact dict on .artifact)
+    for a .joblib file."""
     path = Path(path)
     if path.suffix == ".json":
-        model = xgb.XGBRegressor()
+        model = _xgb_module().XGBRegressor()
         model.load_model(path)
         return "xgb", model
     if path.suffix == ".pt":
         model, artifact = _lstm_module().load_artifact(path)
         model.artifact = artifact
         return "lstm", model
-    raise ValueError(f"Unsupported model file {path.name!r}: expected .json (XGBoost) or .pt (LSTM).")
+    if path.suffix == ".joblib":
+        model, artifact = _lear_module().load_artifact(path)
+        model.artifact = artifact
+        return "lear", model
+    raise ValueError(f"Unsupported model file {path.name!r}: expected .json (XGBoost), "
+                     ".pt (LSTM), or .joblib (LEAR).")
+
+
+def load_model_from_blob(blob: bytes, format: str):
+    """Like load_model(), but from Supabase-stored bytes (model_store.load_active_artifact's
+    `blob`/`format`) rather than a local file - same (kind, model) shape, so
+    run_predictions_from_supabase can share _predict_and_write with the local-file
+    path load_model() feeds. `format` is model_artifacts.format: "torch" or "joblib" -
+    there's no "xgb" here, since XGBoost is retired from serving (module docstring)
+    and so never gets a model_artifacts row at all."""
+    import io
+    buf = io.BytesIO(blob)
+    if format == "torch":
+        model, artifact = _lstm_module().load_artifact(buf)
+        model.artifact = artifact
+        return "lstm", model
+    if format == "joblib":
+        model, artifact = _lear_module().load_artifact(buf)
+        model.artifact = artifact
+        return "lear", model
+    raise ValueError(f"Unsupported model_artifacts.format {format!r}: expected 'torch' or 'joblib'.")
 
 
 def build_sequence(engine: sa.Engine, target_times: pd.DatetimeIndex, location: str, artifact: dict):
@@ -553,6 +617,37 @@ def build_sequence(engine: sa.Engine, target_times: pd.DatetimeIndex, location: 
     return torch.from_numpy(past).unsqueeze(0), torch.from_numpy(future).unsqueeze(0)
 
 
+def build_lear_frame(engine: sa.Engine, target_times: pd.DatetimeIndex, location: str, artifact: dict) -> pd.DataFrame:
+    """Hourly frame for LEAR's predict_day() (model/lear_model.py): price up
+    to the hour before the anchor day (mirrors build_sequence's cutoff - the
+    target day's own price is never queried at all, let alone handed to the
+    model) plus exogenous inputs through the target day, far enough back to
+    cover the artifact's longest calibration window.
+
+    +7 days of extra lookback past the longest window: the same
+    price_day_offsets() tail (D-7, the same-weekday lag) lear_model.build_design's
+    own max_history_days buffer accounts for internally - without it here too,
+    day_history-style slicing would cut off the data that offset needs for the
+    earliest days of the window."""
+    lear = _lear_module()
+    target_day = target_times.min().normalize()
+    lead_hours = artifact["lead_hours"]
+    anchor = target_day - timedelta(hours=lead_hours)
+    cutoff = anchor - timedelta(hours=1)
+    history_start = anchor - timedelta(days=max(artifact["windows"]) + 7)
+
+    frame = load_exogenous(engine, history_start, target_day + timedelta(hours=23))
+    unknown = [c for c in artifact["exog_cols"] if c not in frame.columns]
+    if unknown:
+        raise ValueError(f"LEAR needs exogenous columns load_exogenous doesn't provide: {unknown}")
+    frame = add_calendar_features(frame).set_index("time")
+
+    price = load_price_history(engine, location, history_start, until=cutoff)
+    frame[lear.RAW_PRICE_COL] = price.set_index("time")["price"]
+    # Same reason as build_features/build_sequence: a source with zero rows comes back as dtype object.
+    return frame.apply(pd.to_numeric, errors="coerce")
+
+
 def lstm_predict(model, sequence) -> tuple[np.ndarray | None, np.ndarray, np.ndarray | None]:
     """(p10, p50, p90) in $/MWh for one day. p10/p90 are None for a point
     model (trained with --loss mse)."""
@@ -592,99 +687,106 @@ class PredictionResult:
     model_version: str
 
 
+def _predict_and_write(engine: sa.Engine, kind: str, model, model_version: str, horizon: str,
+                       anchor_date: date, generated_at: datetime, location: str) -> PredictionResult:
+    """Everything downstream of "an already-loaded (kind, model)": build
+    inputs, predict, score confidence, write. Shared by run_predictions
+    (local-file models, --model-y0/--model-y1) and run_predictions_from_supabase
+    (the production path: predict_lstm.py/predict_lear.py loading whichever
+    model_artifacts row is active) so neither has to duplicate this."""
+    # Prefer the loaded model's own self-described target/lead_hours over
+    # LEAD_HOURS[horizon] (used only as a fallback for an artifact that
+    # doesn't carry one) - this is what actually determines the target date
+    # below, so a model loaded under the wrong horizon slot gets a loud
+    # warning instead of silently computing the wrong target day for the gap
+    # it was really trained on.
+    if kind == "xgb":
+        trained_for = model.get_booster().attr("target")
+    else:
+        trained_for = model.artifact.get("target")
+    lead_hours = LEAD_HOURS.get(trained_for, LEAD_HOURS[horizon])
+    if trained_for is not None and trained_for != horizon:
+        logger.warning("%s was trained with target=%s, but is being served as %s - "
+                       "check it's the right model for this horizon/slot.", model_version, trained_for, horizon)
+    target_date = anchor_date + timedelta(hours=lead_hours)
+    target_times = pd.date_range(start=pd.Timestamp(target_date), periods=24, freq="h")
+
+    logger.info("[%s] Building %s inputs for %s (%d hours)", horizon, kind, target_date, len(target_times))
+    if kind == "xgb":
+        anchor_times = target_times - timedelta(hours=lead_hours)
+        preds = model.predict(build_features(engine, anchor_times, location))
+    elif kind == "lear":
+        preds = model.predict_day(build_lear_frame(engine, target_times, location, model.artifact), target_date)
+    else:
+        p10, preds, p90 = lstm_predict(model, build_sequence(engine, target_times, location, model.artifact))
+        if p10 is not None and p90 is not None:
+            # Only the point forecast has a column in predicted_price - the interval is logged.
+            for t, lo, mid, hi in zip(target_times, p10, preds, p90):
+                logger.info("[%s] %s  P10 %8.2f  P50 %8.2f  P90 %8.2f", horizon,
+                           t.strftime("%Y-%m-%d %H:%M"), lo, mid, hi)
+
+    predictions = predict_prices(preds, target_times, location, model_version=model_version,
+                                 generated_at=generated_at)
+
+    # Confidence score: how a recent (decayed) run of real-world errors for
+    # this exact (kind, horizon, hour-of-day) slot compares to what held-out
+    # evaluation (or rmse_reference's periodic recompute) said to expect for
+    # it. Fetched once per horizon, not once per hour.
+    gen_at_naive = pd.Timestamp(generated_at).tz_convert("UTC").tz_localize(None)
+    since = gen_at_naive - timedelta(days=CONFIDENCE_LOOKBACK_DAYS)
+    residuals = load_recent_residuals(engine, location, model_version, since)
+    decayed_by_hour = decayed_abs_residuals_by_hour(residuals)
+    scores = confidence_scores(kind, horizon, decayed_by_hour, engine=engine)
+    predictions["confidence_score"] = predictions["interval_start_utc"].dt.hour.map(scores)
+
+    added = write_predictions(engine, predictions)
+    logger.info("[%s] Wrote %d predictions for %s (model_version=%s)", horizon, added, target_date, model_version)
+    return PredictionResult(horizon=horizon, target_date=target_date, rows_written=added, model_version=model_version)
+
+
 def run_predictions(engine: sa.Engine, model_paths: dict[str, Path],
                     anchor_date: date | None = None, location: str = DEFAULT_LOCATION) -> list[PredictionResult]:
     """One run, two independent horizons by default (`model_paths` keys:
     "y0", "y1"). Each horizon builds/predicts/writes on its own - the anchor
     hours are provably the same 24 hours of `anchor_date` for both (lead
     times are multiples of 24h), but this is a once-daily batch job, so the
-    redundant DB round-trip is simpler than sharing one feature build."""
+    redundant DB round-trip is simpler than sharing one feature build.
+
+    Loads each model from a local file (model_paths) - the dev/evaluation
+    path. Production (predict_lstm.py/predict_lear.py) uses
+    run_predictions_from_supabase instead, since Render Cron containers are
+    ephemeral and have no local model file to point at."""
     anchor_date = anchor_date or datetime.now(timezone.utc).date()
     generated_at = datetime.now(timezone.utc)
     results = []
     for horizon, model_path in model_paths.items():
         model_path = Path(model_path)
         kind, model = load_model(model_path)
-        # Prefer the loaded model's own self-described target/lead_hours over
-        # LEAD_HOURS[horizon] (used only as a fallback for an artifact that
-        # doesn't carry one) - this is what actually determines the target
-        # date below, so a model loaded under the wrong --model-y0/--model-y1
-        # slot gets a loud warning instead of silently computing the wrong
-        # target day for the gap it was really trained on.
-        if kind == "xgb":
-            trained_for = model.get_booster().attr("target")
-        else:
-            trained_for = model.artifact.get("target")
-        lead_hours = LEAD_HOURS.get(trained_for, LEAD_HOURS[horizon])
-        if trained_for is not None and trained_for != horizon:
-            logger.warning("%s was trained with --target %s, but is being served as %s - "
-                           "check --model-%s points at the right file.", model_path.name, trained_for,
-                           horizon, horizon)
-        target_date = anchor_date + timedelta(hours=lead_hours)
-        target_times = pd.date_range(start=pd.Timestamp(target_date), periods=24, freq="h")
-
-        logger.info("[%s] Building %s inputs for %s (%d hours)", horizon, kind, target_date, len(target_times))
-        if kind == "xgb":
-            anchor_times = target_times - timedelta(hours=lead_hours)
-            preds = model.predict(build_features(engine, anchor_times, location))
-        else:
-            p10, preds, p90 = lstm_predict(model, build_sequence(engine, target_times, location, model.artifact))
-            if p10 is not None and p90 is not None:
-                # Only the point forecast has a column in predicted_price - the interval is logged.
-                for t, lo, mid, hi in zip(target_times, p10, preds, p90):
-                    logger.info("[%s] %s  P10 %8.2f  P50 %8.2f  P90 %8.2f", horizon,
-                               t.strftime("%Y-%m-%d %H:%M"), lo, mid, hi)
-
-        predictions = predict_prices(preds, target_times, location,
-                                     model_version=model_path.stem, generated_at=generated_at)
-
-        # Confidence score: how a recent (decayed) run of real-world errors
-        # for this exact (kind, horizon, hour-of-day) slot compares to what
-        # held-out evaluation said to expect for it (REFERENCE_RMSE). Fetched
-        # once per horizon, not once per hour.
-        gen_at_naive = pd.Timestamp(generated_at).tz_convert("UTC").tz_localize(None)
-        since = gen_at_naive - timedelta(days=CONFIDENCE_LOOKBACK_DAYS)
-        residuals = load_recent_residuals(engine, location, model_path.stem, since)
-        decayed_by_hour = decayed_abs_residuals_by_hour(residuals)
-        scores = confidence_scores(kind, horizon, decayed_by_hour)
-        predictions["confidence_score"] = predictions["interval_start_utc"].dt.hour.map(scores)
-
-        added = write_predictions(engine, predictions)
-        logger.info("[%s] Wrote %d predictions for %s (model_version=%s)",
-                   horizon, added, target_date, model_path.stem)
-        results.append(PredictionResult(horizon=horizon, target_date=target_date,
-                                        rows_written=added, model_version=model_path.stem))
+        results.append(_predict_and_write(engine, kind, model, model_path.stem, horizon,
+                                          anchor_date, generated_at, location))
     return results
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Predict LZ_NORTH DAM prices (y0: 48h ahead, y1: 72h ahead) "
-                                                 "and write them to predicted_price.")
-    parser.add_argument("--date", type=date.fromisoformat, dest="anchor_date",
-                        help="anchor UTC date - \"now,\" the day features are safely known as of "
-                            "(default: today). Target dates are this plus 48h (y0) / 72h (y1).")
-    parser.add_argument("--horizon", choices=["y0", "y1", "both"], default="both")
-    parser.add_argument("--model-y0", type=Path, default=DEFAULT_MODEL_PATH_Y0,
-                        help="saved y0 model: .json (XGBoost) or .pt (LSTM)")
-    parser.add_argument("--model-y1", type=Path, default=DEFAULT_MODEL_PATH_Y1,
-                        help="saved y1 model: .json (XGBoost) or .pt (LSTM)")
-    args = parser.parse_args()
-
-    logging.Formatter.converter = time.gmtime
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
-                        datefmt="%Y-%m-%dT%H:%M:%SZ")
-
-    model_paths = {h: p for h, p in [("y0", args.model_y0), ("y1", args.model_y1)]
-                  if args.horizon in (h, "both")}
-
-    engine = ing.make_engine()
-    try:
-        run_predictions(engine, model_paths, anchor_date=args.anchor_date)
-    except Exception:
-        logger.exception("Prediction run FAILED")
-        sys.exit(1)
-    sys.exit(0)
-
-
-if __name__ == "__main__":
-    main()
+def run_predictions_from_supabase(engine: sa.Engine, model_kind: str, horizons: list[str] | None = None,
+                                  anchor_date: date | None = None,
+                                  location: str = DEFAULT_LOCATION) -> list[PredictionResult]:
+    """Like run_predictions, but loads each horizon's currently-active
+    artifact from `model_artifacts` (model_store.load_active_artifact)
+    instead of a local file - the production path for predict_lstm.py
+    (model_kind="lstm") and predict_lear.py (model_kind="lear"). A horizon
+    with no active row yet (a brand-new deployment, or a kind/target before
+    its first data_scripts/update.py tune cycle) is skipped with a warning,
+    not a hard failure - the other horizon still gets served."""
+    import model_store
+    anchor_date = anchor_date or datetime.now(timezone.utc).date()
+    generated_at = datetime.now(timezone.utc)
+    results = []
+    for horizon in horizons or ["y0", "y1"]:
+        row = model_store.load_active_artifact(engine, model_kind, horizon)
+        if row is None:
+            logger.warning("[%s] No active %s artifact in model_artifacts yet - skipping.", horizon, model_kind)
+            continue
+        kind, model = load_model_from_blob(row["blob"], row["format"])
+        results.append(_predict_and_write(engine, kind, model, row["model_version"], horizon,
+                                          anchor_date, generated_at, location))
+    return results

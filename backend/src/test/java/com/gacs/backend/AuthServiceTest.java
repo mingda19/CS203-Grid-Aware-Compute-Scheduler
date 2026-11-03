@@ -15,6 +15,7 @@ import com.gacs.backend.service.AuthService;
 import com.gacs.backend.service.EmailService;
 import com.gacs.backend.service.RefreshTokenService;
 import jakarta.servlet.http.Cookie;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -72,6 +73,12 @@ class AuthServiceTest {
                 "P@ssw0rd2026!",
                 "Elena Vance"
         );
+    }
+
+    // login() sets the thread-global SecurityContextHolder; clear it so later MockMvc tests on this thread start anonymous.
+    @AfterEach
+    void clearSecurityContext() {
+        org.springframework.security.core.context.SecurityContextHolder.clearContext();
     }
 
     @Test

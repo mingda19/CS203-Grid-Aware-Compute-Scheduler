@@ -27,9 +27,25 @@ To add a feature (e.g. battery data): append its column name to EXOG_COLS,
 make sure the column is in train.csv/val.csv, retrain. Serving then needs
 that column from predictions.load_exogenous.
 
+Continuous learning (data_scripts/update.py's weekly tune, not a one-off
+backtest): --warm-start loads an existing artifact's state_dict as the
+starting point and fine-tunes from there - still a fresh torch.optim.Adam
+each run (fit_with_early_stopping/fit_fixed_epochs always construct a new
+one; no optimizer state is carried between runs, by design: see model.md's
+continuous-learning section). --window-days bounds training to a sliding
+recent window rather than all history since inception, so the model keeps
+generalizing from current conditions instead of slowly outweighing them with
+years of accumulated samples. price_clip/scalers/target_transform are reused
+from the --warm-start source by default (so a weekly fine-tune can't drift
+the model's own input scale out from under its still-mostly-unchanged
+weights) and only recomputed with --refresh-preprocessing, on the 30-day
+cadence that calls for it.
+
 Usage:
   python model/train_lstm.py --fit-on train --target y0 --seed 0
   python model/train_lstm.py --fit-on train+val --target y0 --seed 0
+  python model/train_lstm.py --fit-on train+val --target y0 --warm-start models/lstm_y0_full.pt \\
+      --window-days 90 --train-end 2026-11-08 --max-epochs 5 --out models/lstm_y0_full.pt
 """
 
 from __future__ import annotations
@@ -37,6 +53,7 @@ from __future__ import annotations
 import argparse
 import copy
 import logging
+import math
 import random
 import time
 from datetime import date
@@ -296,6 +313,18 @@ def main() -> None:
                         help="comma-separated columns to add to EXOG_COLS for this run (feature ablations)")
     parser.add_argument("--out", type=Path, help="artifact path (default: models/lstm_<tag>.pt)")
     parser.add_argument("--threads", type=int, help="torch CPU threads (default: torch's own choice)")
+    parser.add_argument("--window-days", type=int,
+                        help="fit only on anchor days in the last N days before --train-end (data/model.md's "
+                            "continuous-learning design: a sliding fixed-size window, not ever-growing history). "
+                            "Default: every day in the data (the original train-from-scratch behaviour).")
+    parser.add_argument("--warm-start", type=Path,
+                        help="initialize weights from this artifact's state_dict and fine-tune (a fresh Adam "
+                            "each run - see this file's module docstring) instead of training from scratch. "
+                            "Also reuses its price_clip/scalers/target_transform unless --refresh-preprocessing.")
+    parser.add_argument("--refresh-preprocessing", action="store_true",
+                        help="with --warm-start: still recompute price_clip/scalers/target_transform from the "
+                            "current window instead of reusing the warm-start source's (the 30-day cadence in "
+                            "the continuous-learning design - everything else about --warm-start still applies)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
@@ -312,7 +341,21 @@ def main() -> None:
     frame = load_frame(data_dir, splits, exog_cols)
     if args.train_end:
         frame = frame.loc[:pd.Timestamp(args.train_end) + pd.Timedelta(hours=23)]
+    if args.window_days:
+        # + ceil(PAST_WINDOW/24) days of extra lookback: the first few days of
+        # the window would otherwise have no full 168h encoder history inside
+        # `frame` to draw on, silently shrinking the window candidate_days()
+        # actually uses below.
+        lookback_days = args.window_days + math.ceil(lm.PAST_WINDOW / 24)
+        frame = frame.loc[frame.index.max() - pd.Timedelta(days=lookback_days - 1):]
     quantiles = [0.5] if args.loss == "mse" else list(lm.DEFAULT_QUANTILES)
+
+    warm_source = None
+    if args.warm_start:
+        _, warm_source = lm.load_artifact(args.warm_start)
+        if warm_source.get("lead_hours") != LEAD_HOURS[args.target]:
+            raise ValueError(f"{args.warm_start} was trained for lead_hours={warm_source.get('lead_hours')} - "
+                             f"expected {LEAD_HOURS[args.target]} (--target {args.target}).")
 
     cfg = {
         "kind": "lstm",
@@ -327,7 +370,18 @@ def main() -> None:
         "loss": args.loss,
         "seed": args.seed,
     }
-    cfg.update(lm.fit_preprocessing(frame, cfg["exog_cols"], cfg["calendar_cols"]))
+    if warm_source is not None and not args.refresh_preprocessing:
+        for key in ("price_clip", "scalers", "target_transform"):
+            cfg[key] = warm_source[key]
+        # Carried forward, not re-stamped: this is when these values were
+        # last actually recomputed, which --train-end/warm-starting alone
+        # doesn't change. data_scripts/update.py reads this (not train_end -
+        # that advances every run regardless) to decide when the 30-day
+        # --refresh-preprocessing cadence is next due (point 7).
+        cfg["preprocessing_refreshed_at"] = warm_source.get("preprocessing_refreshed_at", warm_source["train_end"])
+    else:
+        cfg.update(lm.fit_preprocessing(frame, cfg["exog_cols"], cfg["calendar_cols"]))
+        cfg["preprocessing_refreshed_at"] = cfg["train_end"]
     cfg["arch"] = {**ARCH, "n_past_feats": len(lm.past_feature_names(cfg)),
                    "n_future_feats": len(lm.future_feature_names(cfg)), "quantiles": quantiles}
 
@@ -338,6 +392,11 @@ def main() -> None:
 
     model = lm.LSTMForecaster(cfg["arch"]["n_past_feats"], cfg["arch"]["n_future_feats"],
                               quantiles=quantiles, **ARCH).to(device)
+    if warm_source is not None:
+        if warm_source["arch"] != cfg["arch"]:
+            raise ValueError(f"{args.warm_start}'s arch {warm_source['arch']} does not match this run's "
+                             f"{cfg['arch']} (exog_cols/--loss changed?) - can't warm-start from it.")
+        model.load_state_dict(warm_source["state_dict"])
 
     if args.fit_on == "train":
         n_stop = max(1, int(round(len(days) * EARLY_STOP_FRACTION)))
@@ -372,7 +431,7 @@ def main() -> None:
         metrics = {"train_loss": train_loss, "fit": dollar_metrics(model, samples, frame, cfg)}
 
     artifact = {**cfg, "state_dict": model.state_dict(), "best_epoch": best_epoch, "lr_history": lr_history,
-                "metrics": metrics}
+                "metrics": metrics, "warm_started_from": str(args.warm_start) if args.warm_start else None}
     tag = args.tag or f"{args.target}_{'train' if args.fit_on == 'train' else 'full'}"
     out_path = args.out or MODELS_DIR / f"lstm_{tag}.pt"
     out_path.parent.mkdir(parents=True, exist_ok=True)

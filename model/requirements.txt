@@ -1,6 +1,11 @@
 # Training + evaluation scripts under model/ (serving only needs data_scripts/requirements.txt).
 # Install with: pip install -r model/requirements.txt
 -r ../data_scripts/requirements.txt
-scikit-learn
+# xgboost is retired from serving (data_scripts/predictions.py imports it lazily, only if
+# pointed at a .json model file), so it lives here, not in data_scripts/requirements.txt -
+# model/train_xgboost_baseline.py and model/evaluate.py's "xgb" comparison baseline still need it.
+xgboost
+# scikit-learn and joblib (LEAR: model/lear_model.py's parallel per-hour LASSO fitting) are
+# already in data_scripts/requirements.txt (predict_lear.py needs them too) via the -r above.
 pyarrow
 matplotlib

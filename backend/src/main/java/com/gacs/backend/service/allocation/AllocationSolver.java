@@ -13,5 +13,8 @@ public interface AllocationSolver {
      */
     double MIN_SHARE = 1e-4;
 
+    /** Recorded with every persisted run (optimizer_runs.solver_version); bump when solver behaviour changes. */
+    String VERSION = "1";
+
     AllocationResult solve(OptimizationProblem problem);
 }

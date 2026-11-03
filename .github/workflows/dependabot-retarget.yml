@@ -1,0 +1,20 @@
+name: Retarget Dependabot PRs to Staging
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  retarget:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Change PR base branch to staging
+        run: |
+          curl -X PATCH \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://github.com{{ github.repository }}/pulls/${{ github.event.pull_request.number }} \
+            -d '{"base":"staging"}'

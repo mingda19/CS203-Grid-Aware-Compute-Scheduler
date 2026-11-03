@@ -1,11 +1,11 @@
 "use client"
 
 import * as React from "react"
-import { Radio, Database, Sparkles, AlertCircle, Info } from "lucide-react"
+import { Radio, Database, AlertCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
-export type DataStatusType = "live" | "cached" | "demo" | "unavailable"
+export type DataStatusType = "live" | "cached" | "unavailable"
 
 export interface DataStatusBadgeProps {
   status: DataStatusType
@@ -40,13 +40,6 @@ const statusConfig: Record<
     icon: Database,
     defaultSource: "PostgreSQL query cache",
   },
-  demo: {
-    label: "Demo data",
-    dotClass: "bg-purple-500",
-    badgeClass: "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20",
-    icon: Sparkles,
-    defaultSource: "Simulated scenario & benchmark data",
-  },
   unavailable: {
     label: "Unavailable",
     dotClass: "bg-rose-500",
@@ -66,17 +59,13 @@ export function DataStatusBadge({
   size = "default",
   showTooltip = true,
 }: DataStatusBadgeProps) {
-  const config = statusConfig[status] || statusConfig.demo
-  const [relativeText, setRelativeText] = React.useState(() => (updatedAt ? formatSgtRelativeAgo(updatedAt) : ""))
-
+  const config = statusConfig[status] || statusConfig.unavailable
+  const [now, setNow] = React.useState(() => Date.now())
+  const relativeText = updatedAt ? formatSgtRelativeAgo(updatedAt, now) : ""
   React.useEffect(() => {
-    if (!updatedAt) return
-    setRelativeText(formatSgtRelativeAgo(updatedAt))
-    const timer = setInterval(() => {
-      setRelativeText(formatSgtRelativeAgo(updatedAt))
-    }, 15000)
+    const timer = setInterval(() => setNow(Date.now()), 15000)
     return () => clearInterval(timer)
-  }, [updatedAt])
+  }, [])
 
   const effectiveSource = source || config.defaultSource
   const Icon = config.icon
@@ -109,9 +98,9 @@ export function DataStatusBadge({
     ? typeof updatedAt === "string"
       ? updatedAt
       : updatedAt.toISOString()
-    : "Static / Mocked"
+    : "Timestamp unavailable"
 
-  const sgtDisplay = updatedAt ? formatSgtDateTime(updatedAt) : "Static / Mocked"
+  const sgtDisplay = updatedAt ? formatSgtDateTime(updatedAt) : "Timestamp unavailable"
 
   return (
     <TooltipProvider delayDuration={150}>

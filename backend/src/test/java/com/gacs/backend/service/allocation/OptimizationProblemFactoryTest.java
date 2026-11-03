@@ -161,6 +161,12 @@ class OptimizationProblemFactoryTest {
     }
 
     @Test
+    @DisplayName("400: invalid job priority")
+    void invalidJobPriority() {
+        assertRejected(new JobInput(1L, "a", 1.0, 0.0, T0, at(4), 0, false, "URGENT"), "priority must be one of CRITICAL, HIGH, NORMAL, LOW");
+    }
+
+    @Test
     @DisplayName("400: duplicate job ids")
     void duplicateIds() {
         assertThatThrownBy(() -> factory.build(request(List.of(validJob(7), validJob(7)))))
@@ -243,6 +249,30 @@ class OptimizationProblemFactoryTest {
         assertThatThrownBy(() -> factory.build(request))
                 .isInstanceOf(IllegalArgumentException.class)
                 .isNotInstanceOf(UnprocessableDataException.class);
+    }
+
+    @Test
+    @DisplayName("GRID-141: the input snapshot ignores job order and name, and changes with any input the solver uses")
+    void snapshotCoversSolverInputs() {
+        List<ForecastPointInput> prices = forecast(10, 20, 30, 40);
+        String base = factory.build(request(List.of(validJob(1), validJob(2)))).snapshot();
+
+        assertThat(factory.build(request(List.of(validJob(2), validJob(1)))).snapshot()).isEqualTo(base);
+        JobInput renamed = new JobInput(1L, "another name", 64.0, 16.0, T0, at(4), 2, false);
+        assertThat(factory.build(request(List.of(renamed, validJob(2)))).snapshot()).isEqualTo(base);
+
+        JobInput moreHours = new JobInput(1L, "job-1", 65.0, 16.0, T0, at(4), 2, false);
+        JobInput moreFlexible = new JobInput(1L, "job-1", 64.0, 16.0, T0, at(4), 3, false);
+        JobInput exempt = new JobInput(1L, "job-1", 64.0, 16.0, T0, at(4), 2, true);
+        JobInput higherPriority = new JobInput(1L, "job-1", 64.0, 16.0, T0, at(4), 2, false, "HIGH");
+        for (JobInput changed : List.of(moreHours, moreFlexible, exempt, higherPriority)) {
+            assertThat(factory.build(request(List.of(changed, validJob(2)))).snapshot()).isNotEqualTo(base);
+        }
+        List<JobInput> jobs = List.of(validJob(1), validJob(2));
+        assertThat(factory.build(new OptimizeRequestDto(jobs, null, null, null, forecast(10, 20, 31, 40), null))
+                .snapshot()).isNotEqualTo(base);
+        assertThat(factory.build(new OptimizeRequestDto(jobs, new ClusterCapacityInput(100.0, 50.0), null, null,
+                prices, null)).snapshot()).isNotEqualTo(base);
     }
 
     @Test

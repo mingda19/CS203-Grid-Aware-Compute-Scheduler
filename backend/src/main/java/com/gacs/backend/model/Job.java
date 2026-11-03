@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 
 /**
  * Compute workload entity representing a flexible or deadline-tolerant job.
@@ -20,6 +21,9 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 @Builder
 public class Job {
+
+    @Column(nullable = false, columnDefinition = "bigint default 0")
+    private long schedulingRevision;
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -56,9 +60,21 @@ public class Job {
     @Column(name = "raw_constraints", length = 1000)
     private String rawConstraints;
 
+    @Column(name = "parsed_at")
+    private LocalDateTime parsedAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "confirmation_outcome", length = 20)
+    private ConfirmationOutcome confirmationOutcome;
+
     @Builder.Default
     @Column(nullable = false, length = 30)
     private String status = "PENDING";
+
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20, columnDefinition = "varchar(20) default 'NORMAL'")
+    private JobPriority priority = JobPriority.NORMAL;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
@@ -83,10 +99,24 @@ public class Job {
         if (this.status == null || this.status.isBlank()) {
             this.status = "PENDING";
         }
+        if (this.priority == null) {
+            this.priority = JobPriority.NORMAL;
+        }
     }
 
     @PreUpdate
     protected void onUpdate() {
         this.updatedAt = LocalDateTime.now();
+    }
+
+    /** The earliest hour this job may start at - its original start, truncated to the hour. */
+    public LocalDateTime earliestAllowedStart() {
+        return originalStartTime.truncatedTo(ChronoUnit.HOURS);
+    }
+
+    /** The latest hour this job may start at. An exempt job may only start at its original time. */
+    public LocalDateTime latestAllowedStart() {
+        LocalDateTime earliest = earliestAllowedStart();
+        return isExempt ? earliest : earliest.plusHours(flexibilityWindowHours);
     }
 }

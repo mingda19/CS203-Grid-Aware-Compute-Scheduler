@@ -57,10 +57,14 @@ class ScheduleOptimizationAcceptanceTest {
     @Autowired
     private JobRepository jobs;
 
+    @Autowired
+    private com.gacs.backend.repository.UserRepository users;
+
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     @BeforeEach
     void clearData() {
+        if (!users.existsByEmail(OWNER)) users.save(new com.gacs.backend.model.User(OWNER, "test-password", "Operator", "ROLE_USER"));
         jobs.deleteAll();
         predictions.deleteAll();
     }

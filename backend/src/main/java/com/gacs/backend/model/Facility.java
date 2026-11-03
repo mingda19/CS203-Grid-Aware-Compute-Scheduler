@@ -20,6 +20,9 @@ import java.time.LocalDateTime;
 @Builder
 public class Facility {
 
+    @Column(nullable = false, columnDefinition = "bigint default 0")
+    private long schedulingRevision;
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;

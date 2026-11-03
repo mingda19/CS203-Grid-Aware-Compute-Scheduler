@@ -20,7 +20,9 @@ export interface AuthResponse {
   refreshExpiresIn?: number
 }
 
-export interface ApiResponse<T = any> {
+import { filenameFromContentDisposition } from "./download-utils"
+
+export interface ApiResponse<T = unknown> {
   success: boolean
   message: string
   data?: T
@@ -63,6 +65,10 @@ export interface WorkloadSchedule {
   notes: string | null
 }
 
+export type JobPriority = "CRITICAL" | "HIGH" | "NORMAL" | "LOW"
+
+export type ConfirmationOutcome = "PENDING" | "CONFIRMED" | "REJECTED"
+
 export interface ComputeJob {
   id: number
   ownerEmail?: string
@@ -73,7 +79,10 @@ export interface ComputeJob {
   deadline: string
   flexibilityWindowHours: number
   isExempt: boolean
+  priority?: JobPriority
   rawConstraints?: string | null
+  parsedAt?: string | null
+  confirmationOutcome?: ConfirmationOutcome | null
   status: string
   createdAt?: string
   updatedAt?: string
@@ -81,7 +90,38 @@ export interface ComputeJob {
 
 export type ComputeJobPayload = Pick<ComputeJob,
   "name" | "cpuHours" | "gpuHours" | "originalStartTime" | "deadline" | "flexibilityWindowHours" | "isExempt"
-> & { rawConstraints?: string | null }
+> & {
+  rawConstraints?: string | null
+  parsedAt?: string | null
+  confirmationOutcome?: ConfirmationOutcome | null
+  priority?: JobPriority
+}
+
+export interface ConstraintDraft {
+  originalStartTime: string | null
+  deadline: string | null
+  flexibilityWindowHours: number | null
+  priority: JobPriority | null
+  isExempt: boolean | null
+}
+
+export interface ConstraintParseRequest {
+  rawConstraints: string
+  draft: ConstraintDraft
+  timeZone: string
+}
+
+export interface ConstraintParseResponse {
+  status: "PARSED" | "NEEDS_CLARIFICATION" | "INVALID"
+  fields: ConstraintDraft
+  evidence: Array<{ field: keyof ConstraintDraft; value: string; phrase: string; start: number; end: number }>
+  ambiguities: Array<{ field: keyof ConstraintDraft | null; reason: string; phrase: string; message: string; start: number; end: number }>
+  conflicts: Array<{ field: keyof ConstraintDraft; phrases: string[]; message: string }>
+  unsupported: Array<{ phrase: string; start: number; end: number }>
+  validationError: string | null
+  parsedAt: string
+  timeZone: string
+}
 
 export interface FacilityConfig {
   id?: number
@@ -102,6 +142,7 @@ export interface OptimizeJobInput {
   deadline: string
   flexibilityWindowHours: number
   isExempt: boolean
+  priority?: JobPriority
 }
 
 export interface OptimizeRequest {
@@ -147,7 +188,7 @@ export interface ScheduleItem {
 
 export interface OptimizeResponse {
   runId: string
-  status: "SCHEDULED" | "NEEDS_ATTENTION"
+  status: "SCHEDULED" | "NEEDS_ATTENTION" | "INFEASIBLE"
   provenOptimal: boolean
   baselineCostUsd: number
   optimizedCostUsd: number
@@ -156,6 +197,24 @@ export interface OptimizeResponse {
   plainEnglishExplanation: string
   usedSeededFallbackPrices: boolean
   items: ScheduleItem[]
+}
+
+export interface JobExplanation {
+  jobId: number
+  whyThisPlacement: string | null
+  constraints: Array<{
+    constraintType: string
+    code: string
+    slackHours: number | null
+    relatedJobIds: number[]
+    explanation: string
+  }>
+}
+
+export interface ExplanationResponse {
+  runId: string
+  explanation: string
+  items?: JobExplanation[]
 }
 
 export interface CreateWorkloadSchedule {
@@ -191,7 +250,94 @@ export interface DataFreshnessResponse {
   checkedAt: string
 }
 
-const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080").replace(/\/+$/, "")
+export type AuditActionType = "APPROVE" | "REJECT" | "REVISE" | "OVERRIDE" | "DISPATCH"
+
+export interface AuditEvent {
+  id: number
+  actor: string
+  actionType: AuditActionType
+  timestamp: string
+  runId: string
+  scheduleHash: string
+  operatorRationale: string
+}
+
+export type OptimizerRunStatus = "SCHEDULED" | "NEEDS_ATTENTION" | "INFEASIBLE" | "TIMEOUT" | "FAILED"
+
+export interface OptimizerRunSnapshot {
+  id: string
+  createdAt: string
+  solverName: string
+  solverVersion: string
+  solverConfig: string
+  status: OptimizerRunStatus
+  provenOptimal: boolean | null
+}
+
+/** VISIBLE: you own the run and `schedule` is set; OWNER_ONLY: stored, but only its owner sees it; NOT_STORED: none. */
+export type ScheduleAvailability = "VISIBLE" | "OWNER_ONLY" | "NOT_STORED"
+
+export interface AuditEventDetail {
+  event: AuditEvent
+  run: OptimizerRunSnapshot | null
+  scheduleAvailability: ScheduleAvailability
+  /** Whether the stored schedule still matches the event's scheduleHash; null when NOT_STORED. */
+  scheduleHashMatches: boolean | null
+  /** The stored optimiser result; only when scheduleAvailability is VISIBLE. */
+  schedule: OptimizeResponse | null
+}
+
+export interface AuditEventQuery {
+  from?: string
+  to?: string
+  actor?: string
+  actionType?: AuditActionType
+  runId?: string
+  jobId?: number
+  page?: number
+  size?: number
+}
+
+export interface Page<T> {
+  content: T[]
+  totalElements: number
+  totalPages: number
+  number: number
+  size: number
+}
+
+export type ScheduleExportFormat = "csv" | "json"
+
+/** Why the approval gate refused an export: 403 for NOT_APPROVED, 409 for STALE or INVALIDATED. */
+export type ScheduleExportRejectionReason = "NOT_APPROVED" | "STALE" | "INVALIDATED"
+
+const EXPORT_REJECTION_REASONS: ScheduleExportRejectionReason[] = ["NOT_APPROVED", "STALE", "INVALIDATED"]
+
+/** A refused schedule export. `reason` is set when the approval gate refused it, rather than auth or lookup. */
+export class ScheduleExportError extends Error {
+  readonly status: number
+  readonly reason?: ScheduleExportRejectionReason
+
+  constructor(message: string, status: number, reason?: ScheduleExportRejectionReason) {
+    super(message)
+    this.name = "ScheduleExportError"
+    this.status = status
+    this.reason = reason
+  }
+}
+
+export interface DownloadedFile {
+  blob: Blob
+  filename: string
+}
+
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL ||
+  (process.env.NODE_ENV === "production" ? "" : "http://localhost:8080")).replace(/\/+$/, "")
+
+function apiUrl(endpoint: string): string {
+  if (!API_BASE_URL) throw new Error("The application is not connected to its API. Contact your administrator.")
+  return `${API_BASE_URL}${endpoint}`
+}
 
 // Storage keys
 const ACCESS_TOKEN_KEY = "gacs_access_token"
@@ -242,8 +388,15 @@ export function getRefreshToken(): string | null {
   return null
 }
 
+export class ApiRequestError extends Error {
+  constructor(message: string, public readonly status: number, public readonly reason?: string) {
+    super(message)
+    this.name = "ApiRequestError"
+  }
+}
+
 async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const url = `${API_BASE_URL}${endpoint}`
+  const url = apiUrl(endpoint)
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
@@ -290,25 +443,22 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
     !endpoint.includes("/verify-otp") &&
     !endpoint.includes("/resend-otp")
   ) {
+    let refreshedAccessToken: string | undefined
     try {
-      const refreshed = await authApi.refreshToken()
-      if (refreshed.accessToken) {
-        setAccessToken(refreshed.accessToken)
-        headers["Authorization"] = `Bearer ${refreshed.accessToken}`
-        const retryResponse = await fetch(url, {
-          ...options,
-          headers,
-          credentials: "include",
-        })
-        const retryData = await retryResponse.json().catch(() => ({}))
-        if (!retryResponse.ok) {
-          const err = retryData?.message || `Request failed with status ${retryResponse.status}`
-          throw new Error(err)
-        }
-        return retryData as T
-      }
+      refreshedAccessToken = (await authApi.refreshToken()).accessToken
     } catch {
-      // Refresh failed, proceed to handle original response error
+      // Keep the original refusal if refreshing authentication fails.
+    }
+    if (refreshedAccessToken) {
+      setAccessToken(refreshedAccessToken)
+      headers["Authorization"] = `Bearer ${refreshedAccessToken}`
+      const retryResponse = await fetch(url, { ...options, headers, credentials: "include" })
+      const retryData = await retryResponse.json().catch(() => ({}))
+      if (!retryResponse.ok) {
+        const err = retryData?.message || `Request failed with status ${retryResponse.status}`
+        throw new ApiRequestError(err, retryResponse.status, retryData?.data?.reason)
+      }
+      return retryData as T
     }
   }
 
@@ -316,7 +466,7 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
 
   if (!response.ok) {
     const errorMessage = data?.message || `Request failed with status ${response.status}`
-    throw new Error(errorMessage)
+    throw new ApiRequestError(errorMessage, response.status, data?.data?.reason)
   }
 
   return data as T
@@ -368,6 +518,11 @@ export const workloadScheduleApi = {
 }
 
 export const jobsApi = {
+  parseConstraints(payload: ConstraintParseRequest): Promise<ApiResponse<ConstraintParseResponse>> {
+    return fetchJson<ApiResponse<ConstraintParseResponse>>("/api/jobs/parse-constraints", {
+      method: "POST", body: JSON.stringify(payload),
+    })
+  },
   list(): Promise<ApiResponse<ComputeJob[]>> {
     return fetchJson<ApiResponse<ComputeJob[]>>("/api/jobs", { cache: "no-store" })
   },
@@ -385,11 +540,53 @@ export const jobsApi = {
   },
 }
 
+export type PlanReviewState = "PENDING" | "APPROVED" | "REJECTED" | "REVISION_REQUESTED" | "STALE" | "INVALIDATED"
+export type ScheduleDecisionAction = "approve" | "reject" | "revise"
+export interface SchedulePlanSummary { runId: string; createdAt: string; reviewState: PlanReviewState }
+export interface SchedulePlanDetail {
+  runId: string
+  reviewState: PlanReviewState
+  invalidationReason: string | null
+  invalidatedAt: string | null
+  recommendation: OptimizeResponse | null
+}
+export interface ScheduleDecision {
+  decisionId: number
+  runId: string
+  action: "APPROVE" | "REJECT" | "REVISE"
+  operatorId: number
+  comment: string
+  decidedAt: string
+  reviewState: PlanReviewState
+}
+
+export const scheduleReviewApi = {
+  apply(runId: string): Promise<ApiResponse<WorkloadSchedule[]>> {
+    return fetchJson(`/api/schedules/${encodeURIComponent(runId)}/apply`, { method: "POST" })
+  },
+  list(page = 0): Promise<ApiResponse<Page<SchedulePlanSummary>>> {
+    return fetchJson(`/api/schedules?page=${page}&size=20`, { cache: "no-store" })
+  },
+  detail(runId: string): Promise<ApiResponse<SchedulePlanDetail>> {
+    return fetchJson(`/api/schedules/${encodeURIComponent(runId)}`, { cache: "no-store" })
+  },
+  decide(runId: string, action: ScheduleDecisionAction, comment: string): Promise<ApiResponse<ScheduleDecision>> {
+    return fetchJson(`/api/schedules/${encodeURIComponent(runId)}/${action}`, {
+      method: "POST", body: JSON.stringify({ comment }),
+    })
+  },
+}
+
 export const optimizerApi = {
   optimize(payload: OptimizeRequest): Promise<ApiResponse<OptimizeResponse>> {
     return fetchJson<ApiResponse<OptimizeResponse>>("/api/schedules/optimize", {
       method: "POST",
       body: JSON.stringify(payload),
+    })
+  },
+  explanation(runId: string): Promise<ApiResponse<ExplanationResponse>> {
+    return fetchJson<ApiResponse<ExplanationResponse>>(`/api/schedules/${runId}/explanation`, {
+      cache: "no-store",
     })
   },
 }
@@ -418,6 +615,97 @@ export const freshnessApi = {
     return fetchJson<ApiResponse<void>>(`/api/health/data-freshness/notifications/${notificationId}/read`, {
       method: "POST",
     })
+  },
+}
+
+export const auditApi = {
+  list(query: AuditEventQuery = {}): Promise<ApiResponse<Page<AuditEvent>>> {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== "") params.set(key, String(value))
+    }
+    const qs = params.toString()
+    return fetchJson<ApiResponse<Page<AuditEvent>>>(`/api/audit-events${qs ? `?${qs}` : ""}`, { cache: "no-store" })
+  },
+  get(id: number): Promise<ApiResponse<AuditEventDetail>> {
+    return fetchJson<ApiResponse<AuditEventDetail>>(`/api/audit-events/${id}`, { cache: "no-store" })
+  },
+}
+
+const EXPORT_ACCEPT: Record<ScheduleExportFormat, string> = {
+  // JSON as a fallback so refusals can come back in the standard error envelope.
+  csv: "text/csv, application/json;q=0.9",
+  json: "application/json",
+}
+
+/** The message and gate reason from an error envelope, or null when the body is not one (e.g. empty). */
+async function readExportError(
+  response: Response,
+): Promise<{ message?: string; reason?: ScheduleExportRejectionReason } | null> {
+  try {
+    const body = await response.clone().json()
+    const reason = body?.data?.reason
+    return {
+      message: typeof body?.message === "string" ? body.message : undefined,
+      reason: EXPORT_REJECTION_REASONS.includes(reason) ? reason : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** GET a file with the JWT attached, refreshing the access token once if the security layer rejects it. */
+async function fetchFileWithAuth(endpoint: string, accept: string): Promise<Response> {
+  const url = apiUrl(endpoint)
+  if (!getAccessToken() && typeof window !== "undefined") {
+    try {
+      await authApi.refreshToken()
+    } catch {
+      // No valid refresh token; the request below reports the auth failure.
+    }
+  }
+  const send = () => {
+    const headers: Record<string, string> = { Accept: accept }
+    const token = getAccessToken()
+    if (token) headers["Authorization"] = `Bearer ${token}`
+    return fetch(url, { headers, credentials: "include", cache: "no-store" })
+  }
+
+  const response = await send()
+  // A 403 that names a gate reason is the approval gate's answer, which a new token would not change.
+  const authRejected =
+    response.status === 401 || (response.status === 403 && !(await readExportError(response))?.reason)
+  if (!authRejected) return response
+  try {
+    const refreshed = await authApi.refreshToken()
+    if (refreshed.accessToken) return await send()
+  } catch {
+    // Refresh failed; report the original response.
+  }
+  return response
+}
+
+export const scheduleExportApi = {
+  /**
+   * Downloads an approved schedule (contract section 6.6). Resolves with the file and the name from
+   * Content-Disposition; rejects with a ScheduleExportError carrying the server's explanation.
+   */
+  async download(runId: string, format: ScheduleExportFormat): Promise<DownloadedFile> {
+    const response = await fetchFileWithAuth(
+      `/api/schedules/${encodeURIComponent(runId)}/export.${format}`,
+      EXPORT_ACCEPT[format],
+    )
+    if (!response.ok) {
+      const error = await readExportError(response)
+      const fallback =
+        response.status === 401 || response.status === 403
+          ? "Your session has expired. Sign in again to download this schedule."
+          : `Export failed with status ${response.status}`
+      throw new ScheduleExportError(error?.message || fallback, response.status, error?.reason)
+    }
+    const filename =
+      filenameFromContentDisposition(response.headers.get("Content-Disposition")) ?? `schedule-run-${runId}.${format}`
+    return { blob: await response.blob(), filename }
   },
 }
 
@@ -555,7 +843,8 @@ export function getStoredUser(): User | null {
     if (data && !document.cookie.includes(`${COOKIE_NAME}=true`)) {
       document.cookie = `${COOKIE_NAME}=true; path=/; max-age=${maxAge}; SameSite=Lax`
     }
-    const { _maxAgeSeconds, ...user } = data
+    const user = { ...data }
+    delete user._maxAgeSeconds
     return user as User
   } catch {
     return null
