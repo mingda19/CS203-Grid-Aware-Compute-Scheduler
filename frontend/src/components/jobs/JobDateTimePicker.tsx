@@ -72,12 +72,14 @@ export function JobDateTimePicker({
   const [viewYear, setViewYear] = React.useState<number>(() => parsed?.year ?? nowSgt.year)
   const [viewMonth, setViewMonth] = React.useState<number>(() => parsed?.month ?? nowSgt.month)
 
-  React.useEffect(() => {
+  const [previousValue, setPreviousValue] = React.useState(value)
+  if (previousValue !== value) {
+    setPreviousValue(value)
     if (parsed) {
       setViewYear(parsed.year)
       setViewMonth(parsed.month)
     }
-  }, [parsed])
+  }
 
   // Close on click outside
   React.useEffect(() => {

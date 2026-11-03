@@ -41,7 +41,7 @@ def make_db(days: int = 10) -> sa.Engine:
         predicted_price.to_sql("predicted_price", conn, index=False)
         conn.execute(sa.text(
             "CREATE TABLE rmse_reference (model_kind TEXT, target TEXT, hour_utc INTEGER, rmse REAL, "
-            "n_samples INTEGER, computed_through TEXT, updated_at TEXT, "
+            "n_samples INTEGER NOT NULL, computed_through TEXT NOT NULL, updated_at TEXT NOT NULL, "
             "PRIMARY KEY (model_kind, target, hour_utc))"
         ))
     return engine
@@ -110,6 +110,9 @@ class UpsertBehaviorTests(unittest.TestCase):
 
         self.assertEqual(first_count, 24 * 3)  # 24 hours x 3 kinds, one target (y0)
         self.assertEqual(second_count, first_count)  # same rows overwritten, not duplicated
+        with engine.begin() as conn:
+            timestamps = conn.execute(sa.text("SELECT updated_at FROM rmse_reference")).scalars().all()
+        self.assertTrue(all(timestamps))
 
 
 if __name__ == "__main__":

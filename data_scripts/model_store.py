@@ -28,7 +28,7 @@ Usage:
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import sqlalchemy as sa
 
@@ -53,14 +53,15 @@ def save_model_artifact(engine: sa.Engine, *, model_kind: str, target: str, blob
     with engine.begin() as conn:
         result = conn.execute(sa.text(
             f"INSERT INTO {TABLE} (model_kind, target, model_version, format, blob, trained_through, "
-            "valid_from_date, valid_to_date, metrics, is_active) "
+            "valid_from_date, valid_to_date, metrics, is_active, created_at) "
             "VALUES (:model_kind, :target, :model_version, :format, :blob, :trained_through, "
-            ":valid_from_date, :valid_to_date, :metrics, false) "
+            ":valid_from_date, :valid_to_date, :metrics, false, :created_at) "
             "RETURNING id"
         ), {
             "model_kind": model_kind, "target": target, "model_version": model_version, "format": format,
             "blob": blob, "trained_through": _iso(trained_through), "valid_from_date": _iso(valid_from_date),
             "valid_to_date": _iso(valid_to_date), "metrics": json.dumps(metrics),
+            "created_at": _iso(datetime.now(timezone.utc).replace(tzinfo=None)),
         })
         new_id = result.scalar_one()
         if promote:

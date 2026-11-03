@@ -176,10 +176,9 @@ export function sgtDateToUtcIso(sgtDateString: string, isEndOfDay = false): stri
 /**
  * Formats relative time from a past timestamp in English: "just now", "32s ago", "4m ago"
  */
-export function formatSgtRelativeAgo(date: Date | string | number): string {
+export function formatSgtRelativeAgo(date: Date | string | number, now = Date.now()): string {
   try {
     const d = parseIsoDate(date)
-    const now = Date.now()
     const diffSec = Math.floor((now - d.getTime()) / 1000)
     if (isNaN(diffSec) || diffSec < 0) return "just now"
     if (diffSec < 10) return "just now"

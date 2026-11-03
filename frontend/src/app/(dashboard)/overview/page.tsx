@@ -13,6 +13,8 @@ import {
   Plus,
   Sparkles,
 } from "lucide-react"
+import { currentSettlementMetrics } from "@/lib/settlement-price"
+import { freshnessSummary } from "@/lib/data-freshness"
 import { cn } from "@/lib/utils"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -26,48 +28,50 @@ import { formatSgtTime, formatSgtDateTime } from "@/lib/date-utils"
 export default function OverviewPage() {
   const [jobs, setJobs] = React.useState<ComputeJob[]>([])
   const [jobsLoading, setJobsLoading] = React.useState(true)
+  const [jobsError, setJobsError] = React.useState<string | null>(null)
   const [pricePoints, setPricePoints] = React.useState<PricePoint[]>([])
   const [pricesLoading, setPricesLoading] = React.useState(true)
+  const [priceNow, setPriceNow] = React.useState(() => Date.now())
   const [pricesError, setPricesError] = React.useState<string | null>(null)
   const [freshness, setFreshness] = React.useState<DataFreshnessResponse | null>(null)
 
   React.useEffect(() => {
     let cancelled = false
 
-    // Fetch price history
-    setPricesLoading(true)
-    setPricesError(null)
-    const end = new Date()
-    const start = new Date(end)
-    start.setUTCDate(start.getUTCDate() - 2)
-
-    priceApi
-      .getHistory({
+    // The DAM feed includes future delivery hours; refresh the source and the current interval.
+    const pollPrices = () => {
+      const end = new Date()
+      const start = new Date(end)
+      start.setUTCDate(start.getUTCDate() - 2)
+      return priceApi.getHistory({
         location: "LZ_NORTH",
         startDate: start.toISOString().slice(0, 10),
         endDate: end.toISOString().slice(0, 10),
-      })
-      .then((response) => {
+      }).then(response => {
         if (cancelled) return
-        if (!response.success || !response.data) throw new Error(response.message || "Unable to load price history")
-        setPricePoints(response.data.points.filter((point) => point.sppUsdMwh != null))
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setPricesError(error instanceof Error ? error.message : "Unable to load price history")
-      })
-      .finally(() => {
-        if (!cancelled) setPricesLoading(false)
-      })
+        if (!response.success || !response.data) throw new Error(response.message || "Unable to load settlement prices")
+        setPricePoints(response.data.points)
+        setPricesError(null)
+      }).catch(error => {
+        if (!cancelled) setPricesError(error instanceof Error ? error.message : "Unable to load settlement prices")
+      }).finally(() => { if (!cancelled) setPricesLoading(false) })
+    }
+    void pollPrices()
+    const priceTimer = window.setInterval(() => {
+      setPriceNow(Date.now())
+      void pollPrices()
+    }, 60_000)
 
     // Fetch compute jobs
-    setJobsLoading(true)
     jobsApi
       .list()
       .then((res) => {
-        if (!cancelled) setJobs(res.data ?? [])
+        if (cancelled) return
+        if (!res.success || !res.data) throw new Error(res.message || "Could not load jobs")
+        setJobs(res.data)
       })
-      .catch(() => {
-        if (!cancelled) setJobs([])
+      .catch((error: unknown) => {
+        if (!cancelled) setJobsError(error instanceof Error ? error.message : "Could not load jobs")
       })
       .finally(() => {
         if (!cancelled) setJobsLoading(false)
@@ -83,47 +87,14 @@ export default function OverviewPage() {
 
     return () => {
       cancelled = true
+      window.clearInterval(priceTimer)
     }
   }, [])
 
-  const lmpMetrics = React.useMemo(() => {
-    if (pricePoints.length === 0) {
-      return {
-        currentLmp: null,
-        formattedCurrent: "—",
-        diffPercent: 0,
-        isDrop: true,
-        rollingAvgFormatted: "—",
-        peakPriceFormatted: "—",
-        peakWindow: "Peak window: —",
-      }
-    }
-    const latest = pricePoints[pricePoints.length - 1]
-    const current = latest.sppUsdMwh ?? 0
-    const recent = pricePoints.slice(-288)
-    const sum = recent.reduce((acc, p) => acc + (p.sppUsdMwh ?? 0), 0)
-    const avg = recent.length > 0 ? sum / recent.length : current
-    const diff = avg !== 0 ? ((current - avg) / avg) * 100 : 0
+  const lmpMetrics = React.useMemo(() => currentSettlementMetrics(pricePoints, priceNow), [pricePoints, priceNow])
 
-    let maxPrice = -Infinity
-    let maxTimeStr = "—"
-    for (const p of pricePoints) {
-      if (p.sppUsdMwh != null && p.sppUsdMwh > maxPrice) {
-        maxPrice = p.sppUsdMwh
-        maxTimeStr = formatSgtTime(`${p.intervalStartUtc}Z`, true)
-      }
-    }
-
-    return {
-      currentLmp: current,
-      formattedCurrent: `$${current.toFixed(2)}`,
-      diffPercent: Math.abs(diff),
-      isDrop: diff <= 0,
-      rollingAvgFormatted: `$${avg.toFixed(2)}`,
-      peakPriceFormatted: `$${maxPrice.toFixed(2)}`,
-      peakWindow: `Peak at ${maxTimeStr}`,
-    }
-  }, [pricePoints])
+  const sourceStatus = freshnessSummary(freshness)
+  const jobsAvailable = !jobsLoading && !jobsError
 
   const totalCpuHours = React.useMemo(() => jobs.reduce((acc, j) => acc + (j.cpuHours || 0), 0), [jobs])
   const totalGpuHours = React.useMemo(() => jobs.reduce((acc, j) => acc + (j.gpuHours || 0), 0), [jobs])
@@ -142,7 +113,7 @@ export default function OverviewPage() {
             </h1>
             <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              Optimization Engine Active
+              Operator review required
             </span>
           </div>
           <p className="text-sm text-muted-foreground">
@@ -165,19 +136,21 @@ export default function OverviewPage() {
         </div>
       </div>
 
+      {jobsError && <p role="alert" className="text-sm text-destructive">Could not load compute jobs: {jobsError}</p>}
+      {pricesError && <p role="alert" className="text-sm text-destructive">Could not load settlement prices: {pricesError}</p>}
       {/* 4 Core KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Card 1: Real-Time LMP */}
+        {/* Card 1: Current day-ahead price */}
         <Card className="hover:border-emerald-500/50 transition-colors">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Real-Time LMP
+              Current day-ahead price
             </CardTitle>
             <DataStatusBadge
               size="sm"
-              status={pricesLoading ? "cached" : pricesError ? "unavailable" : pricePoints.length > 0 ? "live" : "unavailable"}
-              source="ERCOT SPP (LZ_NORTH)"
-              updatedAt={pricePoints[pricePoints.length - 1]?.intervalStartUtc ? `${pricePoints[pricePoints.length - 1].intervalStartUtc}Z` : null}
+              status={pricesError || !lmpMetrics.latest ? "unavailable" : pricesLoading || lmpMetrics.stale ? "cached" : "live"}
+              source="ERCOT day-ahead settlement price for LZ_NORTH"
+              updatedAt={lmpMetrics.latest?.intervalStartUtc ?? null}
             />
           </CardHeader>
           <CardContent>
@@ -185,7 +158,11 @@ export default function OverviewPage() {
               {lmpMetrics.formattedCurrent}{" "}
               <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
             </div>
-            <div
+            <p className="mt-1 text-xs text-muted-foreground">
+              {lmpMetrics.latest ? `${lmpMetrics.stale ? "Last available hour" : "Hour starting"}: ${formatSgtDateTime(lmpMetrics.latest.intervalStartUtc)}` : "No price is available for the current hour."}
+            </p>
+            {lmpMetrics.stale && <p role="status" className="mt-1 text-xs text-amber-600">The current hour is missing; showing an older recorded price.</p>}
+            {lmpMetrics.currentLmp != null && <div
               className={cn(
                 "flex items-center gap-1.5 mt-2 text-xs",
                 lmpMetrics.isDrop
@@ -205,7 +182,7 @@ export default function OverviewPage() {
               <span className="text-muted-foreground">
                 vs rolling avg ({lmpMetrics.rollingAvgFormatted})
               </span>
-            </div>
+            </div>}
           </CardContent>
           <CardFooter className="pt-0 text-[11px] text-muted-foreground border-t border-border/40 mt-3 flex justify-between">
             <span>{lmpMetrics.peakWindow}</span>
@@ -222,23 +199,23 @@ export default function OverviewPage() {
               Registered Jobs
             </CardTitle>
             <span className="text-[11px] font-mono text-muted-foreground">
-              {flexibleJobsCount} flexible
+              {jobsAvailable ? flexibleJobsCount : "—"} flexible
             </span>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-foreground">
-              {jobs.length} <span className="text-xs font-normal text-muted-foreground">jobs total</span>
+              {jobsAvailable ? jobs.length : "—"} <span className="text-xs font-normal text-muted-foreground">jobs total</span>
             </div>
             <div className="flex items-center gap-1.5 mt-2 text-xs text-blue-600 dark:text-blue-400">
               <Cpu className="h-3.5 w-3.5" />
-              <span className="font-semibold">{totalCpuHours.toFixed(0)} CPU-hrs</span>
-              <span className="text-muted-foreground">· {totalGpuHours.toFixed(0)} GPU-hrs</span>
+              <span className="font-semibold">{jobsAvailable ? totalCpuHours.toFixed(0) : "—"} CPU-hrs</span>
+              <span className="text-muted-foreground">· {jobsAvailable ? totalGpuHours.toFixed(0) : "—"} GPU-hrs</span>
             </div>
           </CardContent>
           <CardFooter className="pt-0 text-[11px] text-muted-foreground border-t border-border/40 mt-3 flex justify-between">
             <span>Rescheduling Status</span>
             <span className="font-semibold text-foreground">
-              {jobs.length > 0 ? `${flexibleJobsCount}/${jobs.length} reschedulable` : "No jobs queued"}
+              {!jobsAvailable ? "Unavailable" : jobs.length > 0 ? `${flexibleJobsCount}/${jobs.length} flexible` : "No jobs registered"}
             </span>
           </CardFooter>
         </Card>
@@ -251,23 +228,23 @@ export default function OverviewPage() {
             </CardTitle>
             <DataStatusBadge
               size="sm"
-              status={freshness?.datasets?.some((d) => d.status === "HEALTHY") ? "live" : "cached"}
+              status={sourceStatus.status}
               source="ERCOT Telemetry Pipeline"
             />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-foreground flex items-center gap-2">
               <Activity className="h-5 w-5 text-emerald-500" />
-              <span>Healthy</span>
+              <span>{sourceStatus.label}</span>
             </div>
             <div className="flex items-center gap-1.5 mt-2 text-xs text-teal-600 dark:text-teal-400">
-              <span>5-minute settlement intervals ingested</span>
+              <span>Based on the latest source records</span>
             </div>
           </CardContent>
           <CardFooter className="pt-0 text-[11px] text-muted-foreground border-t border-border/40 mt-3 flex justify-between">
             <span>Checked At</span>
             <span className="font-mono text-foreground">
-              {freshness?.checkedAt ? formatSgtTime(freshness.checkedAt, true) : "Active"}
+              {freshness?.checkedAt ? formatSgtTime(freshness.checkedAt, true) : "—"}
             </span>
           </CardFooter>
         </Card>
@@ -279,12 +256,12 @@ export default function OverviewPage() {
               Schedule Optimizer
             </CardTitle>
             <span className="rounded-full bg-teal-500/15 px-2 py-0.5 text-[10px] font-semibold text-teal-600 dark:text-teal-400 border border-teal-500/30">
-              v1.0 Ready
+              Approval required
             </span>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-teal-600 dark:text-teal-400">
-              {jobs.length > 0 ? "Ready" : "Waiting for Jobs"}
+              {!jobsAvailable ? "Unavailable" : jobs.length > 0 ? "Jobs available" : "Waiting for jobs"}
             </div>
             <div className="flex items-center gap-1.5 mt-2 text-xs text-muted-foreground">
               <span>Places flexible jobs into low-cost LMP price valleys</span>
@@ -330,7 +307,7 @@ export default function OverviewPage() {
           <CardContent className="space-y-3">
             {jobsLoading ? (
               <p className="py-8 text-center text-xs text-muted-foreground">Loading compute jobs…</p>
-            ) : jobs.length === 0 ? (
+            ) : jobsError ? <p role="alert" className="py-8 text-sm text-destructive">{jobsError}</p> : jobs.length === 0 ? (
               <div className="py-8 text-center space-y-2">
                 <BriefcaseBusiness className="h-8 w-8 mx-auto text-muted-foreground/30" />
                 <p className="text-xs font-medium text-foreground">No compute jobs submitted yet</p>

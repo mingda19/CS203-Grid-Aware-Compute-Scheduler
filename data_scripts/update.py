@@ -345,7 +345,7 @@ def tune_and_maybe_promote(engine: sa.Engine, kind: str, target: str, validation
                 engine, days.min(), days.max() + timedelta(hours=lead_hours + 23),
                 active_model.artifact["windows"], active_model.artifact["exog_cols"]), days, lead_hours, actual)
 
-    promote = active_mae is None or (np.isfinite(candidate_mae) and candidate_mae <= active_mae)
+    promote = np.isfinite(candidate_mae) and (active_mae is None or candidate_mae <= active_mae)
     logger.info("%s/%s: candidate MAE %.3f, active MAE %s -> %s", kind, target, candidate_mae,
                f"{active_mae:.3f}" if active_mae is not None else "n/a (first run)",
                "PROMOTE" if promote else "keep active")
@@ -451,7 +451,7 @@ def main() -> None:
     try:
         run(engine, args.targets or list(TARGETS), args.kinds or list(KINDS), args.dry_run)
         if not args.dry_run:
-            subprocess.run([sys.executable, str(SCRIPT_DIR / "recompute_reference_rmse.py")], check=False)
+            subprocess.run([sys.executable, str(SCRIPT_DIR / "recompute_reference_rmse.py")], check=True)
     except Exception:
         logger.exception("Continuous-learning tune FAILED")
         sys.exit(1)

@@ -106,7 +106,10 @@ def recompute_rmse_by_slot(residuals: pd.DataFrame, min_samples: int = MIN_SAMPL
         n_samples=("sq_err", "size"),
         computed_through=("time", "max"),
     ).reset_index()
-    return grouped[grouped["n_samples"] >= min_samples]
+    rows = grouped[grouped["n_samples"] >= min_samples].copy()
+    # Python writes bypass RmseReference's JPA lifecycle callbacks.
+    rows["updated_at"] = datetime.now(timezone.utc).replace(tzinfo=None)
+    return rows
 
 
 def main() -> None:

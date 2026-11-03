@@ -8,6 +8,9 @@ __pycache__/
 .venv/
 .DS_Store
 *.cache.sqlite
+*.log
+cookies.txt
+.venv*/
 # Next.js build output in any app directory
 **/.next/
 

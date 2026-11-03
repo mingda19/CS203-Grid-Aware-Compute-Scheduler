@@ -98,6 +98,47 @@ class ScheduleEnforcementIntegrationTest {
             .andExpect(jsonPath("$.data.reason").value(reason));
     }
 
+    private ResultActions auditDecision(String run, String action, String email) throws Exception {
+        return mvc.perform(post("/api/audit-events").with(user(email))
+            .contentType(APPLICATION_JSON).content(json.writeValueAsString(Map.of(
+                "runId", run, "actionType", action, "scheduleHash", "0".repeat(64),
+                "operatorRationale", "reviewed through audit endpoint"))));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"APPROVE", "REJECT", "REVISE"})
+    void auditEndpointCannotChangeAnotherOperatorsApproval(String action) throws Exception {
+        String run = optimize();
+        decide(run, "approve").andExpect(status().isOk());
+        int eventCount = audit.findByRunIdOrderByTimestampDesc(run).size();
+        User other = users.save(new User(UUID.randomUUID() + "@test.io", "pw", "Other", "ROLE_USER"));
+        try {
+            auditDecision(run, action, other.getEmail()).andExpect(status().isNotFound());
+            assertThat(audit.findByRunIdOrderByTimestampDesc(run)).hasSize(eventCount);
+            assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
+            apply(run).andExpect(status().isOk());
+        } finally { users.deleteById(other.getId()); }
+    }
+
+    @Test void auditEndpointApprovesWithServerHashAndUpdatesReviewState() throws Exception {
+        String run = optimize();
+        String hash = ScheduleHashUtil.computeSha256(plans.findById(run).orElseThrow().getResultJson());
+        auditDecision(run, "APPROVE", owner.getEmail()).andExpect(status().isCreated())
+            .andExpect(jsonPath("$.data.scheduleHash").value(hash))
+            .andExpect(jsonPath("$.data.actor").value(owner.getEmail()));
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
+        apply(run).andExpect(status().isOk());
+    }
+
+    @Test void auditEndpointCannotApproveChangedInputs() throws Exception {
+        String run = optimize();
+        var body = jobBody(); body.put("cpuHours", 8.0); update(body);
+        int eventCount = audit.findByRunIdOrderByTimestampDesc(run).size();
+        refused(auditDecision(run, "APPROVE", owner.getEmail()), "INVALIDATED");
+        assertThat(audit.findByRunIdOrderByTimestampDesc(run)).hasSize(eventCount);
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
+    }
+
     @ParameterizedTest
     @ValueSource(strings={"cpuHours","gpuHours","originalStartTime","deadline","flexibilityWindowHours",
         "isExempt","priority","cancelled","constraints","confirmation","deleted"})

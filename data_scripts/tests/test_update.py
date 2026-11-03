@@ -10,6 +10,9 @@ Run from the data_scripts/ folder:
 """
 
 import unittest
+from unittest.mock import Mock, patch
+import subprocess
+from types import SimpleNamespace
 from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
@@ -22,6 +25,39 @@ import update
 
 LOCATION = pred.DEFAULT_LOCATION
 TODAY = datetime.now(timezone.utc).date()  # matches update.run()'s own real_yesterday computation
+
+
+class FirstPromotionTests(unittest.TestCase):
+    def test_initial_candidate_must_have_a_finite_validation_score(self):
+        artifact = {"train_end": "2026-01-31", "windows": (14,), "exog_cols": []}
+        lear = SimpleNamespace(save_artifact=Mock(), LEARForecaster=Mock())
+        for mae in (float("nan"), float("inf"), 2.0):
+            with self.subTest(mae=mae), \
+                 patch.object(store, "load_active_artifact", return_value=None), \
+                 patch.object(update, "tune_lear_candidate", return_value=artifact), \
+                 patch.object(pred, "_lear_module", return_value=lear), \
+                 patch.object(update, "settled_actuals"), \
+                 patch.object(update, "build_lear_history"), \
+                 patch.object(update, "score_lear", return_value=mae), \
+                 patch.object(store, "save_model_artifact") as save, \
+                 patch.object(store, "prune_old_artifacts") as prune:
+                promoted, _ = update.tune_and_maybe_promote(
+                    object(), "lear", "y0", date(2026, 2, 1), date(2026, 2, 5), dry_run=False)
+                self.assertEqual(bool(promoted), bool(np.isfinite(mae)))
+                if np.isfinite(mae):
+                    save.assert_called_once()
+                else:
+                    save.assert_not_called()
+                    prune.assert_not_called()
+
+    def test_weekly_job_fails_when_reference_refresh_fails(self):
+        with patch("sys.argv", ["update.py"]), patch.object(update.ing, "make_engine"), \
+             patch.object(update, "run"), patch.object(update.subprocess, "run",
+                 side_effect=subprocess.CalledProcessError(1, "recompute_reference_rmse.py")) as refresh:
+            with self.assertRaises(SystemExit) as stopped:
+                update.main()
+            self.assertEqual(stopped.exception.code, 1)
+            self.assertTrue(refresh.call_args.kwargs["check"])
 
 
 def make_raw_tables(engine: sa.Engine, start: pd.Timestamp, end: pd.Timestamp, seed: int = 0) -> None:
@@ -52,7 +88,7 @@ def add_support_tables(engine: sa.Engine) -> None:
             " format TEXT NOT NULL, blob BLOB NOT NULL, trained_through TEXT NOT NULL,"
             " valid_from_date TEXT NOT NULL, valid_to_date TEXT NOT NULL,"
             " metrics TEXT NOT NULL DEFAULT '{}', is_active BOOLEAN NOT NULL DEFAULT 0,"
-            " created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+            " created_at TEXT NOT NULL)"
         ))
         conn.execute(sa.text(
             "CREATE UNIQUE INDEX model_artifacts_one_active ON model_artifacts (model_kind, target) "
