@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest"
 import { PlanRecommendation } from "./decision-panel"
 import type { PlanReviewState, SchedulePlanDetail } from "@/lib/api"
 
-const plan: SchedulePlanDetail = { runId: "owned-run", reviewState: "PENDING", invalidationReason: null, invalidatedAt: null,
+const plan: SchedulePlanDetail = { runId: "owned-run", reviewState: "PENDING", invalidationReason: null, invalidatedAt: null, appliedAt: null,
   recommendation: { runId: "owned-run", status: "NEEDS_ATTENTION", provenOptimal: false, baselineCostUsd: 3, optimizedCostUsd: 4,
     projectedSavingsUsd: -1, projectedSavingsPercent: -33.33, plainEnglishExplanation: "<script>untrusted</script>", usedSeededFallbackPrices: false,
     items: [{ jobId: 1, jobName: "Training", baselineStart: "2026-11-02T10:00:00Z", scheduledStart: null, scheduledEnd: null, allocatedCpuHours: 0, allocatedGpuHours: 0, allocations: [], perJobStatus: "NO_FEASIBLE_SLOT", reason: "Insufficient capacity", baselineCostUsd: null, optimizedCostUsd: null, savingsUsd: null }] } }

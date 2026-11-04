@@ -102,6 +102,11 @@ export function useScheduleReview(onDecision?: () => void) {
       if (!mounted.current) return
       if (!response.success || !response.data) throw new Error(response.message || "Could not add schedule to calendar")
       setAddedRuns(current => new Set(current).add(plan.runId))
+      // Mirror the server's own record locally so the panel reads as done immediately, without a
+      // refetch. addedRuns alone used to carry this, and it is component state: it vanished on
+      // remount, which is why returning to the panel re-offered the button. plan.appliedAt is the
+      // durable answer; this just keeps the two in step until the next detail load.
+      setDetail(current => current && ({ ...current, plan: { ...current.plan, appliedAt: new Date().toISOString() } }))
       setNotice("Approved schedule added to the workload calendar.")
       onDecision?.()
     } catch (error) {
@@ -116,5 +121,9 @@ export function useScheduleReview(onDecision?: () => void) {
 
   return { plans: list?.key === listKey ? list.plans : [], totalPages: list?.totalPages ?? 0, page,
     selected, plan, listLoading, detailLoading, listError, detailError, decisionError, conflict, notice,
-    submitting, refresh, select, changePage, decide, addToCalendar, addedToCalendar: addedRuns.has(selected) }
+    submitting, refresh, select, changePage, decide, addToCalendar,
+    // Server truth first: a plan the backend says was applied is applied, however this component
+    // was mounted. addedRuns stays as the optimistic half, for the moment between a successful
+    // apply and the next detail load.
+    addedToCalendar: !!plan?.appliedAt || addedRuns.has(selected) }
 }

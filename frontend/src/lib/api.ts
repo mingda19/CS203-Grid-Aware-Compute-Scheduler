@@ -611,6 +611,13 @@ export interface SchedulePlanDetail {
   reviewState: PlanReviewState
   invalidationReason: string | null
   invalidatedAt: string | null
+  /**
+   * When this plan was written to the workload calendar, or null if it never has been. Server-held,
+   * so it survives navigating away and back - which is the point: the review panel used to track
+   * "already added" in component state, lose it on remount, and offer "Add approved schedule to
+   * calendar" again for a schedule that was applied an hour ago.
+   */
+  appliedAt: string | null
   recommendation: OptimizeResponse | null
 }
 /**
