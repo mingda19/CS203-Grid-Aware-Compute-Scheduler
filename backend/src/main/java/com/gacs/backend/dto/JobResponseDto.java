@@ -4,6 +4,7 @@ import com.gacs.backend.model.ConfirmationOutcome;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.gacs.backend.model.Job;
 import com.gacs.backend.model.JobPriority;
+import com.gacs.backend.model.WorkloadCategory;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -64,6 +65,10 @@ public class JobResponseDto {
     @Schema(description = "Workload priority level", example = "NORMAL", allowableValues = {"CRITICAL", "HIGH", "NORMAL", "LOW"})
     private JobPriority priority;
 
+    @Schema(description = "Workload category, matching the workload calendar's job types", example = "ML_TRAINING",
+            allowableValues = {"ML_TRAINING", "CRYPTO_MINING", "HPC_BATCH", "HVAC_PRE_COOL", "GRID_ALERT"})
+    private WorkloadCategory workloadCategory;
+
     @Schema(description = "Timestamp when the record was created in UTC ISO-8601", example = "2026-10-18T00:30:00")
     private LocalDateTime createdAt;
 
@@ -99,6 +104,7 @@ public class JobResponseDto {
                 .confirmationOutcome(job.getConfirmationOutcome())
                 .status(job.getStatus())
                 .priority(job.getPriority() != null ? job.getPriority() : JobPriority.NORMAL)
+                .workloadCategory(job.getWorkloadCategory() != null ? job.getWorkloadCategory() : WorkloadCategory.ML_TRAINING)
                 .createdAt(job.getCreatedAt())
                 .updatedAt(job.getUpdatedAt())
                 .build();

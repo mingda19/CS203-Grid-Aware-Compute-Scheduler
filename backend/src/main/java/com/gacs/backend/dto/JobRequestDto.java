@@ -83,6 +83,11 @@ public class JobRequestDto {
     @Builder.Default
     private String priority = "NORMAL";
 
+    @Schema(description = "Workload category, matching the workload calendar's job types", example = "ML_TRAINING",
+            allowableValues = {"ML_TRAINING", "CRYPTO_MINING", "HPC_BATCH", "HVAC_PRE_COOL", "GRID_ALERT"})
+    @Builder.Default
+    private String workloadCategory = "ML_TRAINING";
+
     // Presence distinguishes an omitted update field from an explicit JSON null.
     @JsonIgnore
     @Schema(hidden = true)

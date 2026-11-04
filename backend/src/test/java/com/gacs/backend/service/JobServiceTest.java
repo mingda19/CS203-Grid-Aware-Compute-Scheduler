@@ -195,6 +195,87 @@ class JobServiceTest {
     }
 
     @Test
+    @DisplayName("createJob with explicit workloadCategory persists and returns it")
+    void createJob_WithExplicitWorkloadCategory() {
+        JobRequestDto request = JobRequestDto.builder()
+                .name("Mining Rig")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .workloadCategory("CRYPTO_MINING")
+                .build();
+
+        Job savedJob = Job.builder()
+                .id(106L)
+                .ownerEmail(owner)
+                .name("Mining Rig")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .workloadCategory(com.gacs.backend.model.WorkloadCategory.CRYPTO_MINING)
+                .build();
+
+        when(jobRepository.save(any(Job.class))).thenReturn(savedJob);
+
+        JobResponseDto response = jobService.createJob(request, owner);
+
+        assertThat(response.getWorkloadCategory()).isEqualTo(com.gacs.backend.model.WorkloadCategory.CRYPTO_MINING);
+        ArgumentCaptor<Job> captor = ArgumentCaptor.forClass(Job.class);
+        verify(jobRepository).save(captor.capture());
+        assertThat(captor.getValue().getWorkloadCategory()).isEqualTo(com.gacs.backend.model.WorkloadCategory.CRYPTO_MINING);
+    }
+
+    @Test
+    @DisplayName("createJob without workloadCategory defaults to ML_TRAINING")
+    void createJob_DefaultsWorkloadCategory() {
+        JobRequestDto request = JobRequestDto.builder()
+                .name("Default Category Job")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .build();
+
+        Job savedJob = Job.builder()
+                .id(107L)
+                .ownerEmail(owner)
+                .name("Default Category Job")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .workloadCategory(com.gacs.backend.model.WorkloadCategory.ML_TRAINING)
+                .build();
+
+        when(jobRepository.save(any(Job.class))).thenReturn(savedJob);
+
+        jobService.createJob(request, owner);
+
+        ArgumentCaptor<Job> captor = ArgumentCaptor.forClass(Job.class);
+        verify(jobRepository).save(captor.capture());
+        assertThat(captor.getValue().getWorkloadCategory()).isEqualTo(com.gacs.backend.model.WorkloadCategory.ML_TRAINING);
+    }
+
+    @Test
+    @DisplayName("validateJobConstraints throws clear error when workloadCategory is unknown")
+    void validate_ThrowsWhenInvalidWorkloadCategory() {
+        JobRequestDto request = JobRequestDto.builder()
+                .name("Invalid Category Job")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .workloadCategory("UNDERWATER_BASKET_WEAVING")
+                .build();
+
+        assertThatThrownBy(() -> jobService.validateJobConstraints(request))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Invalid workloadCategory: 'UNDERWATER_BASKET_WEAVING'");
+    }
+
+    @Test
     @DisplayName("validateJobConstraints throws clear error when priority is unknown")
     void validate_ThrowsWhenInvalidPriority() {
         JobRequestDto request = JobRequestDto.builder()
@@ -323,6 +404,39 @@ class JobServiceTest {
         assertThat(updated.getPriority()).isEqualTo(JobPriority.CRITICAL);
         assertThat(updated.getRawConstraints()).isEqualTo("Changed to exempt priority");
         assertThat(updated.getStatus()).isEqualTo("SCHEDULED");
+    }
+
+    @Test
+    @DisplayName("updateJob changes workloadCategory when supplied")
+    void updateJob_ChangesWorkloadCategory() {
+        Job existing = Job.builder()
+                .id(203L)
+                .ownerEmail(owner)
+                .name("Batch Job")
+                .cpuHours(10.0)
+                .gpuHours(0.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .workloadCategory(com.gacs.backend.model.WorkloadCategory.ML_TRAINING)
+                .status("PENDING")
+                .build();
+
+        when(jobRepository.findByIdAndOwnerEmail(203L, owner)).thenReturn(Optional.of(existing));
+
+        JobRequestDto updateRequest = JobRequestDto.builder()
+                .name("Batch Job")
+                .cpuHours(10.0)
+                .gpuHours(0.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .workloadCategory("HPC_BATCH")
+                .build();
+
+        when(jobRepository.save(any(Job.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        JobResponseDto updated = jobService.updateJob(203L, updateRequest, owner);
+
+        assertThat(updated.getWorkloadCategory()).isEqualTo(com.gacs.backend.model.WorkloadCategory.HPC_BATCH);
     }
 
     @Test
