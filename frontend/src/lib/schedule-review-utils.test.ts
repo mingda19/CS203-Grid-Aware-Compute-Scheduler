@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { calendarUnavailable, decisionUnavailable, rationaleError, reviewLabels, selectReviewRun } from "./schedule-review-utils"
+import { calendarUnavailable, decisionUnavailable, planUnavailable, rationaleError, reviewLabels, selectReviewRun } from "./schedule-review-utils"
 import type { SchedulePlanDetail } from "./api"
 
 const plan: SchedulePlanDetail = { runId: "run", reviewState: "PENDING", invalidationReason: null, invalidatedAt: null,
@@ -30,6 +30,15 @@ describe("review controls", () => {
   })
   it("labels each persisted review state", () => {
     expect(Object.values(reviewLabels)).toEqual(["Pending review", "Approved", "Rejected", "Revision requested", "Stale", "Invalidated"])
+  })
+  it.each(["APPROVED", "REJECTED", "REVISION_REQUESTED"] as const)("bug 3: blocks every action once a schedule is already %s", reviewState => {
+    for (const action of ["approve", "reject", "revise"] as const)
+      expect(decisionUnavailable({ ...plan, reviewState }, action)).toContain("cannot be decided again")
+  })
+  it("bug 3: a terminal decision does not make the plan itself 'unavailable' for non-decision controls", () => {
+    expect(planUnavailable({ ...plan, reviewState: "APPROVED" })).toBeNull()
+    expect(planUnavailable({ ...plan, reviewState: "REJECTED" })).toBeNull()
+    expect(planUnavailable({ ...plan, reviewState: "REVISION_REQUESTED" })).toBeNull()
   })
 })
 

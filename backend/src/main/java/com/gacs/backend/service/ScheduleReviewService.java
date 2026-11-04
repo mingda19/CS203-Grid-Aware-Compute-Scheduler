@@ -95,10 +95,27 @@ public class ScheduleReviewService {
         }
     }
 
+    /**
+     * Review states a plan reaches only by a user's own decision, as opposed to STALE/INVALIDATED
+     * which the system imposes automatically (see {@link OptimizationPlan#invalidate}). Bug 3: once
+     * a plan holds one of these, it is terminal - every further decide() call, including repeating
+     * the same action, is refused so an operator cannot flip an approval to a rejection (or back)
+     * after the fact. This intentionally narrows the contract previously documented in
+     * docs/api-contract.md ("repeated requests ... create additional history entries"); see REPORT.md.
+     */
+    private static final java.util.Set<com.gacs.backend.model.ReviewState> TERMINAL_DECISIONS = java.util.EnumSet.of(
+        com.gacs.backend.model.ReviewState.APPROVED, com.gacs.backend.model.ReviewState.REJECTED,
+        com.gacs.backend.model.ReviewState.REVISION_REQUESTED);
+
     @Transactional(noRollbackFor = com.gacs.backend.exception.ScheduleExportRejectedException.class)
     public ScheduleDecisionDto decide(UUID runId, AuditActionType action, String comment, String email) {
         OptimizationPlan plan = gate.owned(runId, email);
         User operator = plan.getOwner();
+        if (TERMINAL_DECISIONS.contains(plan.getReviewState()))
+            throw new com.gacs.backend.exception.ScheduleExportRejectedException(
+                com.gacs.backend.exception.ScheduleExportRejectedException.Reason.ALREADY_DECIDED,
+                "Schedule run " + runId + " is already " + plan.getReviewState().name().toLowerCase(java.util.Locale.ROOT).replace('_', ' ')
+                    + " and cannot be decided again");
         if (action == AuditActionType.APPROVE || plan.getReviewState() == com.gacs.backend.model.ReviewState.INVALIDATED
             || plan.getReviewState() == com.gacs.backend.model.ReviewState.STALE) gate.check(plan, email, false);
         plan.recordDecision(action);
