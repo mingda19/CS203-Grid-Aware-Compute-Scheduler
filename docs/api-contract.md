@@ -860,6 +860,7 @@ Priority never overrides a job's `deadline` or `isExempt`: an exempt job always 
 | `forecastLocation`, `horizonHours` | string, integer | One of `forecast` / `forecastLocation` | Server resolves per-slot prices for that location from the forecast service (same data as `GET /api/prices/forecast`), starting at the earliest `originalStartTime`. `horizonHours` defaults to `48`. |
 | `clusterCapacity` | object | No | Capacity applied to every slot. Falls back to the defaults below. |
 | `capacityOverrides[]` | array | No | Per-slot capacity; takes precedence over `clusterCapacity` for that slot |
+| `rescheduleElapsedJobs` | boolean | No | Default `false`. When `true`, a job whose `originalStartTime` has already passed may start anywhere in `[current hour, last slot that still finishes by its deadline]` instead of being reported `NO_FEASIBLE_SLOT`. See *Jobs whose start time has passed* below. |
 
 If both `forecast` and `forecastLocation` are sent, `forecast` wins. If neither is sent the request is a `400`. Either way the optimiser works on the same resolved list of per-slot prices. Other Job fields (`rawConstraints`, `status`, `ownerEmail`, timestamps) are not optimiser inputs and are ignored if sent.
 
@@ -932,12 +933,26 @@ The **baseline** of a job is its cost if it started at `originalStartTime` and, 
 * `optimizedCostUsd` (run level) is the total cost of the proposed schedule. `scheduledStart` is the start of the job's first slot and `scheduledEnd` the end of its last.
 * `items[].allocations[]`: the slots the job uses and the CPU/GPU hours it takes in each. Their sum equals `allocatedCpuHours` / `allocatedGpuHours`.
 * `items[].reason`: `null`, except for `NO_FEASIBLE_SLOT`, where it is a short human-readable cause (for example "cluster full between 10:00 and 18:00").
+* `items[].rescheduledFromElapsedStart`: `true` only for a job placed because this run opted in to `rescheduleElapsedJobs` and that job's `originalStartTime` had actually passed. Such a job moved because its start had elapsed, not (or not only) to find a cheaper hour, and its `savingsUsd` is measured against a baseline that itself already partly elapsed - so clients should label it rather than present it beside ordinary cost optimisation. `false` for every job in a run that did not opt in.
 * `plainEnglishExplanation`: optional text summarising the run; may be `null`.
 * `items[]` lists every input job exactly once.
 * `perJobStatus`:
   - `OPTIMISED`: not exempt and feasible; placed on its cheapest feasible plan. The plan may or may not start at `originalStartTime`; compare the two fields if that matters.
   - `UNCHANGED_EXEMPT`: kept at `originalStartTime` because `isExempt` is `true`.
   - `NO_FEASIBLE_SLOT`: no plan satisfies window, deadline, forecast coverage and capacity; the job is not scheduled (see below).
+
+**Jobs whose start time has passed (2026-11-04).** A job's start window is `[originalStartTime, originalStartTime + flexibilityWindowHours]`, anchored to its start. Nothing may be scheduled into an hour that has already begun, so once `originalStartTime` is behind the current hour that whole window can be too, and the job is reported `NO_FEASIBLE_SLOT` with the reason `Window elapsed: ...` even though its deadline may be hours away. The only thing wrong with such a job is that nobody got to it in time.
+
+Sending `rescheduleElapsedJobs: true` re-anchors those jobs to their deadline instead: each may then start anywhere from the current hour up to the last slot that still lets it finish by its deadline. The rules this does **not** change:
+
+* **No slot may begin before the current hour**, flag or not. Only the window's upper bound moves; the lower bound is unchanged, and is enforced in the one predicate every solver and the plan checker read.
+* **Exempt jobs are never re-anchored.** An exempt job runs at its original time by definition.
+* **A job whose deadline has also passed stays infeasible.** There is no window left to widen; its reason remains `Deadline ... has passed`.
+* **`flexibilityWindowHours` itself is not rewritten**, and the flag is not part of the run's input snapshot (§6.8), so opting in does not make a re-run hash differently or invalidate a pending approval.
+
+The flag is applied per job and only where the start has genuinely elapsed, so each affected job comes back with `items[].rescheduledFromElapsedStart: true`, and `plainEnglishExplanation` says how many jobs moved for this reason. Because such a job is deliberately placed outside the window its `jobs` row still carries, the approval gate (§6.8) skips **only** the upper-bound check for items carrying that marker; the lower bound and the deadline check still apply, so an approved plan of this kind can be applied and exported like any other.
+
+This widens placement beyond what the operator specified, so clients must obtain explicit confirmation before sending it, naming the affected jobs, and must never infer it from the data. A third `NO_FEASIBLE_SLOT` reason accompanies it: `Not enough time left: ...`, for a job with start slots remaining but too few hours before its deadline to finish even alone on the cluster. Admission only ever proved a job fits from its *original* start, so once that start has passed the job can be unplaceable with the cluster completely idle, and reporting that as `Cluster full` would send the operator to free capacity that is not the problem.
 
 **No feasible slot (AC5; changed 2026-10-20).** The input is valid but the cluster has no room for the job in any allowed hour. The job is listed in `items` with `perJobStatus = NO_FEASIBLE_SLOT`, `scheduledStart = null`, `scheduledEnd = null`, no `allocations` and a `reason`. No time is invented for it. The response is still `200`, the run `status` is `NEEDS_ATTENTION`, and the job is excluded from the cost totals. Queuing such jobs for a later run needs stored state and is planned for Sprint 4.
 
@@ -1136,6 +1151,8 @@ Other errors: **400** for a malformed run ID; **401** for an authenticated email
 | `gpuHours` | `items[].allocations[].gpuHours` | As `cpuHours` |
 | `reason` | `items[].reason` | Text; empty unless `NO_FEASIBLE_SLOT` |
 
+The CSV column list is deliberately unchanged by `rescheduledFromElapsedStart` (§6.4): the JSON export carries it because that format mirrors the optimise response field for field, while these columns are a published format for execution adapters and the marker is advisory provenance, not data an adapter needs in order to dispatch.
+
 **Rows.** One row per job per slot it uses. A `NO_FEASIBLE_SLOT` job has no slots, so it gets one row with `intervalStartUtc`, `intervalEndUtc`, `cpuHours` and `gpuHours` empty and the `reason` filled in; adapters must not dispatch rows without a slot. A schedule with no items is the header row alone.
 
 **Rounding.** Hours are rounded to 4 places per slot, so a job's rows may differ from `allocatedCpuHours` / `allocatedGpuHours` by up to 0.00005 per slot.
@@ -1206,6 +1223,7 @@ The export endpoints always fill `run.createdAt`, `run.solver` and `approval`; t
 | `baselineCostUsd` | number \| null | 4 decimal places; `null` for `NO_FEASIBLE_SLOT` |
 | `optimizedCostUsd` | number \| null | 4 decimal places; `null` for `NO_FEASIBLE_SLOT` |
 | `savingsUsd` | number \| null | 4 decimal places; may be negative; `null` for `NO_FEASIBLE_SLOT` |
+| `rescheduledFromElapsedStart` | boolean | `true` when the job was placed outside the flexibility window its job record carries, because the run opted in to rescheduling jobs whose start had passed (§6.4). Provenance for an adapter reconciling the plan against the job; the slots are still the approved ones and still end by the deadline. |
 | `slots` | array | Approved slots sorted by start; `[]` for `NO_FEASIBLE_SLOT` |
 
 **`jobs[].slots[]`**

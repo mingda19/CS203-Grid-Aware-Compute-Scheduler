@@ -171,7 +171,12 @@ public class ScheduleOptimizationService {
         double optimized = EnergyCostModel.roundUsd(costs.costUsd(plan, problem.prices()));
         return new ScheduleItem(job.id(), job.name(), job.originalStartTime(), plan.start(), plan.end(),
                 job.cpuHours(), job.gpuHours(), List.copyOf(allocations), outcome.status().name(), null,
-                baseline, optimized, EnergyCostModel.roundUsd(baseline - optimized));
+                baseline, optimized, EnergyCostModel.roundUsd(baseline - optimized),
+                // Set only for a job the factory actually re-anchored, which it does solely for jobs
+                // whose originalStartTime had already passed in a run that opted in. So the flag
+                // means "this job moved because its start had elapsed", not merely "the run allowed
+                // it" - which is what lets the UI separate those jobs from ones moved to save money.
+                job.rescheduledFromElapsedStart());
     }
 
     private static double roundPercent(double percent) {
@@ -196,8 +201,15 @@ public class ScheduleOptimizationService {
      *                window ended before the run's earliest schedulable hour. Counted separately
      *                because the summary must not blame capacity for a job that time ran out on - the
      *                operator's remedy is completely different (contract FR-20).
+     * @param rescheduledFromElapsedStart of the scheduled jobs, how many were placed only because the
+     *                run opted in to rescheduling jobs whose start had already passed. Reported
+     *                separately from {@code moved}: those jobs moved because their start had elapsed,
+     *                outside the flexibility window the operator originally gave, and an operator
+     *                reading "N moved from their original time" should not have to guess which of
+     *                them moved for that reason rather than to find a cheaper hour.
      */
-    private record JobCounts(long total, long optimised, long exempt, long leftOut, long elapsed, long moved) {
+    private record JobCounts(long total, long optimised, long exempt, long leftOut, long elapsed, long moved,
+                             long rescheduledFromElapsedStart) {
         static JobCounts of(AllocationResult result, OptimizationProblem problem) {
             long moved = result.outcomes().stream()
                     .filter(o -> o.status() == PerJobStatus.OPTIMISED)
@@ -208,9 +220,13 @@ public class ScheduleOptimizationService {
                     .filter(o -> o.status() == PerJobStatus.NO_FEASIBLE_SLOT)
                     .filter(o -> problem.windowFor(o.job()).startSlots().isEmpty())
                     .count();
+            long rescheduled = result.outcomes().stream()
+                    .filter(JobOutcome::scheduled)
+                    .filter(o -> o.job().rescheduledFromElapsedStart())
+                    .count();
             return new JobCounts(result.outcomes().size(), count(result, PerJobStatus.OPTIMISED),
                     count(result, PerJobStatus.UNCHANGED_EXEMPT), count(result, PerJobStatus.NO_FEASIBLE_SLOT),
-                    elapsed, moved);
+                    elapsed, moved, rescheduled);
         }
 
         /** Jobs left out for want of capacity rather than for want of time. */
@@ -231,6 +247,17 @@ public class ScheduleOptimizationService {
         if (counts.exempt() > 0) {
             text.append(String.format(Locale.ROOT,
                     "%d exempt job(s) run at their original time. ", counts.exempt()));
+        }
+        if (counts.rescheduledFromElapsedStart() > 0) {
+            // FR-20 / the operator's own framing: these jobs were placed under an explicitly
+            // confirmed widening, so the summary says so plainly rather than letting them read as
+            // ordinary cost optimisation. The caveat about their savings is deliberate - see the
+            // note in OptimizeResponseDto.ScheduleItem.rescheduledFromElapsedStart.
+            text.append(String.format(Locale.ROOT,
+                    "%d job(s) had a start time that has already passed and were rescheduled into the "
+                            + "hours between now and their deadline, as confirmed for this run; their "
+                            + "savings are measured against a baseline that itself already partly "
+                            + "elapsed. ", counts.rescheduledFromElapsedStart()));
         }
         if (counts.elapsed() > 0) {
             text.append(String.format(Locale.ROOT,
