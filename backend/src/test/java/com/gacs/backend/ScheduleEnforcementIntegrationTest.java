@@ -67,6 +67,7 @@ class ScheduleEnforcementIntegrationTest {
         m.put("gpuHours", j.getGpuHours()); m.put("originalStartTime", j.getOriginalStartTime().toString());
         m.put("deadline", j.getDeadline().toString()); m.put("flexibilityWindowHours", j.getFlexibilityWindowHours());
         m.put("isExempt", j.isExempt()); m.put("priority", j.getPriority().name());
+        m.put("workloadCategory", j.getWorkloadCategory().name());
         return m;
     }
     private String optimize() throws Exception {
@@ -362,6 +363,30 @@ class ScheduleEnforcementIntegrationTest {
             .andExpect(jsonPath("$.data.reviewState").value("INVALIDATED"));
         refused(apply(run),"INVALIDATED");
         refused(transition(schedules.findByRunIdOrderByIdAsc(run).getFirst().getId(),"Running"),"INVALIDATED");
+    }
+
+    @Test
+    @DisplayName("bug 4: re-optimising and re-approving the same job supersedes its calendar entry rather than accumulating one")
+    void reapprovingAndApplyingSameJobSupersedesRatherThanAccumulates() throws Exception {
+        String run1 = optimize(); decide(run1,"approve").andExpect(status().isOk()); apply(run1).andExpect(status().isOk());
+        assertThat(schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail())).hasSize(1);
+
+        String run2 = optimize(); decide(run2,"approve").andExpect(status().isOk()); apply(run2).andExpect(status().isOk());
+
+        var all = schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail());
+        assertThat(all).hasSize(1);
+        assertThat(all.getFirst().getRunId()).isEqualTo(run2);
+        assertThat(schedules.findByRunIdOrderByIdAsc(run1)).isEmpty();
+        assertThat(plans.findById(run1).orElseThrow().getReviewState()).isEqualTo(ReviewState.STALE);
+    }
+
+    @Test
+    @DisplayName("bug 6: the applied calendar entry uses the job's own workload category, not a GPU-hours guess")
+    void appliedScheduleUsesJobsWorkloadCategoryNotGpuHeuristic() throws Exception {
+        var body = jobBody(); body.put("gpuHours", 2.0); body.put("workloadCategory", "CRYPTO_MINING"); update(body);
+        String run = optimize(); decide(run,"approve").andExpect(status().isOk()); apply(run).andExpect(status().isOk());
+        // The old heuristic (any gpuHours > 0 implies "ML Training") would have mislabeled this entry.
+        assertThat(schedules.findByRunIdOrderByIdAsc(run).getFirst().getType()).isEqualTo("Crypto Mining");
     }
 
 }

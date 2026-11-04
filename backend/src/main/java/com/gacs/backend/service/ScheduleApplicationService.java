@@ -7,10 +7,13 @@ import com.gacs.backend.exception.ResourceNotFoundException;
 import com.gacs.backend.exception.ScheduleExportRejectedException;
 import com.gacs.backend.model.AuditActionType;
 import com.gacs.backend.model.Facility;
+import com.gacs.backend.model.Job;
 import com.gacs.backend.model.OptimizationPlan;
 import com.gacs.backend.model.ReviewState;
+import com.gacs.backend.model.WorkloadCategory;
 import com.gacs.backend.model.WorkloadSchedule;
 import com.gacs.backend.repository.FacilityRepository;
+import com.gacs.backend.repository.JobRepository;
 import com.gacs.backend.repository.WorkloadScheduleRepository;
 import com.gacs.backend.util.ScheduleHashUtil;
 import org.springframework.stereotype.Service;
@@ -20,22 +23,27 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class ScheduleApplicationService {
     private final ScheduleGate gate;
     private final WorkloadScheduleRepository schedules;
     private final FacilityRepository facilities;
+    private final JobRepository jobs;
     private final AuditEventService audit;
     private final java.time.Clock clock;
     private final StoredScheduleReader reader;
     public ScheduleApplicationService(ScheduleGate gate, WorkloadScheduleRepository schedules,
-                                      FacilityRepository facilities, AuditEventService audit, java.time.Clock clock, StoredScheduleReader reader) {
+                                      FacilityRepository facilities, JobRepository jobs, AuditEventService audit,
+                                      java.time.Clock clock, StoredScheduleReader reader) {
         this.gate = gate;
         this.schedules = schedules;
         this.facilities = facilities;
+        this.jobs = jobs;
         this.audit = audit;
         this.clock = clock;
         this.reader = reader;
@@ -49,15 +57,24 @@ public class ScheduleApplicationService {
         if (plan.getAppliedAt() != null) return existing.stream().map(ScheduleApplicationService::dto).toList();
         String cluster = facilities.findAllByOwnerEmail(email).stream().min(Comparator.comparing(Facility::getId))
             .map(Facility::getName).orElse("Primary Compute Cluster");
+        // The job's own chosen category (bug 6) replaces the old GPU-hours guess ("any GPU hours at
+        // all" implied ML Training, everything else implied HPC Batch) - a category the operator
+        // never actually chose. Jobs deleted between approval and application fall back to the
+        // calendar's default category rather than failing the whole dispatch.
+        Map<Long, Job> ownerJobs = jobs.findByOwnerEmailAndIdIn(email,
+                checked.schedule().items().stream().map(OptimizeResponseDto.ScheduleItem::jobId).toList())
+            .stream().collect(Collectors.toMap(Job::getId, j -> j));
         List<WorkloadSchedule> entries = new ArrayList<>();
         for (var item : checked.schedule().items()) {
             if (item.scheduledStart() == null || item.scheduledEnd() == null) continue;
+            Job job = ownerJobs.get(item.jobId());
+            WorkloadCategory category = job != null ? job.getWorkloadCategory() : WorkloadCategory.ML_TRAINING;
             var entry = new WorkloadSchedule();
             entry.setOwnerEmail(email);
             entry.setRunId(plan.getRunId());
             entry.setJobId(item.jobId());
             entry.setTitle(item.jobName().substring(0, Math.min(200, item.jobName().length())));
-            entry.setType(item.allocatedGpuHours() > 0 ? "ML Training" : "HPC Batch");
+            entry.setType(category.label());
             entry.setCluster(cluster.substring(0, Math.min(200, cluster.length())));
             // Display estimate retained from the existing calendar integration.
             entry.setPowerKw(Math.round(item.allocatedCpuHours() * 5 + item.allocatedGpuHours() * 25));
@@ -69,6 +86,13 @@ public class ScheduleApplicationService {
             entries.add(entry);
         }
         if (entries.isEmpty()) throw new IllegalArgumentException("Run has no executable schedule slots");
+        // A newer approved-and-applied run for a job supersedes any earlier applied run's calendar
+        // entry for that same job (bug 4): without this, re-optimising and re-approving the same
+        // job's work piled up one workload-schedule row per application instead of replacing it,
+        // because ScheduleGate.supersede only marks the OLD OptimizationPlan STALE - it never
+        // touches rows already written here by a previous apply() call for a different run.
+        Set<Long> jobIds = entries.stream().map(WorkloadSchedule::getJobId).collect(Collectors.toSet());
+        schedules.deleteByOwnerEmailAndJobIdInAndRunIdNot(email, jobIds, plan.getRunId());
         schedules.saveAllAndFlush(entries);
         audit.recordEvent(new AuditEventRequestDto(AuditActionType.DISPATCH, plan.getRunId(),
             ScheduleHashUtil.computeSha256(plan.getResultJson()), "Applied approved schedule to calendar"));
