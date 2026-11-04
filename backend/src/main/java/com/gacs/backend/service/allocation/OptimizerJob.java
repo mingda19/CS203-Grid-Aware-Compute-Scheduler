@@ -53,4 +53,16 @@ public record OptimizerJob(
     public String label() {
         return id == null ? "'" + name + "'" : "id " + id;
     }
+
+    /**
+     * Bug 2: like {@link #label()} but also carries the job's name, so an operator looking at an
+     * error message can tell which of their jobs - possibly several sharing a name - it refers to
+     * without having to guess from a bare numeric id. {@link #label()} itself is left unchanged: its
+     * exact "id N" wording is asserted by {@code PriorityConflictTest} and documented verbatim in
+     * docs/api-contract.md ("Explaining an infeasible plan"), so this is a separate method rather
+     * than a change to label()'s format.
+     */
+    public String identity() {
+        return id == null ? "'" + name + "'" : "id " + id + " ('" + name + "')";
+    }
 }
