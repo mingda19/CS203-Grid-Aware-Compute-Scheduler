@@ -70,7 +70,7 @@ public class OptimizationProblemFactory {
         for (OptimizerJob job : jobs) {
             Optional<JobPlan> baseline = baselines.baseline(job).plan();
             if (baseline.isEmpty()) {
-                throw invalid("Job " + job.label() + " cannot finish between its originalStartTime "
+                throw invalid("Job " + job.identity() + " cannot finish between its originalStartTime "
                         + job.originalStartTime() + " and its deadline " + job.deadline()
                         + " even alone on the cluster");
             }
@@ -83,7 +83,7 @@ public class OptimizationProblemFactory {
                     baselinePlans.get(job).allocations(), prices);
             if (missing.isPresent()) {
                 throw new UnprocessableDataException("No forecast price for " + missing.get()
-                        + ", which job " + job.label() + " uses at its original time. Its baseline cost cannot be priced.");
+                        + ", which job " + job.identity() + " uses at its original time. Its baseline cost cannot be priced.");
             }
         }
         return new OptimizationProblem(jobs, prices, capacity, baselinePlans, List.of(), List.of(),

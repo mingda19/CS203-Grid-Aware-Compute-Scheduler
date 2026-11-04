@@ -213,7 +213,10 @@ class OptimizationProblemFactoryTest {
         // 600 CPU-hours at 256 per hour needs 3 hours; the deadline allows 2.
         JobInput tooBig = new JobInput(1L, "big", 600.0, 0.0, T0, at(2), 0, false);
         assertThatThrownBy(() -> build(tooBig))
-                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("even alone on the cluster");
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("even alone on the cluster")
+                // Bug 2: the job's own name, not just its (possibly duplicated) numeric id, so an
+                // operator can tell which of their jobs this refers to.
+                .hasMessageContaining("id 1 ('big')");
     }
 
     // ------------------------------------------------------------------ 422: missing data
@@ -228,7 +231,10 @@ class OptimizationProblemFactoryTest {
         assertThatThrownBy(() -> factory.build(request))
                 .isInstanceOf(UnprocessableDataException.class)
                 .hasMessageContaining(at(1).toString())
-                .hasMessageContaining("job id 1");
+                .hasMessageContaining("job id 1")
+                // Bug 2: the job's name too, so "job id 1" alone (meaningless to an operator, and
+                // ambiguous once two jobs share a name) isn't the only identifying information.
+                .hasMessageContaining("job-1");
     }
 
     @Test
