@@ -291,6 +291,63 @@ export function formatRelativeAgo(date: Date | string | number, now = Date.now()
   }
 }
 
+function pad2(n: number): string {
+  return String(n).padStart(2, "0")
+}
+
+/**
+ * Builds a YYYY-MM-DD string from year/month(1-12)/day components, normalizing
+ * out-of-range values (day 0, day 32, month 13, negative day, ...) the same way
+ * the `Date` constructor rolls over an overflowing field - e.g. month 13 becomes
+ * January of the next year, day 0 becomes the last day of the previous month.
+ * Pure calendar arithmetic: no timezone is resolved, so this is safe to use on a
+ * date string that already came from {@link getMarketDateString} without
+ * re-introducing the UTC-vs-local-day mismatch that produced bug 5's off-by-one
+ * calendar highlight.
+ */
+export function marketDateStringFromParts(year: number, month: number, day: number): string {
+  const d = new Date(Date.UTC(year, month - 1, day))
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`
+}
+
+/** Adds (or, for a negative count, subtracts) whole days to a YYYY-MM-DD market date string. */
+export function addMarketDays(dateString: string, days: number): string {
+  const [y, m, d] = dateString.split("-").map(Number)
+  return marketDateStringFromParts(y, m, d + days)
+}
+
+/** Adds (or subtracts) whole months to a YYYY-MM-DD market date string. */
+export function addMarketMonths(dateString: string, months: number): string {
+  const [y, m, d] = dateString.split("-").map(Number)
+  return marketDateStringFromParts(y, m + months, d)
+}
+
+/** Day of week (0 = Sunday, ... 6 = Saturday) for a YYYY-MM-DD market date string. */
+export function marketDayOfWeek(dateString: string): number {
+  const [y, m, d] = dateString.split("-").map(Number)
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay()
+}
+
+/** Number of days in a given year/month (1-12), as a market calendar date would have. */
+export function marketDaysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate()
+}
+
+/**
+ * A `Date` anchored at noon UTC on a market date string - never a real instant, just
+ * a carrier for calendar display math (`.getUTCFullYear()`, `.getUTCMonth()`,
+ * `.getUTCDate()`, `.getUTCDay()`, or `toLocaleDateString(locale, {..., timeZone:
+ * "UTC"})`) that needs a `Date` object rather than a string. Noon keeps every real
+ * UTC offset (-12 to +14) from crossing into an adjacent calendar day. Never read
+ * this with a non-UTC getter/formatter, and never pass it to a market-timezone-aware
+ * helper like {@link getMarketDateString} expecting it to resolve to something else -
+ * it already IS the date those helpers would resolve to.
+ */
+export function marketDateLabelAnchor(dateString: string): Date {
+  const [y, m, d] = dateString.split("-").map(Number)
+  return new Date(Date.UTC(y, m - 1, d, 12))
+}
+
 /**
  * Formats a window range in market time: "09:30 – 13:30 CST"
  */

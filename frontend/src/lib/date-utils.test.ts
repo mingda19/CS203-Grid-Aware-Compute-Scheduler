@@ -12,6 +12,12 @@ import {
   marketZoneDescriptor,
   formatRelativeAgo,
   formatMarketWindow,
+  marketDateStringFromParts,
+  addMarketDays,
+  addMarketMonths,
+  marketDayOfWeek,
+  marketDaysInMonth,
+  marketDateLabelAnchor,
 } from "./date-utils"
 
 // GACS serves ERCOT, so market local time is America/Chicago: CST (UTC-6) in
@@ -158,5 +164,45 @@ describe("invalid input handling", () => {
     expect(formatMarketChartTick("nonsense")).toBe("")
     expect(getMarketDateString("nonsense")).toBe("")
     expect(getMarketHoursMinutes("nonsense")).toEqual({ hours: 0, minutes: 0 })
+  })
+})
+
+describe("market-date-string calendar arithmetic (bug 5)", () => {
+  it("normalizes out-of-range day/month components like Date rollover", () => {
+    expect(marketDateStringFromParts(2026, 11, 0)).toBe("2026-10-31") // day 0 = last day of previous month
+    expect(marketDateStringFromParts(2026, 13, 1)).toBe("2027-01-01") // month 13 rolls into next year
+    expect(marketDateStringFromParts(2026, 2, 29)).toBe("2026-03-01") // 2026 is not a leap year
+  })
+
+  it("adds and subtracts whole days across month and year boundaries", () => {
+    expect(addMarketDays("2026-11-04", 1)).toBe("2026-11-05")
+    expect(addMarketDays("2026-11-04", -4)).toBe("2026-10-31")
+    expect(addMarketDays("2026-12-31", 1)).toBe("2027-01-01")
+  })
+
+  it("adds and subtracts whole months", () => {
+    expect(addMarketMonths("2026-11-04", 1)).toBe("2026-12-04")
+    expect(addMarketMonths("2026-01-04", -1)).toBe("2025-12-04")
+  })
+
+  it("reports day of week with no timezone resolution", () => {
+    expect(marketDayOfWeek("2026-11-04")).toBe(3) // Wednesday
+    expect(marketDayOfWeek("2026-11-08")).toBe(0) // Sunday
+  })
+
+  it("reports days in month, including February in a non-leap year", () => {
+    expect(marketDaysInMonth(2026, 2)).toBe(28)
+    expect(marketDaysInMonth(2026, 11)).toBe(30)
+  })
+
+  it("anchors a label Date so every real UTC offset reads back the same calendar day", () => {
+    const anchor = marketDateLabelAnchor("2026-11-04")
+    expect(anchor.getUTCFullYear()).toBe(2026)
+    expect(anchor.getUTCMonth()).toBe(10) // 0-indexed
+    expect(anchor.getUTCDate()).toBe(4)
+    // getMarketDateString (America/Chicago, UTC-6 in November) must read back the
+    // exact same day the anchor was built for - this is the invariant GoogleCalendarView
+    // relies on to avoid the bug 5 off-by-one (a UTC-midnight anchor would fail this).
+    expect(getMarketDateString(anchor)).toBe("2026-11-04")
   })
 })
