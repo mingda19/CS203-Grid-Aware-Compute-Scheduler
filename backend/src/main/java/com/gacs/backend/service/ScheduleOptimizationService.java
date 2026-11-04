@@ -94,7 +94,7 @@ public class ScheduleOptimizationService {
             // Record the failure (no plan, so nothing to approve or export) and tell the caller its run id.
             String runId = UUID.randomUUID().toString();
             runs.save(ScheduleRun.builder().runId(runId).ownerEmail(ownerEmail)
-                    .status(OptimizerRunStatus.FAILED.name()).provenOptimal(false).usedSeededFallbackPrices(problem.prices().isSeeded()).build());
+                    .status(OptimizerRunStatus.FAILED.name()).provenOptimal(false).usedSeededFallbackPrices(problem.prices().usedEstimatedPrices()).build());
             throw new OptimizationFailedException(runId, problem.snapshot(), failure);
         }
         OptimizeResponseDto response = buildResponse(problem, result);
@@ -152,7 +152,7 @@ public class ScheduleOptimizationService {
                 result.provenOptimal(),
                 baselineCostUsd, optimizedCostUsd, savingsUsd, savingsPercent,
                 explain(result, problem, baselineCostUsd, optimizedCostUsd, savingsUsd, savingsPercent),
-                problem.prices().isSeeded(),
+                problem.prices().usedEstimatedPrices(),
                 List.copyOf(items));
     }
 
@@ -273,6 +273,19 @@ public class ScheduleOptimizationService {
         if (problem.prices().isSeeded()) {
             text.append(" Note: no stored price forecast covered this window, so a seeded fallback price curve "
                     + "was used for both the baseline and the plan.");
+        } else if (problem.prices().usedEstimatedPrices()) {
+            // FR-13: a plan resting on estimated prices is reported provisional, naming what was
+            // missing, rather than presented as precise. The forecast reaches about a day out while a
+            // job may be scheduled days ahead, so the later hours are estimates by necessity.
+            int estimated = problem.prices().estimatedSlots().size();
+            int total = problem.prices().asMap().size();
+            text.append(String.format(Locale.ROOT,
+                    " This plan is provisional: the stored forecast covered %d of %d hours in the window,"
+                            + " and the remaining %d (from %s UTC onwards) were estimated from the"
+                            + " history-based fallback curve. Costs and savings for any job touching those"
+                            + " hours are estimates, not forecasts.",
+                    total - estimated, total, estimated,
+                    problem.prices().estimatedSlots().iterator().next()));
         }
         return text.toString();
     }

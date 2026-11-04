@@ -189,7 +189,10 @@ class ScheduleOptimizationIntegrationTest {
         mockMvc.perform(post("/api/schedules/optimize").contentType(APPLICATION_JSON)
                 .content(locationRequest(baseline, baseline.plusHours(3), 1)))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(false)))
+            // The fixture seeds 2 hours against a 24-hour horizon, so the other 22 are filled from the
+            // fallback and the run is provisional. The placement and both costs below are unaffected:
+            // the job's window is the two forecast hours, and an estimated hour is never a candidate.
+            .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(true)))
             .andExpect(jsonPath("$.data.items[0].scheduledStart", is("2026-10-20T09:00:00Z")))
             .andExpect(jsonPath("$.data.items[0].baselineCostUsd", is(1.792)))
             .andExpect(jsonPath("$.data.items[0].optimizedCostUsd", is(0.512)));

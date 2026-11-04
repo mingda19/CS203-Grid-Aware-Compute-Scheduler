@@ -120,9 +120,19 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
                     + "or retire it.";
         }
         if (window.startSlots().isEmpty()) {
-            return "Window elapsed: every hour this job could start in is earlier than "
-                    + window.earliestStart().format(HOUR) + " UTC, the first hour that can still be "
-                    + "scheduled. Update its start time, or widen its flexibility window.";
+            // Two different causes land here, and the operator's remedy differs completely: the window
+            // is behind us, or it is ahead of where the price forecast reaches.
+            LocalDateTime latestStart = job.latestStart().isBefore(window.lastSlot())
+                    ? job.latestStart() : window.lastSlot();
+            if (window.firstSlot().isAfter(latestStart)) {
+                return "Window elapsed: every hour this job could start in is earlier than "
+                        + window.earliestStart().format(HOUR) + " UTC, the first hour that can still be "
+                        + "scheduled. Update its start time, or widen its flexibility window.";
+            }
+            return "Beyond the price forecast: no hour this job could start in has a published price "
+                    + "forecast yet, so there is no priced window to move it into. Its baseline is still "
+                    + "costed from estimated prices. It becomes schedulable once the forecast reaches "
+                    + window.firstSlot().format(HOUR) + " UTC.";
         }
         // The job that took the slot: the first (by tie-break order) of those running inside this job's window.
         List<OptimizerJob> blockers = scheduled.entrySet().stream()

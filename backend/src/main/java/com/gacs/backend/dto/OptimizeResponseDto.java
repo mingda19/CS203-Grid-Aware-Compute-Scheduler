@@ -44,8 +44,11 @@ public record OptimizeResponseDto(
     @Schema(description = "Plain-English summary of the run")
     String plainEnglishExplanation,
 
-    @Schema(description = "True when no stored forecast covered the window and the history-based fallback "
-        + "price curve was used")
+    @Schema(description = "True when any price used by this run was estimated from the history-based "
+        + "fallback curve rather than taken from a stored model forecast - either because no forecast "
+        + "covered the window at all, or because the forecast did not reach every hour of it. When true "
+        + "the plan is provisional: plainEnglishExplanation names how many hours were estimated and from "
+        + "when")
     boolean usedSeededFallbackPrices,
 
     @Schema(description = "Every input job exactly once, in request order")

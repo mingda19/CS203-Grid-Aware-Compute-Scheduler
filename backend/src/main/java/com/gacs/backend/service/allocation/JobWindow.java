@@ -134,10 +134,14 @@ public final class JobWindow {
 
     /**
      * The single definition of "this job may occupy {@code hour}", independent of where a run starts:
-     * the hour is at or after the run's earliest schedulable hour, has a forecast price, and passes
-     * every restriction layered on by {@link #restrictedTo}.
+     * the hour is at or after the run's earliest schedulable hour, carries a price the optimiser may
+     * act on, and passes every restriction layered on by {@link #restrictedTo}.
+     *
+     * <p>"A price the optimiser may act on" is narrower than "a price": see
+     * {@link PriceSeries#isCandidateAt}. An hour priced from the history fallback because the model
+     * forecast did not reach it can still cost a baseline, but a job is not moved into it.
      */
     private boolean usable(LocalDateTime hour) {
-        return !hour.isBefore(earliestStart) && prices.priceAt(hour).isPresent() && extra.test(hour);
+        return !hour.isBefore(earliestStart) && prices.isCandidateAt(hour) && extra.test(hour);
     }
 }
