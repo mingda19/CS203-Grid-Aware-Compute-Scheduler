@@ -15,7 +15,7 @@ import {
   type ScheduleItem,
   type FacilityConfig,
 } from "@/lib/api"
-import { formatMarketDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
+import { currentMarketHourInput, formatMarketDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -264,6 +264,18 @@ export default function JobsPage() {
     }
     if (form.deadline < form.originalStartTime) {
       setError("Deadline must be at or after the original start time.")
+      return
+    }
+    // Checked here as well as server-side so the operator sees market time rather than the API's UTC
+    // phrasing. A job starting in an elapsed hour can never be run, so it is rejected on save rather
+    // than left for the optimiser to report as unschedulable.
+    const earliest = currentMarketHourInput()
+    if (form.originalStartTime < earliest) {
+      setError(`Start time has passed. Choose ${earliest.replace("T", " ")} ${MARKET_ZONE_LABEL} or later.`)
+      return
+    }
+    if (form.deadline <= earliest) {
+      setError(`Deadline has passed. Choose a deadline after ${earliest.replace("T", " ")} ${MARKET_ZONE_LABEL}.`)
       return
     }
     // originalStartTime is formatted to exact hour (00 minutes) per optimizer specification

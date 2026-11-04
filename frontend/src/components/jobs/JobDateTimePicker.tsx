@@ -3,7 +3,7 @@
 import * as React from "react"
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, X } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { MARKET_TIMEZONE } from "@/lib/date-utils"
+import { MARKET_TIMEZONE, currentMarketHourInput } from "@/lib/date-utils"
 
 export interface JobDateTimePickerProps {
   id?: string
@@ -11,6 +11,8 @@ export interface JobDateTimePickerProps {
   onChange: (value: string) => void
   label?: string
   placeholder?: string
+  /** Extra lower bound, format YYYY-MM-DDTHH:mm. The picker never allows a time before the
+   *  current market hour regardless, so this only ever narrows further. */
   minDateTime?: string // format: YYYY-MM-DDTHH:mm
   mode?: "start" | "deadline"
   align?: "left" | "right"
@@ -58,6 +60,23 @@ export function JobDateTimePicker({
   const containerRef = React.useRef<HTMLDivElement>(null)
 
   const nowMarket = React.useMemo(() => getNowMarketParts(), [])
+
+  /**
+   * The earliest value this picker will produce: the current market hour, on the hour, or
+   * `minDateTime` when that is later. Work cannot be run in an hour that has already passed, so the
+   * backend rejects a job starting before the current hour - offering one here would only produce a
+   * form the operator cannot submit. Both strings are fixed-width YYYY-MM-DDTHH:mm, so comparing
+   * them lexicographically is the same as comparing the instants.
+   */
+  const earliest = React.useMemo(() => {
+    const nowFloor = currentMarketHourInput()
+    return minDateTime && minDateTime > nowFloor ? minDateTime : nowFloor
+  }, [minDateTime])
+
+  const earliestDate = earliest.split("T")[0]
+
+  /** `candidate`, or `earliest` when that is later. */
+  const notBeforeEarliest = (candidate: string) => (candidate < earliest ? earliest : candidate)
 
   // Parse current value
   const parsed = React.useMemo(() => {
@@ -121,18 +140,16 @@ export function JobDateTimePicker({
 
   const isDateDisabled = (day: number) => {
     const dateStr = `${viewYear}-${pad2(viewMonth)}-${pad2(day)}`
-    if (minDateTime) {
-      const minDate = minDateTime.split("T")[0]
-      if (dateStr < minDate) return true
-    }
-    return false
+    return dateStr < earliestDate
   }
 
   const handleSelectDay = (day: number) => {
-    const currentHour = parsed ? parsed.hour : (nowMarket.hour + 1) % 24
+    // Carry the time already chosen, else the floor's own time. Never the next hour modulo 24, which
+    // wrapped to 00:00 of the same day late in the evening and so pointed at the past.
+    const currentHour = parsed ? parsed.hour : parseInt(earliest.slice(11, 13), 10)
     const currentMinute = parsed ? parsed.minute : 0
     const newDateStr = `${viewYear}-${pad2(viewMonth)}-${pad2(day)}T${pad2(currentHour)}:${pad2(currentMinute)}`
-    onChange(newDateStr)
+    onChange(notBeforeEarliest(newDateStr))
     setOpen(false)
   }
 
@@ -150,7 +167,7 @@ export function JobDateTimePicker({
           required={required}
           disabled={disabled}
           value={value}
-          min={minDateTime}
+          min={earliest}
           onChange={(e) => onChange(e.target.value)}
           className={cn(
             "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 pr-16 text-sm ring-offset-background",
@@ -265,10 +282,10 @@ export function JobDateTimePicker({
             <button
               type="button"
               onClick={() => {
-                const currentHour = parsed ? parsed.hour : (nowMarket.hour + 1) % 24
+                const currentHour = parsed ? parsed.hour : parseInt(earliest.slice(11, 13), 10)
                 const currentMinute = parsed ? parsed.minute : 0
                 const todayStr = `${nowMarket.year}-${pad2(nowMarket.month)}-${pad2(nowMarket.day)}T${pad2(currentHour)}:${pad2(currentMinute)}`
-                onChange(todayStr)
+                onChange(notBeforeEarliest(todayStr))
                 setOpen(false)
               }}
               className="text-emerald-600 hover:text-emerald-700 font-medium"

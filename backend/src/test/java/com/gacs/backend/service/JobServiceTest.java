@@ -364,4 +364,75 @@ class JobServiceTest {
 
         verify(jobRepository, never()).delete(any());
     }
+
+    // ------------------------------------------------------------------ elapsed scheduling windows
+
+    /**
+     * A job whose start has passed can never be run: the optimiser will not place work in an elapsed
+     * hour, so accepting one would only store a job that is unschedulable from the moment it is saved.
+     * CLOCK is fixed at 2026-10-20T09:00Z, so {@link #start} (10:00) is still an hour ahead.
+     */
+    private JobRequestDto.JobRequestDtoBuilder validRequest() {
+        return JobRequestDto.builder()
+                .name("Scheduling window")
+                .cpuHours(10.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .flexibilityWindowHours(2);
+    }
+
+    @Test
+    @DisplayName("createJob rejects a start time before the current hour")
+    void createJob_RejectsElapsedStart() {
+        JobRequestDto request = validRequest().originalStartTime(start.minusDays(1)).build();
+
+        assertThatThrownBy(() -> jobService.createJob(request, owner))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("is in the past")
+                .hasMessageContaining("2026-10-20T09:00");
+
+        verify(jobRepository, never()).save(any(Job.class));
+    }
+
+    @Test
+    @DisplayName("createJob accepts a start time in the hour already under way")
+    void createJob_AcceptsCurrentHour() {
+        // 09:00 is the hour the clock is in. Starts are on the hour, so refusing it would leave an
+        // operator unable to schedule anything in the hour they are working in.
+        JobRequestDto request = validRequest().originalStartTime(LocalDateTime.of(2026, 10, 20, 9, 0)).build();
+        when(jobRepository.save(any(Job.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        assertThat(jobService.createJob(request, owner).getOriginalStartTime())
+                .isEqualTo(LocalDateTime.of(2026, 10, 20, 9, 0));
+    }
+
+    @Test
+    @DisplayName("createJob rejects a deadline that has already passed")
+    void createJob_RejectsElapsedDeadline() {
+        JobRequestDto request = validRequest()
+                .originalStartTime(start.minusDays(2))
+                .deadline(start.minusDays(1))
+                .build();
+
+        assertThatThrownBy(() -> jobService.createJob(request, owner))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("is in the past");
+
+        verify(jobRepository, never()).save(any(Job.class));
+    }
+
+    @Test
+    @DisplayName("updateJob is gated too, so a past start cannot be reintroduced by editing")
+    void updateJob_RejectsElapsedStart() {
+        JobRequestDto request = validRequest().originalStartTime(start.minusDays(1)).build();
+        // updateJob resolves the job before validating, so the lookup has to succeed to reach the check.
+        when(jobRepository.findByIdAndOwnerEmail(202L, owner))
+                .thenReturn(Optional.of(Job.builder().id(202L).ownerEmail(owner).build()));
+
+        assertThatThrownBy(() -> jobService.updateJob(202L, request, owner))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("is in the past");
+
+        verify(jobRepository, never()).save(any(Job.class));
+    }
 }

@@ -345,3 +345,24 @@ function utcOffsetLabel(offsetMs: number): string {
   const minutes = absMinutes % 60
   return `${sign}${hours}:${String(minutes).padStart(2, "0")}`
 }
+
+/**
+ * The current market hour as a `datetime-local` input value, "YYYY-MM-DDTHH:mm" with minutes at 00.
+ *
+ * This is the floor for any job start or deadline the operator can enter. Work cannot be run in an
+ * hour that has already passed, so the backend rejects anything earlier (`JobService`) and the
+ * optimiser will not place work there (`OptimizationProblem.earliestStart`). Exported so the picker
+ * and the form's own validation share one definition rather than each deriving its own.
+ */
+export function currentMarketHourInput(now: Date | string | number = Date.now()): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: MARKET_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(parseIsoDate(now))
+  const field = (type: string) => parts.find((p) => p.type === type)?.value ?? "00"
+  return `${field("year")}-${field("month")}-${field("day")}T${field("hour")}:00`
+}
