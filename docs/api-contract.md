@@ -997,6 +997,7 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 | 2026-11-01 | §6.4: added *Objective and tie-break order*, documenting the rule `priority` had been reserved for but did not yet affect - the optimiser now orders competing jobs by `priority`, breaks remaining ties by `deadline`, then total resource-hours, then the original `originalStartTime`/`id` fallback (GRID-155). | - |
 | 2026-11-01 | §6.4: added run `status` `INFEASIBLE` (nothing placeable; never approvable or exportable) and `503` with `runId` when the solver fails, recorded as a `FAILED` run with no plan (GRID-142 AC1.3). | - |
 | 2026-11-01 | Added §6.8: automatic material-input invalidation, shared backend execution gating, approved-run application, and plan detail (GRID-11 AC2.3). | - |
+| 2026-11-04 | §6.5: a plan now holds exactly one terminal decision. Once APPROVED, REJECTED, or REVISION_REQUESTED, every further `approve`/`reject`/`revise` call for that run returns `409` with `data.reason = "ALREADY_DECIDED"`, superseding the "repeated requests ... create additional history entries" text below, which described the previous (reversible) behavior (usability bug 3). An operator who wants to retract an approval must generate a new recommendation rather than reject/revise the same run. | - |
 
 ### 6.5 Operator decisions (GRID-11 AC2 / AC2.2)
 
@@ -1059,9 +1060,11 @@ All three return **200 OK** in the standard envelope:
 }
 ```
 
-Decisions use `audit_events` as their only immutable history; there is no separate `schedule_decisions` table. `decisionId` is the audit event ID. The audit actor comes from the authenticated security context, and `operatorRationale` stores the trimmed comment. `scheduleHash` is the lowercase SHA-256 hex digest of the stored `resultJson` encoded as UTF-8. Each audit event insert and review-state update commits atomically under an operator-row lock followed by a plan write lock; decisions and automatic invalidation determine current review state. Repeated requests, including retries, create additional history entries. The original optimizer result never changes.
+Decisions use `audit_events` as their only immutable history; there is no separate `schedule_decisions` table. `decisionId` is the audit event ID. The audit actor comes from the authenticated security context, and `operatorRationale` stores the trimmed comment. `scheduleHash` is the lowercase SHA-256 hex digest of the stored `resultJson` encoded as UTF-8. Each audit event insert and review-state update commits atomically under an operator-row lock followed by a plan write lock; decisions and automatic invalidation determine current review state. The original optimizer result never changes.
 
-Errors: **400** for malformed UUIDs/JSON, a missing or non-object body, missing, null, blank, non-string, or oversized comments; **403** for missing/invalid JWTs (existing security behavior); **401** for an authenticated email without a database user; **404** with `Optimization plan not found` for both missing and unowned plans.
+**One terminal decision per run (2026-11-04, usability bug 3).** `APPROVE`, `REJECT`, and `REVISION_REQUESTED` are terminal: once a run's `reviewState` is one of these, every further call to any of the three decision routes for that run - including retrying or repeating the same action - returns **409** with `data.reason = "ALREADY_DECIDED"` and writes no new audit event. Only `PENDING` plans, and plans the system (not an operator) moves to `STALE`/`INVALIDATED`, can still be decided. There is no way to retract a terminal decision on the same run; a new recommendation (a fresh `runId`) must be generated instead.
+
+Errors: **400** for malformed UUIDs/JSON, a missing or non-object body, missing, null, blank, non-string, or oversized comments; **403** for missing/invalid JWTs (existing security behavior); **401** for an authenticated email without a database user; **404** with `Optimization plan not found` for both missing and unowned plans; **409** with `data.reason = "ALREADY_DECIDED"` for a run whose `reviewState` already holds a terminal decision (see above).
 
 Audit history can be read through the existing audit log endpoints.
 

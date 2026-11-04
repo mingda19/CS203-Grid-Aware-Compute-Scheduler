@@ -6,7 +6,7 @@ import { RefreshCw } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { useScheduleReview } from "@/hooks/use-schedule-review"
-import { reviewLabels, decisionUnavailable, calendarUnavailable } from "@/lib/schedule-review-utils"
+import { reviewLabels, decisionUnavailable, calendarUnavailable, planUnavailable } from "@/lib/schedule-review-utils"
 import { formatMarketDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import type { ScheduleDecisionAction, SchedulePlanDetail } from "@/lib/api"
 import { RejectPlanModal } from "./reject-plan-modal"
@@ -14,8 +14,13 @@ import { RejectPlanModal } from "./reject-plan-modal"
 export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
   const review = useScheduleReview(onDecision)
   const [action, setAction] = React.useState<ScheduleDecisionAction | null>(null)
+  // The hint shown under the recommendation (line below) reports why THIS action is blocked,
+  // including a terminal decision; the "disabled" gate for the picker/refresh/calendar controls
+  // only reflects whether the plan itself is usable at all, not which decision it already holds -
+  // otherwise an APPROVED plan (which rejects/revises as "already decided") would also disable
+  // the surrounding controls, including "Add approved schedule to calendar".
   const unavailable = decisionUnavailable(review.plan, "reject")
-  const disabled = review.submitting || review.listLoading || review.detailLoading || !!review.listError || !!review.detailError || review.conflict || !!unavailable
+  const disabled = review.submitting || review.listLoading || review.detailLoading || !!review.listError || !!review.detailError || review.conflict || !!planUnavailable(review.plan)
   return <Card id="approvals">
     <CardHeader>
       <div className="flex items-center justify-between gap-3">
@@ -52,9 +57,9 @@ export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
         <PlanRecommendation plan={review.plan} />
         {unavailable && <p className="text-sm text-muted-foreground">{unavailable} <Link href="/jobs" className="underline">Open Jobs</Link></p>}
         <div className="flex flex-wrap gap-2">
-          <Button type="button" disabled={disabled || review.plan.reviewState === "APPROVED" || !!decisionUnavailable(review.plan, "approve")} onClick={() => setAction("approve")}>{review.plan.reviewState === "APPROVED" ? "Schedule approved" : "Approve schedule"}</Button>
-          <Button type="button" variant="destructive" disabled={disabled} onClick={() => setAction("reject")}>Reject schedule</Button>
-          <Button type="button" variant="outline" disabled={disabled} onClick={() => setAction("revise")}>Request revision</Button>
+          <Button type="button" disabled={disabled || !!decisionUnavailable(review.plan, "approve")} onClick={() => setAction("approve")}>{review.plan.reviewState === "APPROVED" ? "Schedule approved" : "Approve schedule"}</Button>
+          <Button type="button" variant="destructive" disabled={disabled || !!decisionUnavailable(review.plan, "reject")} onClick={() => setAction("reject")}>{review.plan.reviewState === "REJECTED" ? "Schedule rejected" : "Reject schedule"}</Button>
+          <Button type="button" variant="outline" disabled={disabled || !!decisionUnavailable(review.plan, "revise")} onClick={() => setAction("revise")}>Request revision</Button>
           {review.plan.reviewState === "APPROVED" && <Button type="button" disabled={disabled || !!calendarUnavailable(review.plan) || review.addedToCalendar}
             onClick={() => void review.addToCalendar()}>{review.submitting && !action ? "Adding to calendar…" : review.addedToCalendar ? "Added to calendar" : "Add approved schedule to calendar"}</Button>}
           {review.addedToCalendar && <Button type="button" variant="outline" asChild><Link href="/workloads">Open workload calendar</Link></Button>}
@@ -87,7 +92,7 @@ export function PlanRecommendation({ plan }: { plan: SchedulePlanDetail }) {
         <caption className="sr-only">Original and recommended job placements in market local time</caption>
         <thead><tr>{["Job", `Original start (${MARKET_ZONE_LABEL})`, `Proposed start (${MARKET_ZONE_LABEL})`, `Proposed end (${MARKET_ZONE_LABEL})`, "Outcome", "Savings (USD)"].map(label => <th key={label} className="p-2">{label}</th>)}</tr></thead>
         <tbody>{recommendation.items.map(item => <tr key={item.jobId} className="border-t">
-          <td className="p-2">{item.jobName}</td><td className="p-2">{formatMarketDateTime(item.baselineStart)}</td>
+          <td className="p-2">{item.jobName} <span className="text-muted-foreground">(#{item.jobId})</span></td><td className="p-2">{formatMarketDateTime(item.baselineStart)}</td>
           <td className="p-2">{item.scheduledStart ? formatMarketDateTime(item.scheduledStart) : "Not scheduled"}</td>
           <td className="p-2">{item.scheduledEnd ? formatMarketDateTime(item.scheduledEnd) : "—"}</td>
           <td className="p-2">{item.perJobStatus.replaceAll("_", " ").toLowerCase()}{item.reason && <p>{item.reason}</p>}</td>
