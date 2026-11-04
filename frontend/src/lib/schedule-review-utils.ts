@@ -59,6 +59,14 @@ export function calendarUnavailable(plan: SchedulePlanDetail | null): string | n
   if (!plan || plan.reviewState !== "APPROVED") return "Approve this recommendation before adding it to the calendar."
   const universal = planUnavailable(plan)
   if (universal) return universal
+  // Applying is once per plan, and the server records when it happened (plan.appliedAt). Before that
+  // field was exposed the only record was the hook's own component state, which is lost the moment
+  // the operator navigates away - so returning to pending approvals re-enabled the button for a
+  // schedule that was already on the calendar. A second click was correctly a no-op, but offering
+  // the action at all said there was still something to do. Checked before the "no scheduled jobs"
+  // case below: an applied plan is finished either way, and "already added" is the more informative
+  // of the two answers.
+  if (plan.appliedAt) return "This schedule is already on the workload calendar."
   if (!plan.recommendation!.items.some(item => item.scheduledStart && item.scheduledEnd)) return "This recommendation has no scheduled jobs to approve."
   return null
 }

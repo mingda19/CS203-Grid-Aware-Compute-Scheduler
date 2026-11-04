@@ -125,11 +125,22 @@ public class ScheduleApplicationService {
         try { gate.check(plan, email, false); }
         catch (ScheduleExportRejectedException ignored) { /* Detail reports the persisted refusal. */ }
         return new PlanDetail(plan.getRunId(), plan.getReviewState(), plan.getInvalidationReason(),
-            plan.getInvalidatedAt(), reader.read(plan.getResultJson()).orElse(null));
+            plan.getInvalidatedAt(), plan.getAppliedAt(), reader.read(plan.getResultJson()).orElse(null));
     }
 
+    /**
+     * @param appliedAt when {@link #apply} wrote this plan to the workload calendar, or null if it
+     *                  never has been. The plan has carried this since application became gated, but
+     *                  it was exposed on no DTO, so a client had no way to tell an approved plan that
+     *                  is still waiting to be applied from one that was applied an hour ago. The
+     *                  review UI consequently re-enabled "Add approved schedule to calendar" every
+     *                  time the operator navigated back to it: it had been tracking the fact in
+     *                  component state, which does not survive a remount, and the server never told
+     *                  it otherwise. Clicking again correctly changed nothing, but offering the
+     *                  action implied there was something left to do.
+     */
     public record PlanDetail(String runId, ReviewState reviewState, String invalidationReason,
-                             Instant invalidatedAt, OptimizeResponseDto recommendation) {}
+                             Instant invalidatedAt, Instant appliedAt, OptimizeResponseDto recommendation) {}
 
     public static WorkloadScheduleDto dto(WorkloadSchedule s) {
         return new WorkloadScheduleDto(s.getId(), s.getTitle(), s.getType(), s.getCluster(), s.getPowerKw(),

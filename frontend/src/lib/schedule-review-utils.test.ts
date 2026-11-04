@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { calendarUnavailable, decisionUnavailable, planUnavailable, rationaleError, reviewLabels, selectReviewRun } from "./schedule-review-utils"
 import type { SchedulePlanDetail } from "./api"
 
-const plan: SchedulePlanDetail = { runId: "run", reviewState: "PENDING", invalidationReason: null, invalidatedAt: null,
+const plan: SchedulePlanDetail = { runId: "run", reviewState: "PENDING", invalidationReason: null, invalidatedAt: null, appliedAt: null,
   recommendation: { runId: "run", status: "SCHEDULED", provenOptimal: true, baselineCostUsd: 2, optimizedCostUsd: 1, projectedSavingsUsd: 1,
     projectedSavingsPercent: 50, plainEnglishExplanation: "Shifted", usedSeededFallbackPrices: false,
     items: [{ jobId: 1, jobName: "Train", baselineStart: "2026-11-02T10:00:00Z", scheduledStart: "2026-11-02T11:00:00Z", scheduledEnd: "2026-11-02T12:00:00Z", allocatedCpuHours: 1, allocatedGpuHours: 0, allocations: [], perJobStatus: "OPTIMISED", reason: null, baselineCostUsd: 2, optimizedCostUsd: 1, savingsUsd: 1 }] } }
@@ -63,6 +63,35 @@ describe("approval before calendar application", () => {
     expect(calendarUnavailable({ ...plan, reviewState: "APPROVED" })).toBeNull()
     expect(calendarUnavailable({ ...plan, reviewState: "APPROVED", recommendation: null })).toBeTruthy()
     expect(calendarUnavailable(null)).toBeTruthy()
+  })
+  /**
+   * Bug: "Add to calendar" relit after the schedule had already been applied. The fact lived only in
+   * the hook's component state, so navigating away and back lost it; the server's plan.appliedAt is
+   * now on the DTO and is what this branch reads.
+   */
+  it("reports an already-applied schedule as done rather than available", () => {
+    const applied = { ...plan, reviewState: "APPROVED" as const, appliedAt: "2026-11-04T09:00:00Z" }
+    expect(calendarUnavailable(applied)).toBe("This schedule is already on the workload calendar.")
+    // Still available while the server says it has never been applied.
+    expect(calendarUnavailable({ ...applied, appliedAt: null })).toBeNull()
+  })
+  it("prefers 'already applied' over the no-scheduled-jobs message for an applied plan", () => {
+    // An applied plan is finished either way; "already added" is the more informative answer, and
+    // the empty-items case cannot legitimately have been applied in the first place.
+    const emptyButApplied = {
+      ...plan, reviewState: "APPROVED" as const, appliedAt: "2026-11-04T09:00:00Z",
+      recommendation: { ...plan.recommendation!, items: [] },
+    }
+    expect(calendarUnavailable(emptyButApplied)).toBe("This schedule is already on the workload calendar.")
+  })
+  it("keeps an unreadable or unapproved plan's own reason ahead of the applied check", () => {
+    // planUnavailable still wins: a stale plan needs regenerating, which matters more than whether
+    // it once reached the calendar.
+    expect(calendarUnavailable({ ...plan, reviewState: "STALE", appliedAt: "2026-11-04T09:00:00Z" }))
+      .toContain("Approve")
+    expect(calendarUnavailable({
+      ...plan, reviewState: "APPROVED", appliedAt: "2026-11-04T09:00:00Z", recommendation: null,
+    })).toContain("cannot be read")
   })
   it("opens the exact recommendation linked from the summary, including older runs", () => {
     expect(selectReviewRun("", ["newer-run"], "summary-run")).toBe("summary-run")
