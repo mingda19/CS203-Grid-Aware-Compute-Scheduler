@@ -11,6 +11,8 @@ import {
   type ComputeJob,
   type ComputeJobPayload,
   type JobPriority,
+  type WorkloadCategory,
+  WORKLOAD_CATEGORY_LABELS,
   type OptimizeResponse,
   type ScheduleItem,
   type FacilityConfig,
@@ -41,6 +43,7 @@ type FormState = {
   deadline: string
   flexibilityWindowHours: string
   priority: JobPriority
+  workloadCategory: WorkloadCategory
   isExempt: boolean
   rawConstraints?: string | null
   parsedAt?: string | null
@@ -55,6 +58,7 @@ const blankForm = (): FormState => ({
   deadline: "",
   flexibilityWindowHours: "0",
   priority: "NORMAL",
+  workloadCategory: "ML_TRAINING",
   isExempt: false,
 })
 
@@ -229,6 +233,7 @@ export default function JobsPage() {
       deadline: toInputDate(job.deadline),
       flexibilityWindowHours: String(job.flexibilityWindowHours),
       priority: job.priority ?? "NORMAL",
+      workloadCategory: job.workloadCategory ?? "ML_TRAINING",
       isExempt: job.isExempt,
       rawConstraints: job.rawConstraints,
       parsedAt: job.parsedAt,
@@ -287,6 +292,7 @@ export default function JobsPage() {
       deadline: toApiUtcDate(form.deadline, false),
       flexibilityWindowHours,
       priority: form.priority,
+      workloadCategory: form.workloadCategory,
       isExempt: form.isExempt,
       rawConstraints: form.rawConstraints,
       parsedAt: form.parsedAt,
@@ -316,6 +322,7 @@ export default function JobsPage() {
       deadline: job.deadline,
       flexibilityWindowHours: job.flexibilityWindowHours,
       priority: job.priority ?? "NORMAL",
+      workloadCategory: job.workloadCategory ?? "ML_TRAINING",
       isExempt,
     }
     try {
@@ -660,12 +667,14 @@ export default function JobsPage() {
               <table className="w-full min-w-[920px] text-left text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
+                    <th className="px-3 py-3">ID</th>
                     <th className="px-3 py-3">Name</th>
                     <th className="px-3 py-3">CPU / GPU hours</th>
                     <th className="px-3 py-3">Original start ({MARKET_ZONE_LABEL})</th>
                     <th className="px-3 py-3">Deadline ({MARKET_ZONE_LABEL})</th>
                     <th className="px-3 py-3">Flexibility</th>
                     <th className="px-3 py-3">Priority</th>
+                    <th className="px-3 py-3">Category</th>
                     <th className="px-3 py-3">Exemption</th>
                     <th className="px-3 py-3">Status</th>
                     <th className="px-3 py-3">Actions</th>
@@ -674,6 +683,7 @@ export default function JobsPage() {
                 <tbody>
                   {jobs.map((job) => (
                     <tr key={job.id} className="border-b last:border-0 hover:bg-muted/30">
+                      <td className="px-3 py-3 font-mono text-xs text-muted-foreground">#{job.id}</td>
                       <td className="px-3 py-3 font-medium text-foreground">{job.name}</td>
                       <td className="px-3 py-3">
                         {job.cpuHours} CPU · {job.gpuHours} GPU
@@ -682,6 +692,7 @@ export default function JobsPage() {
                       <td className="px-3 py-3">{displayDate(job.deadline)}</td>
                       <td className="px-3 py-3">{`${job.flexibilityWindowHours}h`}</td>
                       <td className="px-3 py-3">{job.priority ?? "NORMAL"}</td>
+                      <td className="px-3 py-3">{WORKLOAD_CATEGORY_LABELS[job.workloadCategory ?? "ML_TRAINING"]}</td>
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-2">
                           <Checkbox
@@ -859,7 +870,7 @@ export default function JobsPage() {
                       {optimizationPlan.items.map((item: ScheduleItem) => (
                         <React.Fragment key={item.jobId}>
                         <tr className="hover:bg-muted/20">
-                          <td className="py-2.5 px-3 font-medium text-foreground">{item.jobName}</td>
+                          <td className="py-2.5 px-3 font-medium text-foreground">{item.jobName} <span className="font-mono text-[10px] font-normal text-muted-foreground">#{item.jobId}</span></td>
                           <td className="py-2.5 px-3">
                             <span
                               className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${item.perJobStatus === "OPTIMISED"
@@ -1045,6 +1056,17 @@ export default function JobsPage() {
                   <option value="LOW">LOW</option>
                 </select>
               </Field>
+              <Field label="Workload category">
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  value={form.workloadCategory}
+                  onChange={(e) => setForm({ ...form, workloadCategory: e.target.value as WorkloadCategory })}
+                >
+                  {Object.entries(WORKLOAD_CATEGORY_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </Field>
               <div className="flex items-center gap-3 self-end rounded-md border p-3 text-sm">
                 <Checkbox
                   id="job-is-exempt"
@@ -1087,6 +1109,7 @@ export default function JobsPage() {
               <Detail label="Deadline" value={displayDate(viewing.deadline)} />
               <Detail label="Flexibility" value={`${viewing.flexibilityWindowHours} hours`} />
               <Detail label="Priority" value={viewing.priority ?? "NORMAL"} />
+              <Detail label="Workload category" value={WORKLOAD_CATEGORY_LABELS[viewing.workloadCategory ?? "ML_TRAINING"]} />
               <Detail label="Exempt" value={viewing.isExempt ? "Yes" : "No"} />
             </dl>
           )}
@@ -1102,12 +1125,16 @@ export default function JobsPage() {
           <DialogHeader>
             <DialogTitle>Delete compute job</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete <strong className="text-foreground">{jobToDelete?.name}</strong>? This action cannot be undone and will remove all associated resource specifications.
+              Are you sure you want to delete <strong className="text-foreground">{jobToDelete?.name}</strong> (#{jobToDelete?.id})? This action cannot be undone and will remove all associated resource specifications.
             </DialogDescription>
           </DialogHeader>
 
           {jobToDelete && (
             <div className="rounded-lg border bg-muted/40 p-3 text-xs space-y-1.5 text-muted-foreground">
+              <div className="flex justify-between">
+                <span>Job ID:</span>
+                <span className="font-medium text-foreground font-mono">#{jobToDelete.id}</span>
+              </div>
               <div className="flex justify-between">
                 <span>Priority:</span>
                 <span className="font-medium text-foreground">{jobToDelete.priority}</span>

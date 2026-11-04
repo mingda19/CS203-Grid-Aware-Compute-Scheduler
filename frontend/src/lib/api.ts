@@ -69,6 +69,22 @@ export type JobPriority = "CRITICAL" | "HIGH" | "NORMAL" | "LOW"
 
 export type ConfirmationOutcome = "PENDING" | "CONFIRMED" | "REJECTED"
 
+/**
+ * What kind of workload a job is. Matches the categories the workload-schedule calendar view
+ * (GoogleCalendarView.tsx's WorkloadType) already colors and filters by - WORKLOAD_CATEGORY_LABELS
+ * below is the exact mapping the backend's WorkloadCategory enum uses to label a dispatched
+ * calendar entry, so a job's chosen category always renders consistently with the calendar.
+ */
+export type WorkloadCategory = "ML_TRAINING" | "CRYPTO_MINING" | "HPC_BATCH" | "HVAC_PRE_COOL" | "GRID_ALERT"
+
+export const WORKLOAD_CATEGORY_LABELS: Record<WorkloadCategory, string> = {
+  ML_TRAINING: "ML Training",
+  CRYPTO_MINING: "Crypto Mining",
+  HPC_BATCH: "HPC Batch",
+  HVAC_PRE_COOL: "HVAC Pre-Cool",
+  GRID_ALERT: "Grid Alert",
+}
+
 export interface ComputeJob {
   id: number
   ownerEmail?: string
@@ -80,6 +96,7 @@ export interface ComputeJob {
   flexibilityWindowHours: number
   isExempt: boolean
   priority?: JobPriority
+  workloadCategory?: WorkloadCategory
   rawConstraints?: string | null
   parsedAt?: string | null
   confirmationOutcome?: ConfirmationOutcome | null
@@ -95,6 +112,7 @@ export type ComputeJobPayload = Pick<ComputeJob,
   parsedAt?: string | null
   confirmationOutcome?: ConfirmationOutcome | null
   priority?: JobPriority
+  workloadCategory?: WorkloadCategory
 }
 
 export interface ConstraintDraft {
