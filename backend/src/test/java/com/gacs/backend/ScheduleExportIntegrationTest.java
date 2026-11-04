@@ -221,22 +221,35 @@ class ScheduleExportIntegrationTest {
     }
 
     @Test
-    @DisplayName("AC4.3 — pending, rejected and revision-requested plans are refused with 403 until approved again")
+    @DisplayName("AC4.3 — pending, rejected and revision-requested plans are all refused with 403")
     void unapprovedPlans_Forbidden() throws Exception {
-        String runId = optimize(start, job("Train", start));
-        expectRejected(runId, 403, "NOT_APPROVED", "is PENDING, not APPROVED");
+        // A run now holds one decision for life, so each state needs its own run rather than being
+        // walked through on a single one. Only an approved run can change state again, by revocation.
+        String pending = optimize(start, job("Pending", start));
+        expectRejected(pending, 403, "NOT_APPROVED", "is PENDING, not APPROVED");
 
+        String rejected = optimize(start, job("Rejected", start));
+        decide(rejected, "reject");
+        expectRejected(rejected, 403, "NOT_APPROVED", "is REJECTED");
+
+        String revised = optimize(start, job("Revised", start));
+        decide(revised, "revise");
+        expectRejected(revised, 403, "NOT_APPROVED", "is REVISION_REQUESTED");
+
+        String approved = optimize(start, job("Approved", start));
+        decide(approved, "approve");
+        export(approved, "csv").andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("A revoked approval stops being exportable")
+    void revokedPlan_Forbidden() throws Exception {
+        String runId = optimize(start, job("Train", start));
         decide(runId, "approve");
         export(runId, "csv").andExpect(status().isOk());
 
-        decide(runId, "reject");
+        decide(runId, "revoke");
         expectRejected(runId, 403, "NOT_APPROVED", "is REJECTED");
-
-        decide(runId, "revise");
-        expectRejected(runId, 403, "NOT_APPROVED", "is REVISION_REQUESTED");
-
-        decide(runId, "approve");
-        export(runId, "json").andExpect(status().isOk());
     }
 
     @Test
@@ -285,7 +298,7 @@ class ScheduleExportIntegrationTest {
         expectRejected(older, 409, "STALE", "Superseded by approved run " + newer);
         export(newer, "csv").andExpect(status().isOk());
 
-        decide(newer, "reject");
+        decide(newer, "revoke");
         expectRejected(older, 409, "STALE", "Superseded by approved run " + newer);
     }
 

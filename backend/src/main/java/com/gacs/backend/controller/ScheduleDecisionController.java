@@ -52,6 +52,17 @@ public class ScheduleDecisionController {
         return decide(runId, AuditActionType.REVISE, request, principal);
     }
 
+    @PostMapping("/revoke")
+    @Operation(summary = "Withdraw an approval already given, halting the schedule",
+        description = "Only an APPROVED run can be revoked. Separate from /reject, which is a first "
+            + "decision on a pending recommendation: revoking undoes a decision already made and may "
+            + "halt work already dispatched, so it is named and audited as its own action. The run "
+            + "moves to REJECTED, which every execution gate already refuses to apply, start or export.")
+    public ResponseEntity<ApiResponse<ScheduleDecisionDto>> revoke(@PathVariable UUID runId,
+        @Valid @RequestBody ScheduleDecisionDto.Request request, Principal principal) {
+        return decide(runId, AuditActionType.REVOKE, request, principal);
+    }
+
     private ResponseEntity<ApiResponse<ScheduleDecisionDto>> decide(UUID runId, AuditActionType action,
                                                                     ScheduleDecisionDto.Request request, Principal principal) {
         return ResponseEntity.ok(ApiResponse.ok("Schedule decision recorded", reviews.decide(runId, action,

@@ -559,7 +559,12 @@ export const jobsApi = {
 }
 
 export type PlanReviewState = "PENDING" | "APPROVED" | "REJECTED" | "REVISION_REQUESTED" | "STALE" | "INVALIDATED"
-export type ScheduleDecisionAction = "approve" | "reject" | "revise"
+/**
+ * "revoke" withdraws an approval already given, halting a schedule that may already have been
+ * dispatched. It is deliberately not "reject": rejecting is a first decision on a pending
+ * recommendation, revoking undoes one already made, and only an APPROVED plan accepts it.
+ */
+export type ScheduleDecisionAction = "approve" | "reject" | "revise" | "revoke"
 export interface SchedulePlanSummary { runId: string; createdAt: string; reviewState: PlanReviewState }
 export interface SchedulePlanDetail {
   runId: string

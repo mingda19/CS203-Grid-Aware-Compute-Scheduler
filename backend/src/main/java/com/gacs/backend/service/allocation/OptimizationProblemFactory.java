@@ -12,6 +12,7 @@ import com.gacs.backend.service.PriceSeriesProvider;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
@@ -82,8 +83,14 @@ public class OptimizationProblemFactory {
             Optional<LocalDateTime> missing = EnergyCostModel.firstUnpricedSlot(
                     baselinePlans.get(job).allocations(), prices);
             if (missing.isPresent()) {
-                throw new UnprocessableDataException("No forecast price for " + missing.get()
-                        + ", which job " + job.identity() + " uses at its original time. Its baseline cost cannot be priced.");
+                throw new UnprocessableDataException("No price available for " + missing.get()
+                        + " UTC, which job " + job.identity() + " needs at its original time, so its baseline"
+                        + " cost cannot be computed and there is nothing to compare a plan against. Every hour"
+                        + " from the earliest start to the latest deadline is priced, estimating any hour the"
+                        + " forecast does not reach, up to a " + MAX_HORIZON_HOURS + "-hour ("
+                        + (MAX_HORIZON_HOURS / 24) + "-day) planning window. This job's window falls outside"
+                        + " that window: move its start and deadline within " + (MAX_HORIZON_HOURS / 24)
+                        + " days of the earliest job's start, or retire it.");
             }
         }
         return new OptimizationProblem(jobs, prices, capacity, baselinePlans, List.of(), List.of(),
@@ -220,9 +227,39 @@ public class OptimizationProblemFactory {
         if (horizon < MIN_HORIZON_HOURS || horizon > MAX_HORIZON_HOURS) {
             throw invalid("horizonHours must be between " + MIN_HORIZON_HOURS + " and " + MAX_HORIZON_HOURS);
         }
-        LocalDateTime earliest = jobs.stream().map(OptimizerJob::originalStartTime).min(LocalDateTime::compareTo)
-                .orElseThrow();
-        return priceSeriesProvider.load(location.trim(), earliest, horizon);
+        return priceSeriesProvider.load(location.trim(), windowStart(jobs), pricedHours(jobs, horizon));
+    }
+
+    /** First hour any job could use: the earliest original start, on the hour. */
+    private static LocalDateTime windowStart(List<OptimizerJob> jobs) {
+        return jobs.stream().map(OptimizerJob::originalStartTime).min(LocalDateTime::compareTo).orElseThrow()
+                .truncatedTo(ChronoUnit.HOURS);
+    }
+
+    /**
+     * How many hours of price curve this run needs: enough to reach the last hour any job could use,
+     * which is the latest deadline, and never fewer than the requested horizon.
+     *
+     * <p>{@code horizonHours} alone is not enough. It was previously used as the exact span, measured
+     * from the earliest original start, so a job whose window sat beyond {@code earliest + 48h} was
+     * never priced at all - not even by the fallback, which only fills gaps inside the span. A single
+     * older job with a start time from before starts were required to be in the future drags
+     * {@code earliest} days back and pushes every other job out of the priced range, and the run then
+     * fails with "No forecast price for <hour>, which job <id> uses at its original time". Pricing a
+     * baseline is what makes a job admissible at all, so the span has to be derived from the jobs
+     * rather than assumed.
+     *
+     * <p>Capped at {@link #MAX_HORIZON_HOURS}. A job reaching past the cap keeps an unpriced baseline
+     * and is reported per job rather than failing the run - see the baseline check in {@link #build}.
+     */
+    private static int pricedHours(List<OptimizerJob> jobs, int requestedHorizon) {
+        LocalDateTime start = windowStart(jobs);
+        LocalDateTime lastDeadline = jobs.stream().map(OptimizerJob::deadline).max(LocalDateTime::compareTo)
+                .orElseThrow().truncatedTo(ChronoUnit.HOURS);
+        // lastDeadline's own hour is not usable: a run must END by the deadline, so the last usable
+        // slot starts an hour earlier. Spanning exactly this many hours from start lands on it.
+        long needed = Duration.between(start, lastDeadline).toHours();
+        return (int) Math.min(MAX_HORIZON_HOURS, Math.max(requestedHorizon, needed));
     }
 
     private static PriceSeries explicitPrices(List<ForecastPointInput> points) {

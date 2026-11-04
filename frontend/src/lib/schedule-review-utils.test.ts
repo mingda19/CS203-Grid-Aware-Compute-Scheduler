@@ -31,9 +31,22 @@ describe("review controls", () => {
   it("labels each persisted review state", () => {
     expect(Object.values(reviewLabels)).toEqual(["Pending review", "Approved", "Rejected", "Revision requested", "Stale", "Invalidated"])
   })
-  it.each(["APPROVED", "REJECTED", "REVISION_REQUESTED"] as const)("bug 3: blocks every action once a schedule is already %s", reviewState => {
+  it.each(["REJECTED", "REVISION_REQUESTED"] as const)("bug 3: blocks every action once a schedule is already %s", reviewState => {
+    for (const action of ["approve", "reject", "revise", "revoke"] as const)
+      expect(decisionUnavailable({ ...plan, reviewState }, action)).not.toBeNull()
+  })
+  it("bug 3: an approved schedule accepts no first decision again, and says what is still possible", () => {
     for (const action of ["approve", "reject", "revise"] as const)
-      expect(decisionUnavailable({ ...plan, reviewState }, action)).toContain("cannot be decided again")
+      expect(decisionUnavailable({ ...plan, reviewState: "APPROVED" }, action))
+        .toContain("Revoke the approval to halt it")
+  })
+  it("revoking is open on an approved schedule and closed on every other state", () => {
+    // An approval may already have dispatched work, so it has to stay reversible; nothing was
+    // dispatched from a rejected or revision-requested plan, so those are final.
+    expect(decisionUnavailable({ ...plan, reviewState: "APPROVED" }, "revoke")).toBeNull()
+    for (const reviewState of ["PENDING", "REJECTED", "REVISION_REQUESTED"] as const)
+      expect(decisionUnavailable({ ...plan, reviewState }, "revoke"))
+        .toContain("Only an approved schedule can be revoked")
   })
   it("bug 3: a terminal decision does not make the plan itself 'unavailable' for non-decision controls", () => {
     expect(planUnavailable({ ...plan, reviewState: "APPROVED" })).toBeNull()

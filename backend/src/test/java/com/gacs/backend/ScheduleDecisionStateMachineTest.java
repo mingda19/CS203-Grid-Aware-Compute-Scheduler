@@ -109,10 +109,61 @@ class ScheduleDecisionStateMachineTest {
 
         decide(run, secondAction).andExpect(status().isConflict())
             .andExpect(jsonPath("$.data.reason").value("ALREADY_DECIDED"))
-            .andExpect(jsonPath("$.message").value("Schedule run " + run + " is already approved and cannot be decided again"));
+            // The refusal points at the one move that is still open, so an operator who meant to halt
+            // the schedule is not left thinking it cannot be stopped at all.
+            .andExpect(jsonPath("$.message").value("Schedule run " + run
+                + " is already approved and cannot be decided again. Revoke the approval instead to halt it."));
 
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
         assertThat(auditEvents.findByRunIdOrderByTimestampDesc(run)).hasSize((int) auditCountAfterApprove);
+    }
+
+    @Test
+    void revokingAnApprovedRunIsTheOneTransitionLeft() throws Exception {
+        String run = optimize();
+        decide(run, "approve").andExpect(status().isOk());
+
+        decide(run, "revoke").andExpect(status().isOk());
+
+        // Revocation lands in REJECTED so every existing execution gate halts the schedule.
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.REJECTED);
+        assertThat(auditEvents.findByRunIdOrderByTimestampDesc(run)).hasSize(2);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"reject", "revise"})
+    void revokingSomethingNeverApprovedIsRefused(String firstAction) throws Exception {
+        String run = optimize();
+        decide(run, firstAction).andExpect(status().isOk());
+
+        // A rejected or revision-requested run is final, so it is the terminal guard that refuses
+        // this, not the revoke-specific one: there is nothing dispatched from it to halt.
+        decide(run, "revoke").andExpect(status().isConflict())
+            .andExpect(jsonPath("$.data.reason").value("ALREADY_DECIDED"))
+            .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(
+                "cannot be decided again")));
+    }
+
+    @Test
+    void revokingAPendingRunIsRefused() throws Exception {
+        String run = optimize();
+
+        decide(run, "revoke").andExpect(status().isConflict())
+            .andExpect(jsonPath("$.data.reason").value("ALREADY_DECIDED"))
+            .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(
+                "is pending, not approved, so there is no approval to revoke")));
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.PENDING);
+    }
+
+    @Test
+    void anApprovalCannotBeRevokedTwice() throws Exception {
+        String run = optimize();
+        decide(run, "approve").andExpect(status().isOk());
+        decide(run, "revoke").andExpect(status().isOk());
+
+        decide(run, "revoke").andExpect(status().isConflict())
+            .andExpect(jsonPath("$.data.reason").value("ALREADY_DECIDED"));
+        assertThat(auditEvents.findByRunIdOrderByTimestampDesc(run)).hasSize(2);
     }
 
     @Test

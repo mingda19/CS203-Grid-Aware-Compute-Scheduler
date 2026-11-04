@@ -60,6 +60,12 @@ export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
           <Button type="button" disabled={disabled || !!decisionUnavailable(review.plan, "approve")} onClick={() => setAction("approve")}>{review.plan.reviewState === "APPROVED" ? "Schedule approved" : "Approve schedule"}</Button>
           <Button type="button" variant="destructive" disabled={disabled || !!decisionUnavailable(review.plan, "reject")} onClick={() => setAction("reject")}>{review.plan.reviewState === "REJECTED" ? "Schedule rejected" : "Reject schedule"}</Button>
           <Button type="button" variant="outline" disabled={disabled || !!decisionUnavailable(review.plan, "revise")} onClick={() => setAction("revise")}>Request revision</Button>
+          {/* Only an approved plan can be revoked, so the control appears only once there is an
+              approval to withdraw rather than sitting disabled next to the first-decision buttons. */}
+          {review.plan.reviewState === "APPROVED" && (
+            <Button type="button" variant="destructive" disabled={disabled || !!decisionUnavailable(review.plan, "revoke")}
+              onClick={() => setAction("revoke")}>Revoke approval</Button>
+          )}
           {review.plan.reviewState === "APPROVED" && <Button type="button" disabled={disabled || !!calendarUnavailable(review.plan) || review.addedToCalendar}
             onClick={() => void review.addToCalendar()}>{review.submitting && !action ? "Adding to calendar…" : review.addedToCalendar ? "Added to calendar" : "Add approved schedule to calendar"}</Button>}
           {review.addedToCalendar && <Button type="button" variant="outline" asChild><Link href="/workloads">Open workload calendar</Link></Button>}

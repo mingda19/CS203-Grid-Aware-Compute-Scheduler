@@ -149,7 +149,7 @@ class AuditTrailIntegrationTest {
     }
 
     @Test
-    @DisplayName("AC6.1b — the run's owner sees the stored schedule; other users only see that it matches")
+    @DisplayName("AC6.1b — the run's owner sees the stored schedule; another operator sees nothing at all")
     void detail_StoredScheduleOnlyForOwner() throws Exception {
         Job train = job("Train");
         String[] approved = optimizeAndApprove(train);
@@ -165,13 +165,14 @@ class AuditTrailIntegrationTest {
                 .andExpect(jsonPath("$.data.schedule.items[0].jobId").value(train.getId()))
                 .andExpect(jsonPath("$.data.schedule.items[0].scheduledStart").value(UTC.format(start.plusHours(1))));
 
+        // Withholding just the schedule body is not enough. The event itself names the operator, the
+        // action, the run and the rationale, and ids are sequential, so returning it to another
+        // operator let anyone walk the endpoint and read every decision made on the system. Another
+        // operator now gets 404: not "you may not see this", which would confirm it exists.
         User other = newUser();
         mvc.perform(get(eventUrl).with(user(other.getEmail())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.scheduleAvailability").value("OWNER_ONLY"))
-                .andExpect(jsonPath("$.data.scheduleHashMatches").value(true))
-                .andExpect(jsonPath("$.data.schedule").doesNotExist())
-                .andExpect(jsonPath("$.data.run.solverName").value("HybridAllocationSolver"));
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.data").doesNotExist());
     }
 
     @Test
