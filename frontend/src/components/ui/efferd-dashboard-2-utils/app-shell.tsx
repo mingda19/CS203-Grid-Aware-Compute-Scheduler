@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { MARKET_TIMEZONE, MARKET_ZONE_LABEL, marketZoneDescriptor, type MarketZoneDescriptor } from "@/lib/date-utils"
 import { Zap, LayoutDashboard, CalendarClock, BriefcaseBusiness, TrendingDown, CheckCircle2, FileText, Bell, Menu, Sun, Moon, ShieldCheck, ChevronRight, Sparkles, LogOut, HelpCircle, Clock } from "lucide-react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
@@ -30,6 +31,10 @@ interface AppShellProps {
 export function AppShell({ children }: AppShellProps) {
   const isMobile = useIsMobile()
   const router = useRouter()
+  const [marketZone, setMarketZone] = React.useState<MarketZoneDescriptor>(
+    () => ({ abbrev: MARKET_ZONE_LABEL, fullName: "Market local time", utcOffsetLabel: "" }),
+  )
+  React.useEffect(() => { setMarketZone(marketZoneDescriptor()) }, [])
   const [theme, setTheme] = React.useState<"light" | "dark">("dark")
   const [mobileOpen, setMobileOpen] = React.useState(false)
   const [currentUser, setCurrentUser] = React.useState<User | null>(null)
@@ -379,19 +384,19 @@ export function AppShell({ children }: AppShellProps) {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* Standardized Singapore Timezone Indicator */}
+            {/* Market (ERCOT) local timezone indicator */}
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-medium bg-muted/60 text-foreground border border-border cursor-help select-none">
                     <Clock className="h-3 w-3 text-cyan-500" />
-                    <span>SGT (UTC+8)</span>
+                    <span>{marketZone.utcOffsetLabel ? `${marketZone.abbrev} (UTC${marketZone.utcOffsetLabel})` : marketZone.abbrev}</span>
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" className="text-xs max-w-xs">
-                  <p className="font-semibold text-foreground">Singapore Standard Time (SGT)</p>
+                  <p className="font-semibold text-foreground">{marketZone.fullName} ({marketZone.abbrev})</p>
                   <p className="text-muted-foreground text-[11px] mt-0.5">
-                    All workload dispatch windows, forecast horizons, and calendar slots are standardized to UTC+8.
+                    All workload dispatch windows, forecast horizons, and calendar slots are shown in ERCOT market local time ({MARKET_TIMEZONE}).
                   </p>
                 </TooltipContent>
               </Tooltip>

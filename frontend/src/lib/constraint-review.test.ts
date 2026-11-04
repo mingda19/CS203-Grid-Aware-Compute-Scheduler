@@ -8,7 +8,7 @@ const result: ConstraintParseResponse = {
   status: "PARSED", fields: { ...draft, flexibilityWindowHours: 4 },
   evidence: [{ field: "flexibilityWindowHours", value: "4", phrase: "can wait 4 hours", start: 0, end: 16 }],
   ambiguities: [], conflicts: [], unsupported: [], validationError: null,
-  parsedAt: "2026-11-01T10:00:00", timeZone: "Asia/Singapore",
+  parsedAt: "2026-11-01T10:00:00", timeZone: "America/Chicago",
 }
 
 describe("parse review confirmation", () => {
@@ -31,10 +31,12 @@ describe("parse review confirmation", () => {
   it("prevents silently rounding a parsed start time when the job is saved", () => {
     expect(constraintReviewBlocker({ ...result, fields: { ...draft, originalStartTime: "2026-11-01T14:30:00" } }, draft, draft)).toContain("on the hour")
   })
-  it("converts UTC parser values to Singapore form values and back across midnight", () => {
-    const value = "2026-11-01T18:00:00"
-    expect(toInputDate(value)).toBe("2026-11-02T02:00")
-    expect(toInputDate(value + "Z")).toBe("2026-11-02T02:00")
+  it("converts UTC parser values to market form values and back across midnight", () => {
+    // Central Time is behind UTC, so an early-morning UTC value is the previous
+    // market day: 04:00Z on 02 Nov is 22:00 CST on 01 Nov.
+    const value = "2026-11-02T04:00:00"
+    expect(toInputDate(value)).toBe("2026-11-01T22:00")
+    expect(toInputDate(value + "Z")).toBe("2026-11-01T22:00")
     expect(toApiUtcDate(toInputDate(value))).toBe(value)
   })
 })

@@ -49,7 +49,7 @@ const statusConfig: Record<
   },
 }
 
-import { formatSgtDateTime, formatSgtRelativeAgo } from "@/lib/date-utils"
+import { formatMarketDateTime, formatRelativeAgo } from "@/lib/date-utils"
 
 export function DataStatusBadge({
   status,
@@ -61,7 +61,7 @@ export function DataStatusBadge({
 }: DataStatusBadgeProps) {
   const config = statusConfig[status] || statusConfig.unavailable
   const [now, setNow] = React.useState(() => Date.now())
-  const relativeText = updatedAt ? formatSgtRelativeAgo(updatedAt, now) : ""
+  const relativeText = updatedAt ? formatRelativeAgo(updatedAt, now) : ""
   React.useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 15000)
     return () => clearInterval(timer)
@@ -100,7 +100,7 @@ export function DataStatusBadge({
       : updatedAt.toISOString()
     : "Timestamp unavailable"
 
-  const sgtDisplay = updatedAt ? formatSgtDateTime(updatedAt) : "Timestamp unavailable"
+  const marketDisplay = updatedAt ? formatMarketDateTime(updatedAt) : "Timestamp unavailable"
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -118,7 +118,7 @@ export function DataStatusBadge({
             {effectiveSource}
           </p>
           <div className="text-[10px] text-muted-foreground/90 font-mono pt-1 border-t border-border/50 space-y-0.5">
-            <div>SGT: <span className="text-foreground font-semibold">{sgtDisplay}</span></div>
+            <div>Local: <span className="text-foreground font-semibold">{marketDisplay}</span></div>
             <div className="text-[9px] opacity-70">UTC ISO: {rawUtcIso}</div>
           </div>
         </TooltipContent>

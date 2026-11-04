@@ -3,7 +3,7 @@
 **Document Status:** Approved Baseline & Enhancement Roadmap  
 **Document Version:** 2.0.0  
 **Classification:** Product Requirements & Frontend Engineering Standard  
-**Last Updated:** October 2026 (SGT)  
+**Last Updated:** November 2026  
 
 ---
 
@@ -24,16 +24,17 @@ This document establishes the UI/UX architecture, visual design standards, compo
 
 ### 2.1 Unified Continuous Price Timeline (Historical + Forecast)
 - **Problem:** Previously, historical settlement prices and upcoming model forecasts were split across separate cards and charts. Operators had to scroll between two disconnected views, mentally bridging the transition between past actuals and future predictions.
-- **Solution:** A **single, continuous time-series chart** that unifies past actual settlement prices (solid emerald line with subtle area fill) and upcoming ML predictions (dashed violet line with shaded confidence envelope). A vertical **"Current Time / Now (SGT)"** reference divider separates history from forecast, providing a seamless continuum for dispatch decisions.
+- **Solution:** A **single, continuous time-series chart** that unifies past actual settlement prices (solid emerald line with subtle area fill) and upcoming ML predictions (dashed violet line with shaded confidence envelope). A vertical **"Current Time / Now (CT)"** reference divider separates history from forecast, providing a seamless continuum for dispatch decisions.
 
-### 2.2 Singapore Time (SGT / UTC+8) Standardization
-- **Problem:** The interface previously displayed timestamps in raw UTC or US Central time, forcing Singapore-based operators to perform mental timezone math (+8 hours) when reviewing batch schedules, deadlines, peak spikes, and audit logs.
-- **Solution:** Global standardization to **Singapore Time (SGT / UTC+8)** across all UI modules:
-  - Header badge displaying `🕒 SGT (UTC+8) · Singapore Standard Time`.
-  - Chart X-axes formatted cleanly in SGT (e.g., `10 Oct 09:00`, `18:00`, `11 Oct 02:00`).
-  - Workload scheduling windows, deadlines, and countdowns displayed in SGT.
-  - Interactive Google Calendar view aligned strictly to SGT operating cycles.
-  - Audit logs and data-freshness badges stamped in SGT with ISO-8601 UTC provenance in tooltips.
+### 2.2 ERCOT Market Local Time (Central) Standardization
+- **Problem:** The interface previously displayed timestamps in Singapore Time (SGT / UTC+8). GACS schedules against ERCOT, whose market day, DAM bid deadline (10:00 Central) and price publication (~13:30 Central) are all defined in Texas local time. Showing a Texas grid in Singapore wall time forced operators to translate every price spike, bid cutoff and settlement interval across a 13–14 hour gap, and obscured which ERCOT operating day a schedule belonged to.
+- **Solution:** Global standardization to **ERCOT market local time** (`America/Chicago`) across all UI modules:
+  - Header badge displaying the zone in effect, `🕒 CST (UTC-6)` or `🕒 CDT (UTC-5)`.
+  - Chart X-axes formatted cleanly in market time (e.g., `10 Oct 09:00`, `18:00`, `11 Oct 02:00`).
+  - Workload scheduling windows, deadlines, and countdowns displayed in market time.
+  - Interactive Google Calendar view aligned to ERCOT operating cycles.
+  - Audit logs and data-freshness badges stamped in market time with ISO-8601 UTC provenance in tooltips.
+- **Daylight saving is load-bearing, not cosmetic.** Central Time is UTC-6 in winter and UTC-5 in summer, so no fixed offset is correct. Every conversion resolves the offset for the specific instant via `Intl`, and the displayed abbreviation is derived per timestamp rather than hardcoded. Column headers that cover a whole table use the season-independent `CT`. Timestamps remain UTC on the wire and in Postgres; `src/lib/date-utils.ts` is the only module that converts.
 
 ### 2.3 Elevated Control-Room Visual Design Language
 - **Aesthetic:** High-contrast Dark Mode OLED (`#090d16` background) with glassmorphism (`backdrop-blur-xl bg-card/80`), refined emerald/cyan accents, and amber alert signals.
@@ -58,7 +59,7 @@ The Unified Price Timeline serves as the primary visual decision instrument on b
 2. **Current Time Divider ("Now" Boundary):**
    - **Line:** Vertical reference line (`ReferenceLine` in Recharts) at the latest historical interval / current timestamp.
    - **Color:** Bright cyan/white (`#38bdf8`), dotted/dashed (`strokeDasharray="3 3"`).
-   - **Label:** `● Now (SGT)` badge positioned at the top of the reference line.
+   - **Label:** `● Now (CT)` badge positioned at the top of the reference line.
 3. **Upcoming Forecast LMP Line:**
    - **Stroke:** Dashed violet/indigo (`#8b5cf6`), `strokeWidth: 2.5`, `strokeDasharray="5 5"`.
    - **Area Fill / Confidence Band:** Shaded uncertainty corridor (P10–P90 percentile or ±12% forecast spread) using low-opacity violet (`#8b5cf6`, opacity 0.10).
@@ -74,47 +75,54 @@ The Unified Price Timeline serves as the primary visual decision instrument on b
   - `Past 7d + 72h Forecast` (Macro trend & model validation).
 - **Location Selector:** Dropdown for ERCOT Hubs (`LZ_NORTH`, `LZ_HOUSTON`, `LZ_SOUTH`, `LZ_WEST`).
 - **Interactive Tooltip:**
-  - Standardized SGT timestamp: `[Date] [HH:mm] SGT`.
+  - Standardized market timestamp: `[Date] [HH:mm] CST|CDT`.
   - Type indicator: `Historical Settlement` or `ML Forecast (Model v2.4)`.
   - LMP Value: `$XX.XX / MWh`.
   - Contextual renewable share: `% Clean generation` estimate.
 
 ---
 
-### 3.2 Feature Spec 2: Singapore Time (SGT / UTC+8) Standardization
+### 3.2 Feature Spec 2: ERCOT Market Local Time (Central) Standardization
 
 #### 3.2.1 Centralized Timezone Formatting Utility
 All date and time transformations must use a centralized frontend utility (`src/lib/date-utils.ts`):
 ```typescript
-export const SGT_TIMEZONE = "Asia/Singapore"
+export const MARKET_TIMEZONE = "America/Chicago"
+export const MARKET_ZONE_LABEL = "CT"   // season-independent, for static headers
 
-// Format full datetime: "10 Oct 2026, 09:30 SGT"
-export function formatSgtDateTime(date: Date | string | number): string
+// Format full datetime: "10 Oct 2026, 09:30 CDT"
+export function formatMarketDateTime(date: Date | string | number): string
 
-// Format time only: "09:30 SGT" or "09:30"
-export function formatSgtTime(date: Date | string | number, includeZone = true): string
+// Format time only: "09:30 CDT" or "09:30"
+export function formatMarketTime(date: Date | string | number, includeZone = true): string
 
 // Format date only: "10 Oct 2026"
-export function formatSgtDate(date: Date | string | number): string
+export function formatMarketDate(date: Date | string | number): string
 
 // Format short chart axis time: "10 Oct 09:00"
-export function formatSgtChartTick(isoUtcString: string): string
+export function formatMarketChartTick(isoUtcString: string, showDate = false): string
 
-// Convert SGT datepicker string (YYYY-MM-DD) to ISO UTC boundary for API querying
-export function sgtDateToUtcIso(sgtDateString: string, isEndOfDay = false): string
+// Zone abbreviation in effect at an instant: "CST" | "CDT"
+export function marketZoneAbbrev(date: Date | string | number): string
+
+// Resolve market wall-clock fields to the UTC instant they name (DST aware)
+export function marketWallTimeToUtc(year: number, month: number, day: number, hour?: number, minute?: number, second?: number): Date
+
+// Convert a market datepicker string (YYYY-MM-DD) to an ISO UTC boundary for API querying
+export function marketDateToUtcIso(marketDateString: string, isEndOfDay = false): string
 ```
 
-#### 3.2.2 UI Modules Requiring SGT Alignment
-| UI Component | Previous State | Target SGT Standard |
+#### 3.2.2 UI Modules Requiring Market-Time Alignment
+| UI Component | Previous State | Target Market-Time Standard |
 |---|---|---|
-| **App Shell Header** | No timezone indicator | Sticky badge: `🕒 SGT (UTC+8) · Singapore Standard Time` |
-| **Unified Price Chart** | X-axis labeled in UTC | Formatted in `HH:mm SGT` with date rollover headers |
-| **Decision Panel** | `01:30 – 05:30 UTC` | `09:30 – 13:30 SGT (Today)` |
-| **Decision Deadline** | `Decision needed before 01:15 UTC` | `Decision needed before 09:15 SGT (in 24 mins)` |
-| **Workload Queue Table** | Scheduled windows in UTC | SGT windows + relative time indicator (`Starts in 1.5h`) |
-| **Google Calendar View** | UTC slot positioning | Full SGT 24h schedule with primary work hours (08:00–20:00 SGT) highlighted |
-| **Data Status Badges** | `updated 12:44:01 UTC` | `updated 20:44:01 SGT · 32s ago` |
-| **Audit Logs** | UTC timestamps | SGT display with tooltip revealing exact UTC ISO string for regulatory audit |
+| **App Shell Header** | No timezone indicator | Sticky badge: `🕒 CST (UTC-6)` / `🕒 CDT (UTC-5)`, resolved at runtime |
+| **Unified Price Chart** | X-axis labeled in UTC | Formatted in `HH:mm` market time with date rollover headers |
+| **Decision Panel** | `01:30 – 05:30 UTC` | `09:30 – 13:30 CDT (Today)` |
+| **Decision Deadline** | `Decision needed before 01:15 UTC` | `Decision needed before 09:15 CDT (in 24 mins)` |
+| **Workload Queue Table** | Scheduled windows in UTC | Market-time windows under a `CT` header + relative time indicator (`Starts in 1.5h`) |
+| **Google Calendar View** | UTC slot positioning | Full 24h market-time schedule with primary work hours (08:00–20:00 CT) highlighted |
+| **Data Status Badges** | `updated 12:44:01 UTC` | `updated 06:44:01 CST · 32s ago` |
+| **Audit Logs** | UTC timestamps | Market-time display with tooltip revealing exact UTC ISO string for regulatory audit |
 
 ---
 
@@ -140,7 +148,7 @@ Each of the 4 primary overview KPI cards is upgraded from static text to interac
 1. **Real-Time LMP Card:**
    - Big metric: `$28.40 / MWh`.
    - Mini sparkline: 12-interval rolling price trend.
-   - Peak window alert pill: `Peak spike $142.50 at 01:00 SGT`.
+   - Peak window alert pill: `Peak spike $142.50 at 01:00 CST`.
 2. **Clean Energy Mix Card:**
    - Big metric: `58.6% Green`.
    - Mini stacked bar: Wind (41.2%) · Solar (17.4%) · Gas/Other (41.4%).
@@ -159,10 +167,10 @@ Each of the 4 primary overview KPI cards is upgraded from static text to interac
 
 #### 3.4.1 Decision Hierarchy
 The decision panel on `/overview` and `/approvals` is the most consequential interactive surface. It must deliver total clarity within 5 seconds:
-1. **Status Header:** Plan status (`Pending Approval`), solver model version (`XGBoost-LSTM v2.4`), and SGT decision cutoff countdown.
+1. **Status Header:** Plan status (`Pending Approval`), solver model version (`XGBoost-LSTM v2.4`), and market-time decision cutoff countdown.
 2. **Visual Timeline Diff (Before vs. After):**
    - **Baseline Track:** Shows where workloads would run under static scheduling (coinciding with the $142.50/MWh peak spike).
-   - **Optimized Track:** Shows workloads shifted into the low-cost 09:30–13:30 SGT wind corridor, with flexible crypto mining throttled during peak hours.
+   - **Optimized Track:** Shows workloads shifted into the low-cost 09:30–13:30 CT wind corridor, with flexible crypto mining throttled during peak hours.
 3. **Three-Pillar Impact Summary:**
    - **Financial:** Net savings `$4,120` (+22.4% cost reduction).
    - **Grid / Peak Shaving:** `-1.85 MW` peak demand shed during grid stress.
@@ -181,7 +189,7 @@ The decision panel on `/overview` and `/approvals` is the most consequential int
 - **Calendar Mode:** Google Calendar-style visual grid representing scheduled compute batches across time.
 
 #### 3.5.2 Peak Tariff & Clean Energy Shading on Calendar
-- In the calendar grid, background columns/cells during high LMP hours (01:00–04:00 SGT / peak evening ramp) feature subtle amber vertical shading (`bg-amber-500/10` with striped pattern).
+- In the calendar grid, background columns/cells during high LMP hours (01:00–04:00 CT / peak evening ramp) feature subtle amber vertical shading (`bg-amber-500/10` with striped pattern).
 - Green valley hours (curtailed wind / low LMP) feature subtle emerald shading (`bg-emerald-500/10`).
 - This makes the optimization intuition instantly obvious: operator sees batches automatically arranged inside green lanes, avoiding amber lanes.
 
@@ -202,7 +210,7 @@ Every live data card and chart must include the standardized `DataStatusBadge`:
 
 #### 3.6.2 Audit Trail & Governance
 - Every dispatch decision, manual throttle, and status change is logged to `/audit`.
-- Audit logs capture: Operator ID, Role, SGT Timestamp, Action Type, Target Workloads, and Solver Recommendation ID.
+- Audit logs capture: Operator ID, Role, Market-Time Timestamp, Action Type, Target Workloads, and Solver Recommendation ID.
 - One-click CSV/JSON export for compliance reporting.
 
 ---
@@ -212,7 +220,7 @@ Every live data card and chart must include the standardized `DataStatusBadge`:
 | Anti-Pattern | Why It Fails | What GACS Does Instead |
 |---|---|---|
 | **Separated Forecast & History Charts** | Forces mental timeline stitching; operator cannot see forecast continuity. | **Single unified timeline** with solid history, dashed forecast, and "Now" line. |
-| **Raw UTC Times in Singapore Context** | Causes cognitive strain and error-prone manual calculations (+8 hours). | **Standardized SGT (UTC+8)** across all UI views, tooltips, and calendars. |
+| **Times shown in a zone other than the market's** | Causes cognitive strain and error-prone manual calculations against ERCOT's operating day and bid deadlines. | **Standardized ERCOT market local time (`America/Chicago`)** across all UI views, tooltips, and calendars, with DST resolved per timestamp. |
 | **One-Click Instant Dispatch Without Diff** | High risk of dispatching unintended cluster throttles without impact check. | **Two-step confirmation modal** showing exact affected jobs and cost diff. |
 | **Generic "Toggle" Buttons** | Ambiguous whether action pauses, throttles, or deletes a batch. | **Explicit action labels**: `Throttle to 50%`, `Pause Task`, `Resume Task`. |
 | **All-Green Aesthetic** | When every metric is green, no focal point exists; status alerts lose urgency. | **Strict color semantics**: Emerald for low-cost/success, Violet for ML, Amber for review/spikes. |
@@ -223,11 +231,11 @@ Every live data card and chart must include the standardized `DataStatusBadge`:
 ## 5. Implementation Roadmap & Milestones
 
 ### Phase 1: Core Timeline & Timezone Standardization (Sprint 1)
-- [x] Implement `src/lib/date-utils.ts` with comprehensive SGT formatting helpers.
-- [x] Add SGT timezone indicator badge in the App Shell header.
+- [x] Implement `src/lib/date-utils.ts` with comprehensive market-time formatting helpers.
+- [x] Add market timezone indicator badge in the App Shell header.
 - [x] Build the `UnifiedPriceTimeline` component combining historical prices and ML forecast into a continuous Recharts chart.
 - [x] Replace separate forecast and history cards on `/forecasts` and `/overview` with the unified timeline.
-- [x] Convert all table timestamps, calendar slots, and decision panel windows to SGT.
+- [x] Convert all table timestamps, calendar slots, and decision panel windows to market time.
 
 ### Phase 2: Visual Polish & Decision Cockpit Elevation (Sprint 2)
 - [ ] Embed micro-sparklines into the 4 overview KPI cards.
@@ -245,8 +253,8 @@ Every live data card and chart must include the standardized `DataStatusBadge`:
 
 ## 6. Definition of Done (DoD)
 
-1. **Continuous Timeline:** The `/forecasts` page and `/overview` page render historical prices and forecast predictions on a single continuous chart with a clear `Now (SGT)` separator.
-2. **SGT Consistency:** 100% of user-facing timestamps, dates, calendar headers, and table rows display in Singapore Time (SGT / UTC+8) with explicit timezone labeling.
+1. **Continuous Timeline:** The `/forecasts` page and `/overview` page render historical prices and forecast predictions on a single continuous chart with a clear `Now (CT)` separator.
+2. **Market-time consistency:** 100% of user-facing timestamps, dates, calendar headers, and table rows display in ERCOT market local time (`America/Chicago`) with explicit timezone labeling, correct on both sides of a DST transition.
 3. **Scanability:** An operator can identify current LMP, peak spike risk, and pending recommendation within 5 seconds of loading the overview page.
 4. **Safe Dispatch:** Dispatches require a confirmation review displaying the financial and workload diff before executing.
 5. **Data Transparency:** Every metric displays its data freshness status (`live`, `cached`, `demo`, `unavailable`) without misleading indicators.

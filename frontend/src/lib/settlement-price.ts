@@ -1,5 +1,5 @@
 import type { PricePoint } from "./api"
-import { formatSgtDateTime, parseIsoDate } from "./date-utils"
+import { formatMarketDateTime, parseIsoDate } from "./date-utils"
 
 export function currentSettlementMetrics(points: PricePoint[], asOf: number) {
   const eligible = points.filter((point): point is PricePoint & { sppUsdMwh: number } =>
@@ -21,7 +21,7 @@ export function currentSettlementMetrics(points: PricePoint[], asOf: number) {
     isDrop: diff <= 0,
     rollingAvgFormatted: average == null ? "—" : `$${average.toFixed(2)}`,
     peakPriceFormatted: peak == null ? "—" : `$${peak.sppUsdMwh.toFixed(2)}`,
-    peakWindow: peak == null ? "Recent peak: —" : `Peak ${formatSgtDateTime(peak.intervalStartUtc)}`,
+    peakWindow: peak == null ? "Recent peak: —" : `Peak ${formatMarketDateTime(peak.intervalStartUtc)}`,
     stale: latest != null && asOf - parseIsoDate(latest.intervalStartUtc).getTime() >= 3_600_000,
   }
 }

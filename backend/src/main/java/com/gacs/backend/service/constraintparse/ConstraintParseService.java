@@ -34,7 +34,7 @@ public class ConstraintParseService {
     private final ZoneId defaultZone;
 
     public ConstraintParseService(ConstraintParser parser, JobService jobService, Clock clock,
-                                  @Value("${gacs.parser.default-zone:Asia/Singapore}") String defaultZone) {
+                                  @Value("${gacs.parser.default-zone:America/Chicago}") String defaultZone) {
         this.parser = parser;
         this.jobService = jobService;
         this.clock = clock;
@@ -89,7 +89,7 @@ public class ConstraintParseService {
         try {
             return ZoneId.of(requested.trim());
         } catch (DateTimeException e) {
-            throw new IllegalArgumentException("Unknown timeZone: '" + requested + "'. Use an IANA zone such as Asia/Singapore");
+            throw new IllegalArgumentException("Unknown timeZone: '" + requested + "'. Use an IANA zone such as America/Chicago");
         }
     }
 

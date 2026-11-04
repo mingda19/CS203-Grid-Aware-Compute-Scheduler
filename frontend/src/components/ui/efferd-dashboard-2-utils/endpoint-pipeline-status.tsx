@@ -3,7 +3,7 @@
 import * as React from "react"
 import { RefreshCw } from "lucide-react"
 import { freshnessApi, type DataFreshnessResponse } from "@/lib/api"
-import { formatSgtDateTime } from "@/lib/date-utils"
+import { formatMarketDateTime } from "@/lib/date-utils"
 import { freshnessSummary } from "@/lib/data-freshness"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -44,7 +44,7 @@ export function EndpointPipelineStatus() {
           <div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{dataset.dataset}</span><DataStatusBadge size="sm" status={freshnessSummary({ ...response, datasets: [dataset] }).status} source={dataset.message} updatedAt={dataset.latestRecordTimestamp} /></div>
           <p className="mt-2 text-xs text-muted-foreground">{dataset.message}</p>
         </div>)}</div>}
-      {response && <p className="mt-3 text-xs text-muted-foreground">Checked {formatSgtDateTime(response.checkedAt)}</p>}
+      {response && <p className="mt-3 text-xs text-muted-foreground">Checked {formatMarketDateTime(response.checkedAt)}</p>}
     </CardContent>
   </Card>
 }

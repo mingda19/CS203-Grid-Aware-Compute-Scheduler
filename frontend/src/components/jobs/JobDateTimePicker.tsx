@@ -3,7 +3,7 @@
 import * as React from "react"
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, X } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { SGT_TIMEZONE } from "@/lib/date-utils"
+import { MARKET_TIMEZONE } from "@/lib/date-utils"
 
 export interface JobDateTimePickerProps {
   id?: string
@@ -19,9 +19,9 @@ export interface JobDateTimePickerProps {
   error?: boolean
 }
 
-function getNowSgtParts() {
+function getNowMarketParts() {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: SGT_TIMEZONE,
+    timeZone: MARKET_TIMEZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -57,7 +57,7 @@ export function JobDateTimePicker({
   const [open, setOpen] = React.useState(false)
   const containerRef = React.useRef<HTMLDivElement>(null)
 
-  const nowSgt = React.useMemo(() => getNowSgtParts(), [])
+  const nowMarket = React.useMemo(() => getNowMarketParts(), [])
 
   // Parse current value
   const parsed = React.useMemo(() => {
@@ -69,8 +69,8 @@ export function JobDateTimePicker({
     return { year: y, month: m, day, hour: isNaN(h) ? 0 : h, minute: isNaN(min) ? 0 : min }
   }, [value])
 
-  const [viewYear, setViewYear] = React.useState<number>(() => parsed?.year ?? nowSgt.year)
-  const [viewMonth, setViewMonth] = React.useState<number>(() => parsed?.month ?? nowSgt.month)
+  const [viewYear, setViewYear] = React.useState<number>(() => parsed?.year ?? nowMarket.year)
+  const [viewMonth, setViewMonth] = React.useState<number>(() => parsed?.month ?? nowMarket.month)
 
   const [previousValue, setPreviousValue] = React.useState(value)
   if (previousValue !== value) {
@@ -129,7 +129,7 @@ export function JobDateTimePicker({
   }
 
   const handleSelectDay = (day: number) => {
-    const currentHour = parsed ? parsed.hour : (nowSgt.hour + 1) % 24
+    const currentHour = parsed ? parsed.hour : (nowMarket.hour + 1) % 24
     const currentMinute = parsed ? parsed.minute : 0
     const newDateStr = `${viewYear}-${pad2(viewMonth)}-${pad2(day)}T${pad2(currentHour)}:${pad2(currentMinute)}`
     onChange(newDateStr)
@@ -235,9 +235,9 @@ export function JobDateTimePicker({
                 parsed?.month === viewMonth &&
                 parsed?.day === day
               const isToday =
-                nowSgt.year === viewYear &&
-                nowSgt.month === viewMonth &&
-                nowSgt.day === day
+                nowMarket.year === viewYear &&
+                nowMarket.month === viewMonth &&
+                nowMarket.day === day
               const disabledDay = isDateDisabled(day)
 
               return (
@@ -265,9 +265,9 @@ export function JobDateTimePicker({
             <button
               type="button"
               onClick={() => {
-                const currentHour = parsed ? parsed.hour : (nowSgt.hour + 1) % 24
+                const currentHour = parsed ? parsed.hour : (nowMarket.hour + 1) % 24
                 const currentMinute = parsed ? parsed.minute : 0
-                const todayStr = `${nowSgt.year}-${pad2(nowSgt.month)}-${pad2(nowSgt.day)}T${pad2(currentHour)}:${pad2(currentMinute)}`
+                const todayStr = `${nowMarket.year}-${pad2(nowMarket.month)}-${pad2(nowMarket.day)}T${pad2(currentHour)}:${pad2(currentMinute)}`
                 onChange(todayStr)
                 setOpen(false)
               }}

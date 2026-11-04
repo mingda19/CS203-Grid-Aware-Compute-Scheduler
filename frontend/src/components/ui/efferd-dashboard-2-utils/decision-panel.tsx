@@ -7,7 +7,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Button } from "@/components/ui/button"
 import { useScheduleReview } from "@/hooks/use-schedule-review"
 import { reviewLabels, decisionUnavailable, calendarUnavailable } from "@/lib/schedule-review-utils"
-import { formatSgtDateTime } from "@/lib/date-utils"
+import { formatMarketDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import type { ScheduleDecisionAction, SchedulePlanDetail } from "@/lib/api"
 import { RejectPlanModal } from "./reject-plan-modal"
 
@@ -35,7 +35,7 @@ export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
         <select id="schedule-plan-select" className="w-full rounded-md border bg-background p-2 text-sm" value={review.selected} disabled={review.submitting || !!action}
           onChange={event => review.select(event.target.value)}>
           {review.selected && !review.plans.some(plan => plan.runId === review.selected) && <option value={review.selected}>Selected recommendation — {review.selected}</option>}
-          {review.plans.map(plan => <option key={plan.runId} value={plan.runId}>{formatSgtDateTime(plan.createdAt)} — {reviewLabels[plan.runId === review.plan?.runId ? review.plan.reviewState : plan.reviewState]} — {plan.runId}</option>)}
+          {review.plans.map(plan => <option key={plan.runId} value={plan.runId}>{formatMarketDateTime(plan.createdAt)} — {reviewLabels[plan.runId === review.plan?.runId ? review.plan.reviewState : plan.reviewState]} — {plan.runId}</option>)}
         </select>
         <div className="flex items-center gap-3 text-xs">
           <Button type="button" size="sm" variant="outline" disabled={review.page === 0 || review.submitting || !!action} onClick={() => review.changePage(review.page - 1)}>Previous</Button>
@@ -84,12 +84,12 @@ export function PlanRecommendation({ plan }: { plan: SchedulePlanDetail }) {
       </dl>
       {recommendation.status === "NEEDS_ATTENTION" && <p role="status" className="text-sm text-amber-700 dark:text-amber-400">Some jobs have no feasible placement. Review those jobs before approving.</p>}
       <div className="overflow-x-auto rounded-md border"><table className="w-full text-left text-xs">
-        <caption className="sr-only">Original and recommended job placements in Singapore time</caption>
-        <thead><tr>{["Job", "Original start (SGT)", "Proposed start (SGT)", "Proposed end (SGT)", "Outcome", "Savings (USD)"].map(label => <th key={label} className="p-2">{label}</th>)}</tr></thead>
+        <caption className="sr-only">Original and recommended job placements in market local time</caption>
+        <thead><tr>{["Job", `Original start (${MARKET_ZONE_LABEL})`, `Proposed start (${MARKET_ZONE_LABEL})`, `Proposed end (${MARKET_ZONE_LABEL})`, "Outcome", "Savings (USD)"].map(label => <th key={label} className="p-2">{label}</th>)}</tr></thead>
         <tbody>{recommendation.items.map(item => <tr key={item.jobId} className="border-t">
-          <td className="p-2">{item.jobName}</td><td className="p-2">{formatSgtDateTime(item.baselineStart)}</td>
-          <td className="p-2">{item.scheduledStart ? formatSgtDateTime(item.scheduledStart) : "Not scheduled"}</td>
-          <td className="p-2">{item.scheduledEnd ? formatSgtDateTime(item.scheduledEnd) : "—"}</td>
+          <td className="p-2">{item.jobName}</td><td className="p-2">{formatMarketDateTime(item.baselineStart)}</td>
+          <td className="p-2">{item.scheduledStart ? formatMarketDateTime(item.scheduledStart) : "Not scheduled"}</td>
+          <td className="p-2">{item.scheduledEnd ? formatMarketDateTime(item.scheduledEnd) : "—"}</td>
           <td className="p-2">{item.perJobStatus.replaceAll("_", " ").toLowerCase()}{item.reason && <p>{item.reason}</p>}</td>
           <td className="p-2">{item.savingsUsd == null ? "Unavailable" : money(item.savingsUsd)}</td>
         </tr>)}</tbody>

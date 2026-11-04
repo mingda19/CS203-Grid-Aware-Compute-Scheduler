@@ -6,7 +6,7 @@ import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, Plus, Searc
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { workloadScheduleApi, type WorkloadSchedule } from "@/lib/api"
-import { getSgtHoursMinutes, getSgtDateString } from "@/lib/date-utils"
+import { getMarketHoursMinutes, getMarketDateString, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 
 export type WorkloadType = "ML Training" | "Crypto Mining" | "HPC Batch" | "HVAC Pre-Cool" | "Grid Alert"
 
@@ -91,9 +91,9 @@ const TYPE_CONFIG: Record<
   },
 }
 
-// Format date helper: YYYY-MM-DD in SGT
+// Format date helper: YYYY-MM-DD in market local time
 function toDateStr(d: Date): string {
-  return getSgtDateString(d)
+  return getMarketDateString(d)
 }
 
 function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
@@ -102,8 +102,8 @@ function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
   const type = (Object.keys(TYPE_CONFIG) as WorkloadType[]).includes(schedule.type as WorkloadType)
     ? schedule.type as WorkloadType
     : "ML Training"
-  const { hours: startHour, minutes: startMinute } = getSgtHoursMinutes(start)
-  const dateStr = getSgtDateString(start)
+  const { hours: startHour, minutes: startMinute } = getMarketHoursMinutes(start)
+  const dateStr = getMarketDateString(start)
   return {
     id: String(schedule.id),
     title: schedule.title,
@@ -160,8 +160,8 @@ export function GoogleCalendarView() {
   // Current time representation for live red line
   const now = new Date()
   const todayStr = toDateStr(now)
-  const sgtNow = getSgtHoursMinutes(now)
-  const currentHourDecimal = sgtNow.hours + sgtNow.minutes / 60
+  const marketNow = getMarketHoursMinutes(now)
+  const currentHourDecimal = marketNow.hours + marketNow.minutes / 60
 
   // Filter events
   const filteredEvents = React.useMemo(() => {
@@ -717,7 +717,7 @@ export function GoogleCalendarView() {
               <div className="sticky top-0 z-20 flex border-b border-border bg-card/95 backdrop-blur-sm">
                 {/* Time gutter spacer */}
                 <div className="w-16 shrink-0 border-r border-border/80 flex items-end justify-center pb-2 text-[10px] font-mono text-muted-foreground">
-                  SGT
+                  {MARKET_ZONE_LABEL}
                 </div>
                 {/* 7 Days headers */}
                 <div className="grid grid-cols-7 flex-1 divide-x divide-border/80">
@@ -1178,7 +1178,7 @@ export function GoogleCalendarView() {
                 <CalendarIcon className="h-4 w-4 text-blue-500 shrink-0" />
                 <span className="font-medium text-foreground">
                   {selectedEvent.dateStr} • {String(selectedEvent.startHour).padStart(2, "0")}:
-                  {String(selectedEvent.startMinute).padStart(2, "0")} SGT ({selectedEvent.durationHours} hours)
+                  {String(selectedEvent.startMinute).padStart(2, "0")} {MARKET_ZONE_LABEL} ({selectedEvent.durationHours} hours)
                 </span>
               </div>
 

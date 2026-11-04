@@ -36,7 +36,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         RuleBasedConstraintParser.class, JobService.class, ConstraintParseControllerTest.FixedClock.class})
 class ConstraintParseControllerTest {
 
-    /** Monday 2026-11-02 14:00 in Singapore. */
+    /** Monday 2026-11-02 00:00 in ERCOT market time (CST, UTC-6). */
     @TestConfiguration
     static class FixedClock {
         @Bean
@@ -65,10 +65,12 @@ class ConstraintParseControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.status").value("PARSED"))
-                .andExpect(jsonPath("$.data.fields.deadline").value("2026-11-02T22:00:00"))
+                // "6am tomorrow" from 00:00 on 02 Nov market time is 06:00 on 03 Nov
+                // in CST (UTC-6), i.e. 12:00 UTC
+                .andExpect(jsonPath("$.data.fields.deadline").value("2026-11-03T12:00:00"))
                 .andExpect(jsonPath("$.data.fields.flexibilityWindowHours").value(4))
                 .andExpect(jsonPath("$.data.evidence[0].field").exists())
-                .andExpect(jsonPath("$.data.timeZone").value("Asia/Singapore"))
+                .andExpect(jsonPath("$.data.timeZone").value("America/Chicago"))
                 .andExpect(jsonPath("$.data.parsedAt").value("2026-11-02T06:00:00"));
         verifyNoInteractions(jobRepository);
     }

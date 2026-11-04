@@ -23,7 +23,7 @@ import { DataStatusBadge } from "@/components/ui/data-status-badge"
 import { priceApi, jobsApi, freshnessApi, type PricePoint, type ComputeJob, type DataFreshnessResponse } from "@/lib/api"
 import { EndpointPipelineStatus } from "@/components/ui/efferd-dashboard-2-utils/endpoint-pipeline-status"
 import { UnifiedPriceTimeline } from "@/components/forecasts/UnifiedPriceTimeline"
-import { formatSgtTime, formatSgtDateTime } from "@/lib/date-utils"
+import { formatMarketTime, formatMarketDateTime } from "@/lib/date-utils"
 
 export default function OverviewPage() {
   const [jobs, setJobs] = React.useState<ComputeJob[]>([])
@@ -159,7 +159,7 @@ export default function OverviewPage() {
               <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              {lmpMetrics.latest ? `${lmpMetrics.stale ? "Last available hour" : "Hour starting"}: ${formatSgtDateTime(lmpMetrics.latest.intervalStartUtc)}` : "No price is available for the current hour."}
+              {lmpMetrics.latest ? `${lmpMetrics.stale ? "Last available hour" : "Hour starting"}: ${formatMarketDateTime(lmpMetrics.latest.intervalStartUtc)}` : "No price is available for the current hour."}
             </p>
             {lmpMetrics.stale && <p role="status" className="mt-1 text-xs text-amber-600">The current hour is missing; showing an older recorded price.</p>}
             {lmpMetrics.currentLmp != null && <div
@@ -244,7 +244,7 @@ export default function OverviewPage() {
           <CardFooter className="pt-0 text-[11px] text-muted-foreground border-t border-border/40 mt-3 flex justify-between">
             <span>Checked At</span>
             <span className="font-mono text-foreground">
-              {freshness?.checkedAt ? formatSgtTime(freshness.checkedAt, true) : "—"}
+              {freshness?.checkedAt ? formatMarketTime(freshness.checkedAt, true) : "—"}
             </span>
           </CardFooter>
         </Card>
@@ -334,7 +334,7 @@ export default function OverviewPage() {
                       </span>
                     </div>
                     <p className="text-[11px] text-muted-foreground">
-                      Start: <span className="font-mono text-foreground">{formatSgtDateTime(j.originalStartTime)}</span> · Deadline: {formatSgtDateTime(j.deadline)}
+                      Start: <span className="font-mono text-foreground">{formatMarketDateTime(j.originalStartTime)}</span> · Deadline: {formatMarketDateTime(j.deadline)}
                     </p>
                   </div>
                   <div className="text-right">

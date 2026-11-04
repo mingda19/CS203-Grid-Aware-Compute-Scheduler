@@ -15,7 +15,7 @@ import {
   type ScheduleItem,
   type FacilityConfig,
 } from "@/lib/api"
-import { formatSgtDateTime } from "@/lib/date-utils"
+import { formatMarketDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -58,7 +58,7 @@ const blankForm = (): FormState => ({
   isExempt: false,
 })
 
-const displayDate = (value?: string) => (value ? formatSgtDateTime(value) : "—")
+const displayDate = (value?: string) => (value ? formatMarketDateTime(value) : "—")
 
 const getWindowDurationText = (start: string, end: string) => {
   if (!start || !end) return ""
@@ -650,8 +650,8 @@ export default function JobsPage() {
                   <tr className="border-b text-xs text-muted-foreground">
                     <th className="px-3 py-3">Name</th>
                     <th className="px-3 py-3">CPU / GPU hours</th>
-                    <th className="px-3 py-3">Original start (SGT)</th>
-                    <th className="px-3 py-3">Deadline (SGT)</th>
+                    <th className="px-3 py-3">Original start ({MARKET_ZONE_LABEL})</th>
+                    <th className="px-3 py-3">Deadline ({MARKET_ZONE_LABEL})</th>
                     <th className="px-3 py-3">Flexibility</th>
                     <th className="px-3 py-3">Priority</th>
                     <th className="px-3 py-3">Exemption</th>
@@ -837,8 +837,8 @@ export default function JobsPage() {
                       <tr>
                         <th className="py-2.5 px-3">Job</th>
                         <th className="py-2.5 px-3">Outcome</th>
-                        <th className="py-2.5 px-3">Scheduled Start (SGT)</th>
-                        <th className="py-2.5 px-3">Scheduled End (SGT)</th>
+                        <th className="py-2.5 px-3">Scheduled Start ({MARKET_ZONE_LABEL})</th>
+                        <th className="py-2.5 px-3">Scheduled End ({MARKET_ZONE_LABEL})</th>
                         <th className="py-2.5 px-3 text-right">Cost</th>
                         <th className="py-2.5 px-3 text-right">Savings</th>
                       </tr>
@@ -919,7 +919,7 @@ export default function JobsPage() {
             <DialogHeader>
               <DialogTitle>{editing ? "Edit compute job" : "Create compute job"}</DialogTitle>
               <DialogDescription>
-                Enter resource requirements and allowed scheduling window. Times are shown in Singapore time (SGT).
+                Enter resource requirements and allowed scheduling window. Times are shown in ERCOT market local time (Central).
               </DialogDescription>
             </DialogHeader>
             {formOpen && <ConstraintParseReview
@@ -979,22 +979,22 @@ export default function JobsPage() {
                   />
                 </Field>
               </div>
-              <Field label="Original start time (SGT)">
+              <Field label={`Original start time (${MARKET_ZONE_LABEL})`}>
                 <JobDateTimePicker
                   id="job-original-start"
                   value={form.originalStartTime}
                   onChange={(val) => setForm({ ...form, originalStartTime: val })}
-                  placeholder="Select start date & hour (SGT)..."
+                  placeholder={`Select start date & hour (${MARKET_ZONE_LABEL})...`}
                   mode="start"
                   required
                 />
               </Field>
-              <Field label="Deadline (SGT)">
+              <Field label={`Deadline (${MARKET_ZONE_LABEL})`}>
                 <JobDateTimePicker
                   id="job-deadline"
                   value={form.deadline}
                   onChange={(val) => setForm({ ...form, deadline: val })}
-                  placeholder="Select deadline (SGT)..."
+                  placeholder={`Select deadline (${MARKET_ZONE_LABEL})...`}
                   mode="deadline"
                   minDateTime={form.originalStartTime}
                   required
@@ -1105,12 +1105,12 @@ export default function JobsPage() {
                 <span className="font-medium text-foreground">{jobToDelete.cpuHours} CPU-hrs · {jobToDelete.gpuHours} GPU-hrs</span>
               </div>
               <div className="flex justify-between">
-                <span>Baseline Start (SGT):</span>
-                <span className="font-medium text-foreground">{formatSgtDateTime(jobToDelete.originalStartTime)}</span>
+                <span>Baseline Start ({MARKET_ZONE_LABEL}):</span>
+                <span className="font-medium text-foreground">{formatMarketDateTime(jobToDelete.originalStartTime)}</span>
               </div>
               <div className="flex justify-between">
-                <span>Deadline (SGT):</span>
-                <span className="font-medium text-foreground">{formatSgtDateTime(jobToDelete.deadline)}</span>
+                <span>Deadline ({MARKET_ZONE_LABEL}):</span>
+                <span className="font-medium text-foreground">{formatMarketDateTime(jobToDelete.deadline)}</span>
               </div>
             </div>
           )}

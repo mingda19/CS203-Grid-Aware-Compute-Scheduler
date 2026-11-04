@@ -3,7 +3,7 @@
 import * as React from "react"
 import { jobsApi, type ConstraintDraft, type ConstraintParseResponse } from "@/lib/api"
 import { constraintReviewBlocker } from "@/lib/constraint-review"
-import { formatSgtDateTime, SGT_TIMEZONE } from "@/lib/date-utils"
+import { formatMarketDateTime, MARKET_TIMEZONE, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { Button } from "@/components/ui/button"
 
 type Review = { result: ConstraintParseResponse; draft: ConstraintDraft; raw: string }
@@ -38,7 +38,7 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
     setConfirmed(false)
     onPendingChange(true)
     try {
-      const response = await jobsApi.parseConstraints({ rawConstraints: raw, draft, timeZone: SGT_TIMEZONE })
+      const response = await jobsApi.parseConstraints({ rawConstraints: raw, draft, timeZone: MARKET_TIMEZONE })
       if (id !== requestId.current) return
       if (!response.success || !response.data) throw new Error(response.message || "Could not parse constraints")
       setReview({ result: response.data, draft, raw })
@@ -54,7 +54,7 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
     <section aria-label="Natural-language constraints" className="mt-4 space-y-3 rounded-lg border bg-muted/20 p-4">
       <div>
         <label htmlFor="raw-job-constraints" className="text-sm font-medium">Describe scheduling constraints</label>
-        <p id="constraints-help" className="text-xs text-muted-foreground">Optional. Describe timing, flexibility, priority, or exemption. Times are interpreted in Singapore time (SGT). Parsing does not save or change the job.</p>
+        <p id="constraints-help" className="text-xs text-muted-foreground">Optional. Describe timing, flexibility, priority, or exemption. Times are interpreted in ERCOT market local time (Central). Parsing does not save or change the job.</p>
       </div>
       <textarea id="raw-job-constraints" aria-describedby="constraints-help" maxLength={1000} rows={3}
         className="w-full rounded-md border bg-background p-3 text-sm"
@@ -86,8 +86,8 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
 
 export function ConstraintComparison({ raw, result }: { raw: string; result: ConstraintParseResponse }) {
   const values: Array<[keyof ConstraintDraft, string, string]> = [
-    ["originalStartTime", "Original start (SGT)", result.fields.originalStartTime ? formatSgtDateTime(result.fields.originalStartTime) : "Not set"],
-    ["deadline", "Deadline (SGT)", result.fields.deadline ? formatSgtDateTime(result.fields.deadline) : "Not set"],
+    ["originalStartTime", `Original start (${MARKET_ZONE_LABEL})`, result.fields.originalStartTime ? formatMarketDateTime(result.fields.originalStartTime) : "Not set"],
+    ["deadline", `Deadline (${MARKET_ZONE_LABEL})`, result.fields.deadline ? formatMarketDateTime(result.fields.deadline) : "Not set"],
     ["flexibilityWindowHours", "Flexibility", result.fields.flexibilityWindowHours == null ? "Not set" : `${result.fields.flexibilityWindowHours} hours`],
     ["priority", "Priority", result.fields.priority ?? "Not set"],
     ["isExempt", "Exempt from rescheduling", result.fields.isExempt == null ? "Not set" : result.fields.isExempt ? "Yes" : "No"],

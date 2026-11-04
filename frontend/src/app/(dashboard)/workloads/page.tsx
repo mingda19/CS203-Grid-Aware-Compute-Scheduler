@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { workloadScheduleApi, type WorkloadSchedule } from "@/lib/api"
-import { formatSgtDateTime } from "@/lib/date-utils"
+import { formatMarketDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 
 export default function WorkloadsPage() {
   const [entries, setEntries] = React.useState<WorkloadSchedule[]>([])
@@ -79,13 +79,13 @@ export default function WorkloadsPage() {
         : error ? <p role="alert" className="py-12 text-center text-destructive">{error} Use Refresh to retry.</p>
         : !entries.length ? <div className="space-y-3 py-12 text-center"><p>No workload schedules have been saved.</p><Button asChild><Link href="/approvals">Review and apply a recommendation</Link></Button></div>
         : <div className="overflow-x-auto"><table className="w-full text-left text-sm">
-          <caption className="sr-only">Saved workload schedules in Singapore time</caption>
-          <thead><tr>{["Job", "Cluster", "Start (SGT)", "End (SGT)", "Recorded status", "Projected savings", "Actions"].map(label => <th key={label} className="p-3">{label}</th>)}</tr></thead>
+          <caption className="sr-only">Saved workload schedules in market local time</caption>
+          <thead><tr>{["Job", "Cluster", `Start (${MARKET_ZONE_LABEL})`, `End (${MARKET_ZONE_LABEL})`, "Recorded status", "Projected savings", "Actions"].map(label => <th key={label} className="p-3">{label}</th>)}</tr></thead>
           <tbody>{entries.map(entry => <tr key={entry.id} className="border-t">
             <td className="p-3 font-medium">{entry.title}</td>
             <td className="p-3">{entry.cluster}</td>
-            <td className="p-3">{formatSgtDateTime(entry.startUtc)}</td>
-            <td className="p-3">{formatSgtDateTime(entry.endUtc)}</td>
+            <td className="p-3">{formatMarketDateTime(entry.startUtc)}</td>
+            <td className="p-3">{formatMarketDateTime(entry.endUtc)}</td>
             <td className="p-3">{entry.status}</td>
             <td className="p-3">{entry.savings ?? "Unavailable"}</td>
             <td className="p-3">
@@ -121,12 +121,12 @@ export default function WorkloadsPage() {
               <span className="font-medium text-foreground">{scheduleToDelete.cluster}</span>
             </div>
             <div className="flex justify-between">
-              <span>Start (SGT):</span>
-              <span className="font-medium text-foreground">{formatSgtDateTime(scheduleToDelete.startUtc)}</span>
+              <span>Start ({MARKET_ZONE_LABEL}):</span>
+              <span className="font-medium text-foreground">{formatMarketDateTime(scheduleToDelete.startUtc)}</span>
             </div>
             <div className="flex justify-between">
-              <span>End (SGT):</span>
-              <span className="font-medium text-foreground">{formatSgtDateTime(scheduleToDelete.endUtc)}</span>
+              <span>End ({MARKET_ZONE_LABEL}):</span>
+              <span className="font-medium text-foreground">{formatMarketDateTime(scheduleToDelete.endUtc)}</span>
             </div>
           </div>
         )}

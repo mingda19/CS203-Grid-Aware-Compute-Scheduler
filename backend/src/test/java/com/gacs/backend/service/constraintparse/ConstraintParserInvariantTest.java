@@ -29,7 +29,7 @@ class ConstraintParserInvariantTest {
 
     private static final int INPUTS = 5_000;
     private static final long SEED = 20261101L;
-    private static final ZoneId ZONE = ZoneId.of("Asia/Singapore");
+    private static final ZoneId ZONE = ZoneId.of("America/Chicago");
     private static final ZonedDateTime NOW = ZonedDateTime.of(2026, 11, 2, 14, 0, 0, 0, ZONE);
 
     private static final String[] PIECES = {

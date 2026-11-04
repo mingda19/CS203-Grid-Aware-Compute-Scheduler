@@ -17,7 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter }
 import { Button } from "@/components/ui/button"
 import { DataStatusBadge } from "@/components/ui/data-status-badge"
 import { priceApi, type PricePoint, type PriceForecastPoint } from "@/lib/api"
-import { formatSgtDateTime, formatSgtChartTick } from "@/lib/date-utils"
+import { formatMarketDateTime, formatMarketChartTick, marketZoneAbbrev, MARKET_TIMEZONE, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 
 export type HorizonPreset = "24h" | "48h" | "7d"
 
@@ -53,7 +53,7 @@ export interface TimelineDataPoint {
   key: string
   rawUtc: string
   timeLabel: string
-  fullTimeSgt: string
+  fullTimeLocal: string
   actualPrice: number | null
   forecastPrice: number | null
   forecastUpper: number | null
@@ -191,8 +191,8 @@ export function UnifiedPriceTimeline({
       data.push({
         key: rawUtc,
         rawUtc,
-        timeLabel: formatSgtChartTick(rawUtc, true),
-        fullTimeSgt: formatSgtDateTime(rawUtc),
+        timeLabel: formatMarketChartTick(rawUtc, true),
+        fullTimeLocal: formatMarketDateTime(rawUtc),
         actualPrice: price,
         forecastPrice: null,
         forecastUpper: null,
@@ -233,8 +233,8 @@ export function UnifiedPriceTimeline({
       data.push({
         key: rawUtc,
         rawUtc,
-        timeLabel: formatSgtChartTick(rawUtc, true),
-        fullTimeSgt: formatSgtDateTime(rawUtc),
+        timeLabel: formatMarketChartTick(rawUtc, true),
+        fullTimeLocal: formatMarketDateTime(rawUtc),
         actualPrice: null,
         forecastPrice: price,
         forecastUpper: null,
@@ -296,8 +296,8 @@ export function UnifiedPriceTimeline({
       }
     }
 
-    const peakWindow = peakUtc ? `${formatSgtChartTick(peakUtc, true)} SGT` : "—"
-    const lowestWindow = lowestUtc ? `${formatSgtChartTick(lowestUtc, true)} SGT` : "—"
+    const peakWindow = peakUtc ? `${formatMarketChartTick(peakUtc, true)} ${marketZoneAbbrev(peakUtc)}` : "—"
+    const lowestWindow = lowestUtc ? `${formatMarketChartTick(lowestUtc, true)} ${marketZoneAbbrev(lowestUtc)}` : "—"
 
     const avgCleanShare = null
     const maxCleanShare = null
@@ -392,7 +392,7 @@ export function UnifiedPriceTimeline({
               />
             </div>
             <CardDescription className="text-xs text-muted-foreground mt-0.5">
-              Recorded settlements (emerald) and model forecasts (violet). All times are shown in SGT.
+              Recorded settlements (emerald) and model forecasts (violet). All times are shown in ERCOT market local time.
             </CardDescription>
           </div>
 
@@ -476,7 +476,7 @@ export function UnifiedPriceTimeline({
           </div>
           <div className="flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
-            <span className="text-cyan-600 dark:text-cyan-400 font-semibold">Now (SGT)</span>
+            <span className="text-cyan-600 dark:text-cyan-400 font-semibold">Now ({MARKET_ZONE_LABEL})</span>
           </div>
         </div>
       </CardHeader>
@@ -520,7 +520,7 @@ export function UnifiedPriceTimeline({
                   axisLine={false}
                   tickMargin={8}
                   minTickGap={40}
-                  tickFormatter={(val: string) => formatSgtChartTick(val, true)}
+                  tickFormatter={(val: string) => formatMarketChartTick(val, true)}
                   style={{ fontSize: "11px", fill: "currentColor", opacity: 0.7 }}
                 />
 
@@ -567,14 +567,14 @@ export function UnifiedPriceTimeline({
                         </div>
 
                         <div className="text-[10px] text-muted-foreground/75 font-mono pt-0.5">
-                          {pt.fullTimeSgt}
+                          {pt.fullTimeLocal}
                         </div>
                       </div>
                     )
                   }}
                 />
 
-                {/* Transition Divider Reference Line ("Now SGT") */}
+                {/* Transition Divider Reference Line ("Now") */}
                 {nowPointKey && (
                   <ReferenceLine
                     x={nowPointKey}
@@ -582,7 +582,7 @@ export function UnifiedPriceTimeline({
                     strokeDasharray="3 3"
                     strokeWidth={1.8}
                     label={{
-                      value: "● Now (SGT)",
+                      value: `● Now (${MARKET_ZONE_LABEL})`,
                       position: "insideTopRight",
                       fill: "#38bdf8",
                       fontSize: 10,
@@ -642,7 +642,7 @@ export function UnifiedPriceTimeline({
           </div>
 
           <div className="text-[11px] text-muted-foreground">
-            Displaying {chartData.length} intervals standardized to <strong>Asia/Singapore (SGT)</strong>
+            Displaying {chartData.length} intervals in <strong>{MARKET_TIMEZONE}</strong>
           </div>
         </CardFooter>
       )}
