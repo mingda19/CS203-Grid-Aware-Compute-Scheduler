@@ -50,7 +50,7 @@ public class AuditEventController {
 
     @Operation(
         summary = "Record an audit event",
-        description = "Records an immutable audit event for an operator action (APPROVE, REJECT, REVISE, etc.). "
+        description = "Records an immutable audit event for an operator action (APPROVE, REJECT, REVISE, REVOKE, etc.). "
             + "Schedule decisions use the same ownership, validity and transactional checks as /api/schedules/{runId}/{action}; "
             + "their schedule hash is computed server-side. Requires ROLE_USER or ROLE_ADMIN. "
             + "Actor identity is extracted from the authenticated security context."
@@ -79,8 +79,15 @@ public class AuditEventController {
     public ResponseEntity<ApiResponse<AuditEventResponseDto>> recordEvent(
             @Valid @RequestBody AuditEventRequestDto request, Principal principal
     ) {
+        // REVOKE belongs with the other three, not in the default branch. Left there it recorded a
+        // governance action straight into the audit log through auditEventService.recordEvent, which
+        // checks neither that the caller owns the run nor that the run is in a state a revocation is
+        // legal from - so anyone authenticated could append a REVOKE event naming someone else's run,
+        // and a run's own owner could "revoke" a plan that was never approved. Every state and
+        // ownership rule for a decision lives in ScheduleReviewService.decide; routing REVOKE through
+        // it is what makes this endpoint and POST /api/schedules/{runId}/revoke enforce the same gate.
         AuditEventResponseDto event = switch (request.actionType()) {
-            case APPROVE, REJECT, REVISE -> {
+            case APPROVE, REJECT, REVISE, REVOKE -> {
                 var decision = scheduleReviewService.decide(UUID.fromString(request.runId().trim()),
                         request.actionType(), request.operatorRationale(), principal.getName());
                 yield auditEventService.getEventById(decision.decisionId());

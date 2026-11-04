@@ -34,6 +34,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.never;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
@@ -406,5 +407,89 @@ class AuditEventControllerTest {
                 .andExpect(jsonPath("$.data.scheduleHashMatches").value(true))
                 .andExpect(jsonPath("$.data.schedule.items[0].jobId").value(101))
                 .andExpect(jsonPath("$.data.schedule.items[0].scheduledStart").value("2026-10-28T10:00:00Z"));
+    }
+
+    // ------------------------------------------------------------------ REVOKE routing (task 1)
+
+    /**
+     * REVOKE must go through {@link ScheduleReviewService#decide}, like APPROVE/REJECT/REVISE.
+     *
+     * <p>It previously fell to this endpoint's {@code default} branch and was written straight to the
+     * audit log by {@code AuditEventService.recordEvent}, which checks neither ownership nor review
+     * state. That let any authenticated caller append a REVOKE event naming a run they do not own,
+     * and let an owner "revoke" a plan that was never approved - a governance bypass of the one gate
+     * that is supposed to decide whether a revocation is legal at all.
+     */
+    @Test
+    @WithMockUser(username = "operator@gacs.internal", roles = "USER")
+    @DisplayName("REVOKE is routed through the review gate, not written straight to the audit log")
+    void recordEvent_RevokeRoutesThroughReviewGate() throws Exception {
+        AuditEventRequestDto request = new AuditEventRequestDto(AuditActionType.REVOKE, validRunId,
+                validHash, "Halting: cooling margin lost.");
+        AuditEventResponseDto recorded = new AuditEventResponseDto(9L, "operator@gacs.internal",
+                AuditActionType.REVOKE, Instant.parse("2026-10-28T11:00:00Z"), validRunId, validHash,
+                "Halting: cooling margin lost.");
+        when(scheduleReviewService.decide(UUID.fromString(validRunId), AuditActionType.REVOKE,
+                "Halting: cooling margin lost.", "operator@gacs.internal"))
+                .thenReturn(new ScheduleDecisionDto(9L, UUID.fromString(validRunId), AuditActionType.REVOKE,
+                        1L, "Halting: cooling margin lost.", recorded.timestamp(), ReviewState.REJECTED));
+        when(auditEventService.getEventById(9L)).thenReturn(recorded);
+
+        mockMvc.perform(post("/api/audit-events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.actionType").value("REVOKE"));
+
+        verify(scheduleReviewService).decide(UUID.fromString(validRunId), AuditActionType.REVOKE,
+                "Halting: cooling margin lost.", "operator@gacs.internal");
+        // The bypass: recordEvent must never be the path a REVOKE takes.
+        verify(auditEventService, never()).recordEvent(any());
+    }
+
+    /**
+     * A REVOKE the gate refuses records nothing. Guards the half of the bypass that matters most:
+     * before the fix the refusal never happened, because the gate was never consulted.
+     */
+    @Test
+    @WithMockUser(username = "operator@gacs.internal", roles = "USER")
+    @DisplayName("A REVOKE the review gate refuses returns its status and records no audit event")
+    void recordEvent_RefusedRevokeRecordsNothing() throws Exception {
+        AuditEventRequestDto request = new AuditEventRequestDto(AuditActionType.REVOKE, validRunId,
+                validHash, "Trying to revoke a plan that was never approved.");
+        when(scheduleReviewService.decide(any(), eq(AuditActionType.REVOKE), any(), any()))
+                .thenThrow(new com.gacs.backend.exception.ScheduleExportRejectedException(
+                        com.gacs.backend.exception.ScheduleExportRejectedException.Reason.ALREADY_DECIDED,
+                        "Schedule run " + validRunId + " is pending, not approved, so there is no approval to revoke"));
+
+        mockMvc.perform(post("/api/audit-events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.data.reason").value("ALREADY_DECIDED"));
+
+        verify(auditEventService, never()).recordEvent(any());
+    }
+
+    /** A run the caller does not own is a 404, and still records nothing. */
+    @Test
+    @WithMockUser(username = "operator@gacs.internal", roles = "USER")
+    @DisplayName("A REVOKE naming an unowned run is 404 and records no audit event")
+    void recordEvent_RevokeOnUnownedRunRecordsNothing() throws Exception {
+        AuditEventRequestDto request = new AuditEventRequestDto(AuditActionType.REVOKE, validRunId,
+                validHash, "Revoking someone else's run.");
+        when(scheduleReviewService.decide(any(), eq(AuditActionType.REVOKE), any(), any()))
+                .thenThrow(new ResourceNotFoundException("Optimization plan not found"));
+
+        mockMvc.perform(post("/api/audit-events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.message").value("Optimization plan not found"));
+
+        verify(auditEventService, never()).recordEvent(any());
     }
 }
