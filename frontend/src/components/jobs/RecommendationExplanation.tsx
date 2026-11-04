@@ -10,7 +10,7 @@ export function RecommendationExplanation({ item, explanation, loading, error, o
 }) {
   return (
     <details className="rounded-lg border bg-muted/30 p-3 text-xs">
-      <summary className="cursor-pointer font-medium">Why this recommendation? — {item.jobName}</summary>
+      <summary className="cursor-pointer font-medium">Why this recommendation? — {item.jobName} (#{item.jobId})</summary>
       <div className="mt-3 space-y-3">
         {loading ? <p role="status">Loading explanation…</p> : error ? (
           <div role="alert">{error} <button type="button" onClick={onRetry} className="underline">Retry</button></div>
