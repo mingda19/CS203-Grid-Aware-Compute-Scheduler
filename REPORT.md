@@ -1,193 +1,462 @@
-# Usability batch 2–6 — report
+# REPORT — `fix/revoke-calendar-elapsed`
 
-Branch `fix/usability-batch-2-to-6`, off `chore/retouch-frontend`. Five bugs, one commit (or
-two, where the backend and frontend halves are separable) per bug. This file covers what
-changed, what was deliberately left undone, every existing test left failing on purpose (and
-why), and everything that needs Mingda's call rather than mine.
+Base: `chore/retouch-frontend` (294f7c5). Three commits, one per task.
 
-I could not run the app, reach a database, or see the UI in this environment (no `.env`, no
-Supabase access, no JDK 25 — see **Environment note** at the end). Everything below is backed by
-reading the code and running the test suites; nothing here is a claim of visual verification.
+| | |
+|---|---|
+| `e03f1db` | Task 1 — revoke: governance bypass + error mapping |
+| `721d878` | Task 2 — `appliedAt` exposed end to end |
+| `5d4899d` | Task 3 — reschedule jobs whose start has passed |
 
-## Bug 2 — unidentifiable jobs in error messages
+## Test results
 
-**Changed:**
-- `backend/.../service/allocation/OptimizerJob.java`: added `identity()` — `"id 23 ('gpt-agent-1')"`
-  — used only at the two `OptimizationProblemFactory` call sites that build operator-facing
-  messages (`"Job ... cannot finish between ..."` and `"No forecast price for ... which job ...
-  uses"`). `label()` itself (`"id 23"`) is untouched: its exact wording is pinned by
-  `PriorityConflictTest` and documented verbatim in `docs/api-contract.md` for a *different*
-  message (`AllocationResult`'s priority-conflict explanation), which is out of scope for this bug.
-- Frontend: the jobs table, the optimizer's "Job Placement Details" table, the "why this
-  recommendation" explanation, and the delete-confirmation dialog all now show a job's numeric
-  `#id` next to its name.
-- New tests: `OptimizerJobTest` (new), plus extended assertions in `OptimizationProblemFactoryTest`
-  checking the job's name now appears alongside "job id N".
+| Suite | Before (untouched base) | After |
+|---|---|---|
+| `backend` (`mvn test`) | 719 run, **1 failure**, 16 skipped | 760 run, **1 failure**, 16 skipped |
+| `frontend` (`npx vitest run`) | 151 passed | 174 passed |
+| `frontend` (`npx tsc --noEmit`) | clean | clean |
 
-**Left undone / assumption:** duplicate job names are still allowed. I treated "should names be
-unique?" as a product decision I shouldn't make unilaterally — enforcing uniqueness now could
-reject existing, legitimately-duplicated data (e.g. recurring jobs with the same name), and the
-bug report's actual complaint ("I can't tell jobs apart") is fully addressed by showing the id
-everywhere a job appears, without forcing names to be unique. **Needs Mingda's call** if unique
-names are also wanted.
+41 backend tests and 23 frontend tests added. **The one backend failure is pre-existing and
+unrelated** — see "The pre-existing backend failure" below. It is the *same single test* before and
+after my changes, and I did not touch it.
 
-## Bug 3 — approve and reject both succeed on one schedule
+### Toolchain notes (sandbox, not the repo)
 
-**Changed:** this is the one bug in this batch with a real design trade-off; read this section
-before the others.
+- `./mvnw` could not run: the wrapper downloads Maven 3.9.16 from Maven Central and the sandbox
+  proxy answered `429`. I used the pre-installed `/opt/maven/bin/mvn` (3.9.11) instead. Same POM,
+  same surefire, same JVM.
+- `backend/pom.xml` sets `<java.version>25</java.version>` and only JDK 21 was installed, so
+  `release version 25 not supported`. I downloaded Temurin 25+36 to `/opt/jdk25` and ran with
+  `JAVA_HOME=/opt/jdk25`. **Neither of these is a repo change** — nothing in the tree was modified
+  to make the build run.
 
-- `ScheduleReviewService.decide()` now refuses *any* further decision on a run once it holds a
-  terminal one (`APPROVED`, `REJECTED`, or `REVISION_REQUESTED`) — including repeating the same
-  action — returning `409` with `data.reason = "ALREADY_DECIDED"` (new
-  `ScheduleExportRejectedException.Reason` value, reusing its existing HTTP-mapping plumbing).
-- Frontend: `decisionUnavailable()`/`planUnavailable()` in `schedule-review-utils.ts` mirror the
-  same terminal-state set, so Approve/Reject/Revise are each disabled once the plan already holds
-  a decision, and each button's label reflects what was decided ("Schedule approved", "Schedule
-  rejected") instead of leaving all three clickable regardless of state.
-- `docs/api-contract.md` §6.5 updated with a new subsection ("One terminal decision per run") and
-  a changelog row; the old line claiming "repeated requests ... create additional history
-  entries" is superseded rather than deleted, so the history of what changed and when stays
-  readable.
-- New test: `ScheduleDecisionStateMachineTest` (6 cases: reject/revise/re-approve after approve,
-  approve after reject, approve after revise, and a fresh PENDING run still working normally).
+## What I could not verify, because I cannot run the app
 
-**Why this is the batch's biggest trade-off.** The literal bug report says "allowing rejection of
-an already-approved schedule is a heuristic violation" and asks for one terminal decision per run
-— I implemented exactly that. But investigating it, I found this backend **intentionally**
-supported reversing a decision (reject-after-approve, revise-after-approve, etc.) as a real
-feature: the only way, in the existing design, to retroactively halt a schedule after it was
-approved and dispatched (`WorkloadSchedule` rows already created/started) is to reject or revise
-the same run after the fact, which `ScheduleGate`/`ScheduleApplicationService`'s execution-gating
-logic then uses to block further `Running` transitions. This is documented
-("Repeated requests, including retries, create additional history entries.") and exercised by
-seven existing test methods across three files, which this change leaves failing (per the task's
-hard rule: I did not touch their assertions). Running `./mvnw test`, these are the only
-failures/errors in the whole suite:
+Stated plainly, because several of these are the heart of the three reports:
 
-- `ScheduleDecisionIntegrationTest.allActionsAppendHistoryAndUseAuthenticatedDatabaseIdentity` —
-  drives APPROVE→REJECT→REVISE→APPROVE on one run and asserts all four succeed.
-- `ScheduleDecisionIntegrationTest.concurrentDecisionsSerializeAndLatestHistoryMatchesState` —
-  fires APPROVE and REJECT concurrently on one run and asserts both succeed.
-- `ScheduleEnforcementIntegrationTest.applicationIsIdempotentAndRejectionBlocksStarts` — approves,
-  applies, starts a workload Running, then **rejects the already-approved run to halt it**
-  (`decide(run,"reject")`) and checks that a later `Running` transition is then refused.
-- `ScheduleEnforcementIntegrationTest.revisionRequestedRunCannotBeAppliedOrStarted` — approves,
-  applies, then **revises the already-approved run** to invalidate the application.
-- `ScheduleEnforcementIntegrationTest.supersessionUsesApprovalOrderAndCannotBeRevived` — approves
-  two overlapping runs in sequence, then **rejects the one left APPROVED** to test it can't be
-  revived.
-- `ScheduleExportIntegrationTest.unapprovedPlans_Forbidden` — approve→reject→revise→approve on one
-  run, checking export is forbidden at each non-approved step in between.
-- `ScheduleExportIntegrationTest.newerApprovalOfSameJob_Stale` — approves two overlapping runs,
-  then **rejects the newer (currently-approved) one**, checking the older one's STALE reason
-  string.
+- **I never saw the UI.** No screenshot, no click, no rendered dialog. Every frontend claim below
+  rests on reading the code and on unit tests of the pure functions behind it. The confirmation
+  dialog's *markup* is covered only by `tsc`; its *logic* (which jobs are named, what the text says)
+  is covered by `elapsed-jobs.test.ts`.
+- **I never reached Postgres or a running Spring Boot process.** Backend behaviour is verified
+  through the two suites, including `@SpringBootTest` integration tests against the `test` profile.
+- **Task 1's leading hypothesis is unconfirmed and unconfirmable here.** Whether the operator's
+  process predates `/revoke` cannot be determined from the sandbox. I made the system behave sanely
+  either way rather than chasing it — see below.
+- **I did not observe the pre-existing failing test pass.** I observed it fail on the untouched base
+  branch, which establishes it is not mine. My explanation of *why* it fails is a diagnosis from
+  reading the code plus arithmetic, not an observation of it passing at another hour (the fixture
+  derives from the system clock, and no clock-faking tool is available here).
+- **No load, concurrency or performance claim.** The 409 lock-contention mapping is tested by
+  stubbing the exception, not by racing real transactions.
 
-**This needs Mingda's decision**, specifically: is "retract an approval via reject/revise" a
-capability the product still wants? If yes, the fix here is too strict and should be narrowed —
-e.g. a separate, explicitly-named "revoke" action distinct from the first-time decision, rather
-than overloading `reject`/`revise` to mean two different things depending on the run's current
-state (which is arguably part of why this bug exists in the first place: the UI offered "Reject"
-as if it were always a first decision, when on an approved run it actually revokes). If no, these
-seven tests should be rewritten (not by me, per the hard rule) to match the new contract.
+---
 
-## Bug 4 — double approval and duplicated workload-schedule rows
+# Task 1 — Revoke throws, and the exception reaches the global handler
 
-**Changed:** `WorkloadScheduleRepository` gained
-`deleteByOwnerEmailAndJobIdInAndRunIdNot(ownerEmail, jobIds, runId)`. `ScheduleApplicationService.apply()`
-calls it before inserting new rows, deleting any other run's calendar entries for the jobs it's
-about to (re)write. This is safe because `ScheduleGate.supersede()` already guarantees at most one
-`APPROVED` plan per job at a time — any other run sharing a job id is necessarily
-stale/rejected/invalidated, never a second valid approval.
+## The two defects named in the brief: both real, both fixed
 
-**Root cause, for the record:** `ScheduleGate.supersede()` only ever marked the *older*
-`OptimizationPlan` `STALE`; it never touched `WorkloadSchedule` rows a previous `apply()` call had
-already written. Re-optimizing and re-approving the same job three times left three rows.
+**1. `ScheduleDecision.action` missing `"REVOKE"`** (`frontend/src/lib/api.ts`). Confirmed. The
+decide() response for a revoke carries `action: "REVOKE"`, which did not fit the declared
+`"APPROVE" | "REJECT" | "REVISE"`. Extracted as `RecordedDecisionAction` and widened; the new
+`schedule-review-api.test.ts` case asserts `response.data?.action === "REVOKE"`, which only compiles
+because the type admits it.
 
-**New test:** `ScheduleEnforcementIntegrationTest.reapprovingAndApplyingSameJobSupersedesRatherThanAccumulates`
-(optimize→approve→apply twice for an overlapping job; asserts exactly one row survives, pointing
-at the newer run). Passes; no existing test conflicts.
+**2. `AuditEventController.recordEvent` routing `REVOKE` to `default`.** Confirmed, and it is the
+most serious thing in this branch. `default -> auditEventService.recordEvent(request)` writes an
+audit event with **no ownership check and no state check**, so:
 
-## Bug 5 — calendar view (overlap + date-line off-by-one)
+- any authenticated caller could append a `REVOKE` event naming a run they do not own, and
+- a run's own owner could "revoke" a plan that was never approved.
 
-**Changed**, both in `frontend/src/components/schedule-calendar/GoogleCalendarView.tsx`:
+`REVOKE` now joins `APPROVE, REJECT, REVISE` in the `switch`, so it goes through
+`ScheduleReviewService.decide` and inherits the operator-row lock, the plan write lock, the
+ownership lookup and the state machine. Four integration tests in
+`ScheduleEnforcementIntegrationTest` pin it: unowned → 404 with no event written and the approval
+still standing; pending → 409 `ALREADY_DECIDED` with no event; owner's own → 201, plan `REJECTED`,
+and `apply` then refused `NOT_APPROVED`. Three `@WebMvcTest` cases additionally assert
+`verify(auditEventService, never()).recordEvent(any())` on both the success and refusal paths — the
+bypass itself, not just its symptoms.
 
-- **Date-line bug.** `weekDays`/`monthCells`/`miniCalendarCells` built their grids with
-  local-timezone `Date` math (`getDay`/`setDate`/`getMonth`/`getFullYear`), while event-matching
-  and the `isToday`/`isSelected` flags used `getMarketDateString` (market-timezone-aware) on the
-  very same `Date`. Whenever the browser/server's local timezone isn't America/Chicago, those two
-  calendars can disagree on what day an instant falls on — which is exactly "the line pointed at
-  Nov 5 when the market date was Nov 4." `currentDate` is now a label anchor permanently pinned to
-  noon UTC on the market-local date being viewed (`marketDateLabelAnchor`), and every grid
-  builder/nav handler/title formatter uses new pure market-date-string arithmetic
-  (`addMarketDays`, `addMarketMonths`, `marketDayOfWeek`, `marketDaysInMonth`,
-  `marketDateStringFromParts` — all added to `date-utils.ts`, which stays the only module naming a
-  timezone) instead of local `Date` getters/setters. `currentHourDecimal` (the line's vertical
-  position) was already correct and is untouched.
-- **Overlap.** Week/day views rendered every event in a slot as a full-width absolutely-positioned
-  box at the same z-index, so overlapping jobs fully occluded each other. New `layoutEvents()`
-  assigns each event a lane via greedy interval-graph coloring within its own connected-overlap
-  cluster (so an unrelated event elsewhere in the same day still gets full width, rather than
-  every event in the day sharing the busiest moment's lane count); the week/day views render each
-  job as a narrower box side by side with the others in its slot, each independently clickable.
-  Month view already lists same-day jobs as a stacked, individually-clickable list (capped at 3
-  with "+N more") — that already satisfies "a way to reach each of them," so it's untouched.
+## A third defect I found: `ScheduleGate.DECISIONS` omitted `REVOKE`
 
-**New tests:** `date-utils.test.ts` gained 6 cases for the new helpers (including one asserting
-the anchor round-trips through `getMarketDateString`, the exact invariant the fix depends on).
-New `GoogleCalendarView.test.ts` (5 cases) covers `layoutEvents`, including the "transitively
-overlapping chain reuses a freed lane instead of needing one lane per event" case.
+```java
+private static final Set<AuditActionType> DECISIONS =
+        EnumSet.of(APPROVE, REJECT, REVISE);   // REVOKE missing
+```
 
-**Could not verify:** I could not load the calendar in a browser, so I could not screenshot the
-fix. The logic is covered by the tests above and by reasoning through the DST/offset math, not by
-looking at it.
+This set is what `requireMatchingApproval` and `requireCurrent` use to ask the audit log for a run's
+*latest decision*. With `REVOKE` absent, a revoked run's latest decision still read as the `APPROVE`
+it withdrew.
 
-## Bug 6 — workload category on jobs
+**Nothing reachable today depends on it** — a revoked plan is `REJECTED`, so `requireApproved`
+refuses it before the audit log is consulted, and a revoked run cannot be re-approved. I added
+`REVOKE` anyway: an execution gate that would read a withdrawn approval as a run's current decision
+is the wrong default to leave for whichever caller asks next. Flagged as *latent*, not as a live bug.
 
-**Changed, end to end:**
-- Backend: new `WorkloadCategory` enum (`ML_TRAINING`, `CRYPTO_MINING`, `HPC_BATCH`,
-  `HVAC_PRE_COOL`, `GRID_ALERT` — matching `GoogleCalendarView.tsx`'s `WorkloadType`/`TYPE_CONFIG`
-  exactly, same pattern as `JobPriority`), a `workload_category` column on `jobs` (migration
-  `V7__add_job_workload_category.sql`, following the V3–V6 convention: `ddl-auto=update` creates
-  it automatically, this file is the documented, idempotent, hand-applied equivalent plus the
-  `CHECK` constraint `ddl-auto` can't express), wired through `JobRequestDto`/`JobResponseDto`/
-  `JobService` validation.
-- `ScheduleApplicationService.apply()` now writes the job's own `workloadCategory` into the
-  dispatched `WorkloadSchedule.type`, replacing the old heuristic ("any GPU hours at all implies
-  ML Training, else HPC Batch") that the job never actually chose.
-- Frontend: a "Workload category" dropdown on the job create/edit form (reusing the exact label
-  set the calendar already defines), shown in the jobs table and job detail view.
-- New tests: `JobServiceTest` (+114 lines covering create/update/validation), `ScheduleEnforcementIntegrationTest.appliedScheduleUsesJobsWorkloadCategoryNotGpuHeuristic`.
+## The exception audit
 
-**Flagged assumption, not a blocker:** `GRID_ALERT` ("Grid Peak Alert" in the calendar's display
-name) reads like a system/grid-event pseudo-category, not something an operator would ever
-describe their *own* job as — but the task said to mirror "whatever other categories the calendar
-view already defines," so it's included in the job-creation dropdown as given. **Needs Mingda's
-call** on whether to exclude it from job creation (it would stay a legitimate value for
-system-dispatched calendar entries either way).
+I read `GlobalExceptionHandler` and traced every exception that can escape
+`ScheduleReviewService.decide`. The catch-all does return a proper `ApiResponse` envelope, so the
+real problem is narrower and worse than "no envelope": **failures that should be 4xx were arriving
+as 500**, and a 500 tells the client nothing it can act on. It cannot distinguish a transient race
+(retry) from an endpoint the server does not have (reload/redeploy) from a plan that moved
+underneath the decision (refresh) — so it cannot tell the operator what to do, and the button
+appears to do nothing.
 
-## Test suite results
+Already correctly mapped (verified, unchanged): `ResourceNotFoundException` → 404,
+`ScheduleExportRejectedException` → its reason's status + `data.reason`, `BadCredentialsException` →
+401, `IllegalArgumentException` → 400, `AccessDeniedException` → 403,
+`MethodArgumentNotValidException` → 400.
 
-**Backend** (`cd backend && ./mvnw test`): this environment has only JDK 21 installed, but the
-project targets Java 25 (`pom.xml`'s `java.version`) — `./mvnw test` fails immediately with
-"release version 25 not supported" regardless of any change in this PR; I could not install a
-JDK. I verified everything here with `-Dmaven.compiler.release=21` as a local-only override (never
-committed). With that override: **710 run, 687 passing, 6 failures, 1 error, 16 skipped** — the
-baseline was 694 passing / 0 failures / 16 skipped; the 7 broken tests are exactly the ones listed
-under Bug 3 above, and the roughly +16 net new tests are this batch's new coverage (2 +6 +1 +5 are
-frontend/backend-split; backend alone: `OptimizerJobTest` +2, `ScheduleDecisionStateMachineTest`
-+6, `ScheduleEnforcementIntegrationTest` +2, `JobServiceTest` additions). **Please re-run on a
-machine with JDK 25 to get a real baseline-vs-now comparison** — I'm confident the 7 failures are
-real and caused by the Bug 3 change (I confirmed each one individually), but I cannot rule out the
-JDK 21 override masking or introducing something unrelated.
+Added:
 
-**Frontend** (`cd frontend && npm install && npx tsc --noEmit && npx vitest run`): clean.
-`tsc --noEmit` reports no errors. `vitest run`: **150 passing, 0 failing** (21 test files) — up
-from the stated baseline of 135, consistent with this batch's new test files
-(`GoogleCalendarView.test.ts`, additions to `date-utils.test.ts` and `schedule-review-utils.test.ts`).
+| Exception | Was | Now | Why it is reachable from a revoke |
+|---|---|---|---|
+| `ConcurrencyFailureException` (incl. `CannotAcquireLock…`, `PessimisticLockingFailure…`, `OptimisticLockingFailure…`) | 500 | **409** | Every decision takes `PESSIMISTIC_WRITE` on the plan row via `findOwnedForUpdate`, after locking the operator row. Two operator actions racing on one run, or a decision racing apply/export, lands here. 409 is also what `useScheduleReview` already turns into the "refresh plans" banner. |
+| `DataIntegrityViolationException` | 500 | **409** | A constraint the database refuses is a conflict with stored data, not a server fault. |
+| `jakarta.persistence.EntityNotFoundException` | 500 | **404** | A plan reads its owner through a `LAZY` `@ManyToOne`; if that row is gone when the proxy resolves, the resource genuinely no longer exists. |
+| `NoResourceFoundException` | container error page | **404 envelope** naming the path | This is the version-skew shape: a browser newer than its deployment. Spring's own error body is not an `ApiResponse`, so a client reading `message` off every response had nothing to show. |
+| `HttpRequestMethodNotSupportedException` | container error page | **405 envelope** | Same reasoning. |
 
-## Environment note
+Driver and SQL text is logged, never returned — `DataIntegrityViolationException`'s message carries
+column names and types.
 
-No `.env`, no Supabase/database access, and no browser available in this session — every claim
-above is from reading code and running test suites, never from using the running app. Flagged
-separately because the task instructions asked for explicit honesty on this point: I did not
-visually verify the calendar fix, the job form's new dropdown, or any other UI change.
+I deliberately did **not** add a handler for `IllegalStateException`. Three existing tests
+(`ScheduleDecisionIntegrationTest`'s rollback tests) assert 500 for an injected
+`IllegalStateException`, and they are right to: an unexpected internal failure *should* be a 500.
+Mapping it would have broken them for no gain.
+
+## Frontend hardening
+
+`fetchJson` already survived an HTML body (`response.json().catch(() => ({}))`), but it trusted the
+*shape* of whatever parsed. Fixed in `api.ts`:
+
+- `apiErrorMessage(status, body)` takes `message` only when it really is a non-blank **string**. A
+  gateway returning `{"message": {...}}` previously became the string `"[object Object]"`.
+- `apiErrorReason(body)` takes `data.reason` only when it is a string.
+- 404/405 get wording that names the likely cause: *"This action is not available on the server
+  (HTTP 404). The server may be running an older version than this page…"* — which is the actionable
+  version of the operator's "does nothing".
+- A transport failure (server down, DNS, CORS preflight refused) was rejecting with a bare
+  `TypeError("Failed to fetch")` that reached the UI as the explanation for a failed decision. It is
+  now an `ApiRequestError` with `status: 0` and a readable message, so every caller has one error
+  type to handle.
+
+`RejectPlanModal` already renders `error`, so these messages reach the operator without a UI change.
+
+## On the leading hypothesis
+
+I could not confirm it. What I did instead: made both sides behave sanely whichever is true. If the
+server is old, the client now says so specifically and names the path; if the server is current, the
+governance bypass and the mis-statused failures are fixed regardless. **I did not add any version
+negotiation or capability endpoint** — that is a larger design decision and nothing in the brief
+asked for it.
+
+---
+
+# Task 2 — "Add to calendar" relights after the schedule was applied
+
+The diagnosis in the brief is exactly right, and I confirmed each part:
+`OptimizationPlan.appliedAt` exists with a Lombok getter; `grep -rn appliedAt
+backend/src/main/java/com/gacs/backend/dto/` returns nothing; `calendarUnavailable()` checked only
+`reviewState === "APPROVED"`.
+
+The other half of the cause is in `use-schedule-review.ts`: "already added" was tracked in
+`addedRuns`, a `React.useState` set, which does not survive a remount. So the client's only record
+of the fact was lost on navigation and the server never told it otherwise.
+
+Fixed end to end:
+
+- `ScheduleApplicationService.PlanDetail` gains `appliedAt` (`Instant`), from `plan.getAppliedAt()`.
+- `SchedulePlanDetail` in `api.ts` gains `appliedAt: string | null`.
+- `calendarUnavailable()` returns `"This schedule is already on the workload calendar."` once it is
+  set.
+- The hook reads server truth first: `addedToCalendar: !!plan?.appliedAt || addedRuns.has(selected)`,
+  with `addedRuns` kept only as the optimistic half between a successful apply and the next detail
+  load. `addToCalendar` also mirrors `appliedAt` locally on success so the panel reads as done
+  without a refetch.
+
+The button then renders **"Added to calendar"** and is disabled — done rather than available,
+matching how the decision buttons already render a terminal state as "Schedule approved".
+
+**Two ordering decisions, both tested.** The applied check sits *after* `planUnavailable()` (a stale
+or unreadable plan needs regenerating, which matters more than whether it once reached the calendar)
+and *before* the "no scheduled jobs" case (an applied plan is finished either way, and "already
+added" is the more informative answer).
+
+Tests: three new `calendarUnavailable` cases in `schedule-review-utils.test.ts` covering the new
+branch and both orderings; two backend integration tests asserting the DTO reports `appliedAt`
+absent before `apply` and present after, and that it survives re-application (apply is idempotent,
+and the UI now depends on the stamp staying set).
+
+Fixture updates: `appliedAt: null` added to two `SchedulePlanDetail` literals. Mechanical, forced by
+the new required field. **No assertion changed.**
+
+---
+
+# Task 3 — Elapsed jobs discarded instead of rescheduled
+
+The diagnosis in the brief is correct. `JobWindow.startSlots()` caps the loop at
+`min(job.latestStart(), lastSlot)`, `latestStart()` is `originalStartTime +
+flexibilityWindowHours`, and `firstSlot()` clamps forward to `earliestStart`. For an elapsed job
+`latest < firstSlot()`, the loop body never runs, and the job is `NO_FEASIBLE_SLOT`.
+
+## Where I put the change, and why not where it looks like it goes
+
+The obvious move is a `rescheduleElapsedJobs` boolean on `OptimizationProblem`, threaded into
+`JobWindow`. I did not do that, because `GreedyAllocator.cheapestPlan`,
+`cheapestPlanEndingAt` and `SynchronizedGroupPlacer` each build `new JobWindow(job, prices,
+earliestStart)` from a `LocalDateTime` parameter rather than from the problem. Threading a flag
+through all of them is five chances to miss one, and a solver that disagreed with the plan checker
+about a job's window is precisely the class of bug `JobWindow`'s single `usable()` predicate exists
+to prevent.
+
+Instead the re-anchoring is **one field on `OptimizerJob`**:
+
+```java
+public LocalDateTime latestStart() {
+    if (exempt) return originalStartTime;
+    return rescheduledFromElapsedStart ? deadline : originalStartTime.plusHours(flexibilityWindowHours);
+}
+```
+
+`OptimizationProblemFactory.reanchorElapsed` sets the field, per job, only where
+`originalStartTime` is actually before the current hour. Because every window everywhere reads
+`job.latestStart()` through `JobWindow`, the greedy solver, the exact solver, the synchronized-group
+placer, the brute-force checker and the plan checker all agree with no further plumbing. Returning
+the *deadline* rather than a computed slot keeps the "must end by the deadline" rule in the one
+place that owns it — `JobWindow`'s existing clamp to `lastSlot()`.
+
+### Two things this deliberately does not touch
+
+- **`flexibilityWindowHours` is not rewritten.** Rewriting it would have been the shortest
+  implementation and would have been a bug: `OptimizationProblem.jobEntry` puts it in the run
+  snapshot, and `ScheduleGate.requireInputsUnchanged` rebuilds that line from the stored job, so the
+  two would disagree and every such plan would invalidate.
+- **The flag is absent from `snapshot()`**, for the same reason `earliestStart` is: a re-run must not
+  hash differently and invalidate a pending approval. Tested
+  (`theFlagIsNotPartOfTheSnapshot`).
+
+## The part that would have made the feature useless
+
+`ScheduleGate.requireJobsUnchanged` re-derives `job.latestAllowedStart()` from the `jobs` row on
+**every** approve, apply and export:
+
+```java
+if (item.scheduledStart().isBefore(earliest) || item.scheduledStart().isAfter(latest))
+    throw invalidated(runId, "job " + id + " must now start between ...");
+```
+
+A re-anchored job is, by design, placed after `latest`. So the optimiser would have returned a
+perfectly good plan and the gate would have refused it the instant the operator tried to approve
+it — citing a flexibility window they had explicitly chosen to set aside. The feature would have
+looked like it worked and been unusable.
+
+The gate now skips **only the upper-bound half** for an item carrying
+`rescheduledFromElapsedStart`. The lower bound (`isBefore(earliest)`) and the deadline check below
+it are untouched, so the two rules that matter still hold: the job does not start before its own
+original start, and it still finishes by its deadline.
+`ElapsedJobRescheduleIntegrationTest.withTheOptInTheJobIsPlacedApprovedAndApplied` asserts
+**approve and apply both succeed** — not merely that a plan comes back.
+
+## Scope limits, all tested
+
+- **No slot may begin before the current hour, flag or not.** Re-anchoring moves only the upper
+  bound; the lower bound stays in `JobWindow.usable()`. Asserted at the window level
+  (`reanchoringNeverAllowsAnElapsedHour`, which checks `isUsable` and `runFrom` for every elapsed
+  hour) and on a real HTTP response (`scheduledStart >= now`).
+- **Exempt jobs are never re-anchored.** An exempt job's whole meaning is that it runs at its
+  original time. `reanchoredToDeadline()` returns `this` for one, and the record's constructor
+  *rejects* the `exempt && rescheduledFromElapsedStart` combination outright rather than trusting
+  callers.
+- **A job whose deadline has also passed stays infeasible**, with or without the flag: there is no
+  window left to widen.
+
+## Savings for rescheduled jobs — the decision you asked me to state
+
+**I left the arithmetic alone and labelled the result instead.** `baselineCostUsd` for a rescheduled
+job is still its baseline from `originalStartTime`, which means it is priced over hours that have
+already elapsed, and `savingsUsd` is still `baseline - optimized`.
+
+I considered re-basing the baseline to start at the current hour, which would make the saving a
+"what you get versus doing it now" figure. I did not, for three reasons:
+
+1. A baseline is defined in the contract as *what would have happened without optimising*. For a job
+   whose start has passed, what would have happened is that it ran (or should have run) at its
+   original time. Re-basing would answer a different question under the same field name.
+2. `BaselineCalculator` is also what admits a job at all (`build()` rejects a job that cannot finish
+   alone between its start and deadline). Re-basing the baseline would have changed admission as a
+   side effect, silently rejecting jobs whose remaining window is short.
+3. Every other job in the same run would still be measured the old way, so the run totals would mix
+   two definitions.
+
+So the numbers stay comparable within a run and **the caveat is made explicit** instead: the
+response marks the job (`rescheduledFromElapsedStart`), `plainEnglishExplanation` says *"their
+savings are measured against a baseline that itself already partly elapsed"*, the per-job UI panel
+repeats it, and the contract documents it. **This is the item most worth your review** — if you
+would rather see a now-based figure, it should probably be an additional field rather than a
+redefinition of this one.
+
+## A third infeasibility reason, which turned out to be needed
+
+The brief said to add one "if it helps". It does, and not only for the opt-in path. Admission only
+ever proves a job fits alone *from its original start*. Once that start has passed, fewer hours
+remain, so a job can have start slots available and still be unplaceable **with the cluster
+completely idle** — and the existing code would have reported that as `Cluster full: … other jobs
+use the capacity this job needs`, sending the operator to free capacity that is not the problem.
+
+Added, checked before the capacity message: `Not enough time left: only the hours from X to Y UTC
+remain before this job's deadline, which is less than it needs to finish even alone on the cluster.`
+It is computed with a new `BaselineCalculator.runFrom(job, from)` — `baseline(job)` now delegates to
+it — rather than a second copy of the fill rule. This case is reachable **with the flag off** too
+(a long flexibility window can still reach the current hour), so it is not gated on the flag.
+
+I also extended the existing `Window elapsed` reason to name the opt-in as a remedy while the
+deadline is still ahead. The existing assertion on that message
+(`PastSlotExclusionTest:162`, `.contains("Window elapsed").contains("every hour this job could start
+in")`) still passes — I appended, I did not rewrite.
+
+## Frontend: comparing instants, not wall-clock strings
+
+The brief says to compare `originalStartTime` against `currentMarketHourInput()`. I implemented that
+comparison **as instants**, and this is a deliberate refinement worth flagging:
+`job.originalStartTime` is a timezone-free string that means **UTC** (see `toInputDate`'s comment),
+while `currentMarketHourInput()` returns **market wall time**. Comparing the two directly would be
+wrong by the UTC offset — six hours in November — and ambiguous for the repeated hour when Central
+Time falls back.
+
+So `date-utils.ts` gains `currentMarketHourStart()`, built *from* `currentMarketHourInput()` and
+`marketWallTimeToUtc()`, returning the instant that hour began. `date-utils` stays the only module
+converting between UTC and market time, and **no hour offset is hardcoded anywhere** — tested in
+both winter (CST, −6) and summer (CDT, −5).
+
+`elapsed-jobs.ts` holds the detection and the dialog's wording as pure functions, so both are
+covered by tests rather than living in JSX. Exempt jobs are excluded from the dialog: the opt-in
+cannot move them, so naming them would promise something that will not happen.
+
+The dialog appears **only** when at least one job has elapsed — `runOptimization` checks first and
+calls `optimize(false)` directly otherwise, so the common path keeps exactly one click. It names each
+job by **name and id** (`Nightly ETL (#118)`) with its original start and deadline in market time,
+states that only hours from the current hour to each deadline will be used, and offers three
+choices: Cancel, **Leave them out** (today's behaviour — an operator who would rather fix the start
+times should not have to accept a widened window to see the rest of the plan), and **Reschedule and
+optimize**, which is the only path that sends the flag.
+
+---
+
+# Tests I changed, under exception 2
+
+Two assertions in `ApprovedScheduleJsonSerializerTest`. Both are **shape** assertions on the JSON
+export document, and both were forced by a rule the repo's own tests impose, not by my code failing.
+
+`document_JobFieldsComplete` asserts the export document mirrors **every** per-job field of
+`ScheduleItem`:
+
+```java
+Set<String> itemFields = componentNames(ScheduleItem.class);
+itemFields.remove("allocations");
+assertThat(jobFields).containsAll(itemFields).contains("slots");
+```
+
+Adding `rescheduledFromElapsedStart` to `ScheduleItem` therefore *requires* adding it to
+`ApprovedScheduleDocument.Job`. That test needed no edit — it is derived — but the document gaining a
+field moved two sibling assertions:
+
+**1. `serialize_AllKeysPresent`, per-job key count.**
+
+```java
+// old
+assertThat(fieldNames(unscheduled)).hasSize(13);
+// new
+assertThat(fieldNames(unscheduled)).hasSize(14);
+```
+
+Why the old one is now wrong: it counts the keys of a job object in the export. The object has 14
+keys because `document_JobFieldsComplete` requires it to mirror `ScheduleItem`, which now has 14
+per-job fields. `13` asserted a shape the repo's own parity rule no longer permits. The
+assertion's *intent* — "every key is present, with null where a value is absent" — is unchanged, and
+the other assertions in that test (nulls present, `slots` an empty array) are untouched.
+
+**2. `serialize_ExactOutput`, the golden JSON string.** `"rescheduledFromElapsedStart":false` was
+inserted after `"savingsUsd"` in each of the three job objects, e.g.:
+
+```java
+// old
++ "\"baselineCostUsd\":null,\"optimizedCostUsd\":null,\"savingsUsd\":null,\"slots\":[]},"
+// new
++ "\"baselineCostUsd\":null,\"optimizedCostUsd\":null,\"savingsUsd\":null,"
++ "\"rescheduledFromElapsedStart\":false,\"slots\":[]},"
+```
+
+Why the old one is now wrong: it is a byte-exact fixture of the document's serialization, and the
+document deliberately gained a documented field. The test's purpose — that the same schedule always
+produces byte-identical output — is unchanged and still enforced; only the expected bytes moved. The
+`false` values confirm the field defaults correctly for jobs that were not rescheduled.
+
+**No other existing assertion was modified anywhere in this branch.** Everything else was either an
+addition or a mechanical fixture update for a new required field (`appliedAt: null` in two TS
+literals, `rescheduledFromElapsedStart: false` in three).
+
+### Why the CSV export was left alone
+
+`ApprovedScheduleCsvSerializer` has no parity rule and its test passed untouched. Its column list is
+a **published format for execution adapters**, and `rescheduledFromElapsedStart` is advisory
+provenance, not data an adapter needs in order to dispatch. Adding a column would change a documented
+contract for no operational gain. Noted in the contract.
+
+---
+
+# The pre-existing backend failure
+
+`ScheduleEnforcementIntegrationTest.expiryPersistsStaleWithoutAnExportRequest` — `expected: STALE but
+was: INVALIDATED`.
+
+**It fails on the untouched base branch.** I ran the full suite before making any change: 719 tests,
+this one failure. It is the same single failure after my changes. I did not modify it.
+
+**Diagnosis** (reading, not observation — see the caveat at the top). The test fakes a plan whose
+slots have ended by rewriting one date string in the stored result JSON:
+
+```java
+start = LocalDateTime.now(ZoneOffset.UTC).plusDays(2).truncatedTo(ChronoUnit.HOURS);   // @BeforeEach
+// deadline = start.plusHours(3)
+String past = stored.replace(start.toLocalDate().toString(), start.minusDays(4).toLocalDate().toString());
+```
+
+It replaces only `start`'s date. When `start`'s hour is 21:00 UTC or later, `start + 3h` falls on the
+*next* calendar date, so the stored JSON contains two different dates and only the first is rewritten
+— leaving a plan whose start is in the past and whose end is still days ahead. The gate then detects
+inconsistency and marks it `INVALIDATED` rather than reaching the all-slots-ended check that yields
+`STALE`.
+
+The suite ran at 22:26–22:57 UTC, so `start` was `2026-11-06T22:00` and the deadline
+`2026-11-07T01:00` — different dates. The test should pass at any UTC hour from 00 to 20.
+
+**I left it failing and did not touch it**, per the brief. It is a genuine latent flake in a test
+fixture, not a product bug, and fixing it is outside these three tasks. If you want it fixed: the
+robust change is to rewrite the whole stored window rather than one date string — for instance by
+shifting every timestamp in the JSON, or by moving the clock with the existing
+`support/MutableClock`, which exists for exactly this ("the only way to reach that state is the way
+it happens in production: make a real plan, then let time pass"). **Your call, not mine.**
+
+---
+
+# Left undone, deliberately
+
+- **No version negotiation for Task 1's hypothesis.** The client now reports a missing endpoint
+  clearly; it does not probe server capabilities. That is a design decision for you.
+- **An exempt job whose start has elapsed is still reported `UNCHANGED_EXEMPT` at a past time.**
+  `AllocationResult.of` gives every exempt job its baseline plan unconditionally. That is
+  pre-existing behaviour, documented in `PerJobStatus` ("Kept at originalStartTime, running as in its
+  baseline, because isExempt is true"), and arguably wrong once that time has passed — an operator
+  may be shown a schedule entry for an hour that is gone. **Out of scope here and unchanged**, but
+  worth a look. My integration test asserts only that the opt-in does not move it.
+- **Revoking an approval does not revive plans it superseded.** `gate.supersede` marks overlapping
+  approved plans `STALE` on approval, and revoking the superseding run leaves them stale. Existing,
+  intentional behaviour (`supersessionUsesApprovalOrderAndCannotBeRevived` asserts it); I only
+  noticed it while tracing the revoke path.
+- **No CSV export column** for the new marker — reasoned above.
+- **No migration.** Nothing in these three tasks changes the schema: `appliedAt` already existed as a
+  column, `REVOKE` was already a `@Enumerated(STRING)` value in a `length = 50` varchar, and the
+  optimiser flag is request-scoped and never persisted.
