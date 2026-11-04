@@ -43,8 +43,17 @@ import static com.gacs.backend.service.ApprovedScheduleExport.utc;
 @Service
 public class ScheduleGate {
 
-    private static final Set<AuditActionType> DECISIONS =
-            EnumSet.of(AuditActionType.APPROVE, AuditActionType.REJECT, AuditActionType.REVISE);
+    /**
+     * The action types that count as "a decision the operator made" when this gate asks the audit log
+     * for a run's latest one. REVOKE belongs here with the other three: it is a decision, recorded by
+     * the same {@code ScheduleReviewService#decide} path, and leaving it out meant a revoked run's
+     * latest decision still read as the APPROVE it withdrew. Nothing reachable today depends on that
+     * (a revoked plan is REJECTED, so {@link #requireApproved} refuses it before the audit log is
+     * consulted), but an execution gate that would read a withdrawn approval as current is the wrong
+     * default to leave in place for whichever caller asks next.
+     */
+    private static final Set<AuditActionType> DECISIONS = EnumSet.of(AuditActionType.APPROVE,
+            AuditActionType.REJECT, AuditActionType.REVISE, AuditActionType.REVOKE);
     private static final double HOURS_TOLERANCE = 1e-9;
 
     private final OptimizationPlanRepository plans;

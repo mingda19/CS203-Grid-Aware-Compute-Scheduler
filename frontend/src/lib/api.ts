@@ -413,6 +413,37 @@ export class ApiRequestError extends Error {
   }
 }
 
+/**
+ * The backend answers every error in the `ApiResponse` envelope, but a failing request does not
+ * always reach the backend: a proxy, a gateway or a server older than this browser can answer with
+ * HTML, with an empty body, or with JSON of a completely different shape. Reading `message` straight
+ * off that body yields `undefined`, an object, or a number, and the UI then renders nothing, renders
+ * "[object Object]", or (where a message is used as a React child) throws.
+ *
+ * <p>So the message is taken only when it really is a non-blank string, and otherwise synthesised
+ * from the status - which is always known. 404 and 405 get their own wording because they are what a
+ * client calling an endpoint its server does not have actually receives: that is the shape of the
+ * reported "Revoke approval does nothing", and "Request failed with status 404" told the operator
+ * nothing about why or what to do.
+ */
+export function apiErrorMessage(status: number, body: unknown): string {
+  const message = (body as { message?: unknown } | null)?.message
+  if (typeof message === "string" && message.trim()) return message
+  if (status === 404 || status === 405) {
+    return `This action is not available on the server (HTTP ${status}). The server may be running an `
+      + "older version than this page; reload, and ask your administrator to redeploy the backend if it persists."
+  }
+  if (status === 0) return "The server could not be reached. Check your connection and try again."
+  if (status >= 500) return `The server failed to handle this request (HTTP ${status}). Try again, or contact support.`
+  return `Request failed with status ${status}`
+}
+
+/** `data.reason` from the envelope, but only when it is a string - the gate's reason code. */
+function apiErrorReason(body: unknown): string | undefined {
+  const reason = (body as { data?: { reason?: unknown } } | null)?.data?.reason
+  return typeof reason === "string" ? reason : undefined
+}
+
 async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = apiUrl(endpoint)
   const headers: Record<string, string> = {
@@ -446,11 +477,21 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
     headers["Authorization"] = `Bearer ${token}`
   }
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-    credentials: "include", // for HttpOnly refresh-token cookies
-  })
+  // A transport failure (server down, DNS, CORS preflight refused, connection dropped) rejects
+  // here with a bare TypeError whose message is the browser's own wording - "Failed to fetch" or
+  // "NetworkError", neither of which means anything to an operator. Normalising it to an
+  // ApiRequestError with status 0 means every caller has one error type to handle and one readable
+  // message, instead of a raw TypeError reaching the UI as the explanation for a failed decision.
+  let response: Response
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers,
+      credentials: "include", // for HttpOnly refresh-token cookies
+    })
+  } catch {
+    throw new ApiRequestError(apiErrorMessage(0, null), 0)
+  }
 
   // Automatic token refresh on 401 Unauthorized or 403 Forbidden for authenticated endpoints
   if (
@@ -473,8 +514,8 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
       const retryResponse = await fetch(url, { ...options, headers, credentials: "include" })
       const retryData = await retryResponse.json().catch(() => ({}))
       if (!retryResponse.ok) {
-        const err = retryData?.message || `Request failed with status ${retryResponse.status}`
-        throw new ApiRequestError(err, retryResponse.status, retryData?.data?.reason)
+        throw new ApiRequestError(apiErrorMessage(retryResponse.status, retryData),
+          retryResponse.status, apiErrorReason(retryData))
       }
       return retryData as T
     }
@@ -483,8 +524,7 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
   const data = await response.json().catch(() => ({}))
 
   if (!response.ok) {
-    const errorMessage = data?.message || `Request failed with status ${response.status}`
-    throw new ApiRequestError(errorMessage, response.status, data?.data?.reason)
+    throw new ApiRequestError(apiErrorMessage(response.status, data), response.status, apiErrorReason(data))
   }
 
   return data as T
@@ -573,10 +613,18 @@ export interface SchedulePlanDetail {
   invalidatedAt: string | null
   recommendation: OptimizeResponse | null
 }
+/**
+ * The action as the backend records it: {@link ScheduleDecisionAction} upper-cased, matching the
+ * `AuditActionType` values a decision can carry. REVOKE was missing here while `/revoke` already
+ * returned `action: "REVOKE"`, so the declared type did not describe the response the UI actually
+ * received for a revocation - a narrowing on `action` would have excluded the one case it exists for.
+ */
+export type RecordedDecisionAction = "APPROVE" | "REJECT" | "REVISE" | "REVOKE"
+
 export interface ScheduleDecision {
   decisionId: number
   runId: string
-  action: "APPROVE" | "REJECT" | "REVISE"
+  action: RecordedDecisionAction
   operatorId: number
   comment: string
   decidedAt: string

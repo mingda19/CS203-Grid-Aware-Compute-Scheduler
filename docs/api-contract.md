@@ -124,7 +124,8 @@ Returned when request parameters fail validation (HTTP 400 Bad Request):
 | **401 Unauthorized** | Unauthenticated | Missing, expired, or malformed JWT Bearer token; or invalid login credentials. |
 | **403 Forbidden** | Access Denied | Authenticated user lacks sufficient role privileges (e.g., non-admin accessing `/api/admin/*`). |
 | **404 Not Found** | Resource Missing | Requested user, workload, forecast run, or schedule ID does not exist. |
-| **409 Conflict** | State Conflict | Duplicate entity creation (e.g., registering an email that already exists). |
+| **405 Method Not Allowed** | Wrong Method | Known path called with an HTTP method it does not accept. |
+| **409 Conflict** | State Conflict | Duplicate entity creation (e.g., registering an email that already exists); a terminal decision already recorded; or concurrent lock contention on the same record. |
 | **422 Unprocessable Entity** | Semantic Error | Syntactically valid request that violates domain rules (e.g., impossible job deadline). |
 | **500 Internal Error** | Server Error | Unhandled server exception or downstream dependency failure. |
 
@@ -1035,6 +1036,14 @@ All routes require JWT authentication and ownership of the persisted optimizatio
 | `POST /api/schedules/{runId}/approve` | `APPROVE` | `APPROVED` |
 | `POST /api/schedules/{runId}/reject` | `REJECT` | `REJECTED` |
 | `POST /api/schedules/{runId}/revise` | `REVISE` | `REVISION_REQUESTED` |
+| `POST /api/schedules/{runId}/revoke` | `REVOKE` | `REJECTED` |
+
+`revoke` withdraws an approval that has already been given, and is allowed **only** from `APPROVED`.
+It is deliberately not `reject`: rejecting is a first decision on a pending recommendation, revoking
+undoes a decision already made and may halt work already dispatched, so it is named and audited as
+its own action. The run lands in `REJECTED`, which every execution gate already refuses to apply,
+start or export, so nothing had to learn a new state. Revoking a run that is not `APPROVED` returns
+**409** with `data.reason = "ALREADY_DECIDED"`.
 
 Each route requires a JSON object with a nonblank string `comment`, limited to 2,000 characters before trimming. Missing, null, empty, whitespace-only, and non-string comments return `400` before plan lookup or locking. This follows the approved audit log requirement for operator rationale. Identity fields are ignored. Example:
 
@@ -1042,7 +1051,7 @@ Each route requires a JSON object with a nonblank string `comment`, limited to 2
 {"comment":"Approved schedule after verifying cooling margin."}
 ```
 
-All three return **200 OK** in the standard envelope:
+All four return **200 OK** in the standard envelope:
 
 ```json
 {
@@ -1062,9 +1071,11 @@ All three return **200 OK** in the standard envelope:
 
 Decisions use `audit_events` as their only immutable history; there is no separate `schedule_decisions` table. `decisionId` is the audit event ID. The audit actor comes from the authenticated security context, and `operatorRationale` stores the trimmed comment. `scheduleHash` is the lowercase SHA-256 hex digest of the stored `resultJson` encoded as UTF-8. Each audit event insert and review-state update commits atomically under an operator-row lock followed by a plan write lock; decisions and automatic invalidation determine current review state. The original optimizer result never changes.
 
-**One terminal decision per run (2026-11-04, usability bug 3).** `APPROVE`, `REJECT`, and `REVISION_REQUESTED` are terminal: once a run's `reviewState` is one of these, every further call to any of the three decision routes for that run - including retrying or repeating the same action - returns **409** with `data.reason = "ALREADY_DECIDED"` and writes no new audit event. Only `PENDING` plans, and plans the system (not an operator) moves to `STALE`/`INVALIDATED`, can still be decided. There is no way to retract a terminal decision on the same run; a new recommendation (a fresh `runId`) must be generated instead.
+**One terminal decision per run (2026-11-04, usability bug 3).** `APPROVE`, `REJECT`, and `REVISION_REQUESTED` are terminal: once a run's `reviewState` is one of these, every further call to any of the three decision routes for that run - including retrying or repeating the same action - returns **409** with `data.reason = "ALREADY_DECIDED"` and writes no new audit event. Only `PENDING` plans, and plans the system (not an operator) moves to `STALE`/`INVALIDATED`, can still be decided.
 
-Errors: **400** for malformed UUIDs/JSON, a missing or non-object body, missing, null, blank, non-string, or oversized comments; **403** for missing/invalid JWTs (existing security behavior); **401** for an authenticated email without a database user; **404** with `Optimization plan not found` for both missing and unowned plans; **409** with `data.reason = "ALREADY_DECIDED"` for a run whose `reviewState` already holds a terminal decision (see above).
+Exactly one transition survives that rule: `APPROVED` + `REVOKE` -> `REJECTED`. An approval may already have dispatched work, so it has to stay reversible or there is no way to halt a running schedule at all; a `REJECTED` or `REVISION_REQUESTED` run dispatched nothing and stays final. Revocation is therefore the only retraction of a terminal decision, and it is itself terminal - a revoked run cannot be approved again, and a new recommendation (a fresh `runId`) must be generated instead.
+
+Errors: **400** for malformed UUIDs/JSON, a missing or non-object body, missing, null, blank, non-string, or oversized comments; **403** for missing/invalid JWTs (existing security behavior); **401** for an authenticated email without a database user; **404** with `Optimization plan not found` for both missing and unowned plans; **409** with `data.reason = "ALREADY_DECIDED"` for a run whose `reviewState` already holds a terminal decision (see above), or for a `revoke` on a run that is not `APPROVED`; **409** without a `data.reason` when the plan row is locked by a concurrent decision or application (retry), or when a database constraint refuses the write; **404** when a record the decision depends on (such as the plan's owner row) has been deleted concurrently; **405** for a decision path called with the wrong HTTP method. Every one of these is returned in the standard `ApiResponse` envelope, including for an unmapped path, so a client that reads `message` off every response always has something accurate to show - a client calling an endpoint its server does not have (for example a browser newer than the deployment) gets a **404** envelope naming the path rather than a container error page.
 
 Audit history can be read through the existing audit log endpoints.
 
@@ -1269,8 +1280,12 @@ Example (the schedule from the CSV example; shown indented here for reading, but
 
 Both routes require `ROLE_USER` or `ROLE_ADMIN`; every such user can read every audit event.
 
-`POST /api/audit-events` remains a compatibility entry point for decisions. `APPROVE`, `REJECT`, and
-`REVISE` use the same owner-scoped transaction and validity checks as the schedule decision endpoints.
+`POST /api/audit-events` remains a compatibility entry point for decisions. `APPROVE`, `REJECT`,
+`REVISE` and `REVOKE` use the same owner-scoped transaction and validity checks as the schedule
+decision endpoints. `REVOKE` was previously not among them: it fell through to the plain audit-event
+writer, which checks neither ownership nor review state, so it could append a revocation naming an
+unowned run or a run that was never approved. It is now routed through the same gate as the other
+three, and therefore returns that gate's 404/409 rather than recording an event.
 The run ID must be a UUID; missing or unowned plans return 404. The recorded hash is computed from
 the stored schedule, rather than trusting the supplied `scheduleHash`. Prefer the schedule decision
 endpoints for new clients.
