@@ -6,6 +6,7 @@ import com.gacs.backend.dto.JobResponseDto;
 import com.gacs.backend.exception.ResourceNotFoundException;
 import com.gacs.backend.model.Job;
 import com.gacs.backend.model.JobPriority;
+import com.gacs.backend.model.WorkloadCategory;
 import com.gacs.backend.repository.JobRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -67,6 +68,7 @@ public class JobService {
                 : "PENDING";
 
         JobPriority priority = JobPriority.fromString(request.getPriority());
+        WorkloadCategory workloadCategory = WorkloadCategory.fromString(request.getWorkloadCategory());
 
         Job job = Job.builder()
                 .ownerEmail(ownerEmail)
@@ -80,6 +82,7 @@ public class JobService {
                 .rawConstraints(request.getRawConstraints())
                 .status(status)
                 .priority(priority)
+                .workloadCategory(workloadCategory)
                 .build();
 
         applyParseMetadata(job, request);
@@ -115,6 +118,10 @@ public class JobService {
 
         if (request.getPriority() != null && !request.getPriority().isBlank()) {
             existing.setPriority(JobPriority.fromString(request.getPriority()));
+        }
+
+        if (request.getWorkloadCategory() != null && !request.getWorkloadCategory().isBlank()) {
+            existing.setWorkloadCategory(WorkloadCategory.fromString(request.getWorkloadCategory()));
         }
 
         if (!before.equals(ScheduleInputs.state(existing))) {
@@ -207,6 +214,7 @@ public class JobService {
         }
 
         validatePriority(request.getPriority());
+        validateWorkloadCategory(request.getWorkloadCategory());
     }
 
     /**
@@ -258,6 +266,13 @@ public class JobService {
     public void validatePriority(String priority) {
         if (priority != null && !priority.isBlank()) {
             JobPriority.fromString(priority);
+        }
+    }
+
+    /** Workload category rule for the job API. Blank means the default (ML_TRAINING). */
+    public void validateWorkloadCategory(String workloadCategory) {
+        if (workloadCategory != null && !workloadCategory.isBlank()) {
+            WorkloadCategory.fromString(workloadCategory);
         }
     }
 }

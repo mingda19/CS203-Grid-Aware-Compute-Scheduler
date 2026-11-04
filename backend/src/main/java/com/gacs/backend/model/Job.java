@@ -76,6 +76,11 @@ public class Job {
     @Column(nullable = false, length = 20, columnDefinition = "varchar(20) default 'NORMAL'")
     private JobPriority priority = JobPriority.NORMAL;
 
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "workload_category", nullable = false, length = 20, columnDefinition = "varchar(20) default 'ML_TRAINING'")
+    private WorkloadCategory workloadCategory = WorkloadCategory.ML_TRAINING;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
@@ -101,6 +106,9 @@ public class Job {
         }
         if (this.priority == null) {
             this.priority = JobPriority.NORMAL;
+        }
+        if (this.workloadCategory == null) {
+            this.workloadCategory = WorkloadCategory.ML_TRAINING;
         }
     }
 
