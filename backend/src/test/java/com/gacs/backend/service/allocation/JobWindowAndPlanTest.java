@@ -10,6 +10,7 @@ import static com.gacs.backend.service.allocation.Fixtures.at;
 import static com.gacs.backend.service.allocation.Fixtures.exempt;
 import static com.gacs.backend.service.allocation.Fixtures.job;
 import static com.gacs.backend.service.allocation.Fixtures.prices;
+import static com.gacs.backend.service.allocation.Fixtures.window;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -21,14 +22,14 @@ class JobWindowAndPlanTest {
     @Test
     @DisplayName("Starts are limited to the flexibility window")
     void startsWithinFlexibilityWindow() {
-        JobWindow window = new JobWindow(job(1, 20.0, 0.0, 0, 2, 6), prices(1, 1, 1, 1, 1, 1));
+        JobWindow window = window(job(1, 20.0, 0.0, 0, 2, 6), prices(1, 1, 1, 1, 1, 1));
         assertThat(window.startSlots()).containsExactly(T0, at(1), at(2));
     }
 
     @Test
     @DisplayName("The deadline cuts both the starts and the run")
     void deadlineCutsWindow() {
-        JobWindow window = new JobWindow(job(1, 20.0, 0.0, 0, 5, 3), prices(1, 1, 1, 1, 1, 1));
+        JobWindow window = window(job(1, 20.0, 0.0, 0, 5, 3), prices(1, 1, 1, 1, 1, 1));
         assertThat(window.lastSlot()).isEqualTo(at(2));
         assertThat(window.startSlots()).containsExactly(T0, at(1), at(2));
         assertThat(window.runFrom(at(1))).containsExactly(at(1), at(2));
@@ -38,13 +39,13 @@ class JobWindowAndPlanTest {
     @DisplayName("A deadline inside a slot rounds down to the last whole slot")
     void deadlineInsideASlot() {
         OptimizerJob job = new OptimizerJob(1L, "a", 20.0, 0.0, T0, at(1).plusMinutes(59), 3, false);
-        assertThat(new JobWindow(job, prices(1, 1, 1)).startSlots()).containsExactly(T0);
+        assertThat(window(job, prices(1, 1, 1)).startSlots()).containsExactly(T0);
     }
 
     @Test
     @DisplayName("Unpriced hours cannot be used, and a run cannot cross one")
     void unpricedSlotsBlockRuns() {
-        JobWindow window = new JobWindow(job(1, 20.0, 0.0, 0, 3, 4), prices(10, Double.NaN, 10, 10));
+        JobWindow window = window(job(1, 20.0, 0.0, 0, 3, 4), prices(10, Double.NaN, 10, 10));
         assertThat(window.startSlots()).containsExactly(T0, at(2), at(3));
         assertThat(window.runFrom(T0)).containsExactly(T0);
         assertThat(window.runFrom(at(2))).containsExactly(at(2), at(3));
@@ -53,7 +54,7 @@ class JobWindowAndPlanTest {
     @Test
     @DisplayName("An exempt job may only start at its original time")
     void exemptJobHasOneStart() {
-        assertThat(new JobWindow(exempt(1, 20.0, 0.0, 1, 5), prices(1, 1, 1, 1, 1)).startSlots())
+        assertThat(window(exempt(1, 20.0, 0.0, 1, 5), prices(1, 1, 1, 1, 1)).startSlots())
                 .containsExactly(at(1));
     }
 
@@ -82,7 +83,7 @@ class JobWindowAndPlanTest {
     @Test
     @DisplayName("The window accepts a plan inside it and rejects one past the deadline")
     void windowChecksPlans() {
-        JobWindow window = new JobWindow(job(1, 20.0, 0.0, 0, 1, 2), prices(1, 1, 1));
+        JobWindow window = window(job(1, 20.0, 0.0, 0, 1, 2), prices(1, 1, 1));
         assertThat(window.allows(new JobPlan(window.job(), List.of(new SlotAllocation(at(1), 1.0))))).isTrue();
         assertThat(window.allows(new JobPlan(window.job(),
                 List.of(new SlotAllocation(at(1), 0.5), new SlotAllocation(at(2), 0.5))))).isFalse();

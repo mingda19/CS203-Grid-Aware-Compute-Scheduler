@@ -100,24 +100,41 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
     }
 
     /**
-     * Why a job got no plan. Request validation already ensured it could finish alone on the cluster, so
-     * the cause is always capacity taken by other jobs within the hours it was allowed to use.
+     * Why a job got no plan. Two causes, in the order checked:
+     * <ol>
+     *   <li>the job's whole window has elapsed, so there is no hour left it may use at all - request
+     *       validation permits this, because a job's baseline is not bounded by the current hour
+     *       (see {@link OptimizationProblem#earliestStart()});</li>
+     *   <li>otherwise capacity taken by other jobs within the hours it was allowed to use, since
+     *       validation already ensured it could finish alone on the cluster.</li>
+     * </ol>
      */
     private static String noRoomReason(OptimizerJob job, OptimizationProblem problem,
                                        Map<OptimizerJob, JobPlan> scheduled) {
-        JobWindow window = new JobWindow(job, problem.prices());
+        JobWindow window = problem.windowFor(job);
         LocalDateTime lastEnd = window.lastSlot().plusHours(1);
+        if (window.firstSlot().isAfter(window.lastSlot())) {
+            return "Deadline " + lastEnd.format(HOUR) + " UTC has passed: this job's whole window is "
+                    + "earlier than " + window.earliestStart().format(HOUR)
+                    + " UTC, the first hour that can still be scheduled. Update its start and deadline, "
+                    + "or retire it.";
+        }
+        if (window.startSlots().isEmpty()) {
+            return "Window elapsed: every hour this job could start in is earlier than "
+                    + window.earliestStart().format(HOUR) + " UTC, the first hour that can still be "
+                    + "scheduled. Update its start time, or widen its flexibility window.";
+        }
         // The job that took the slot: the first (by tie-break order) of those running inside this job's window.
         List<OptimizerJob> blockers = scheduled.entrySet().stream()
                 .filter(e -> e.getValue().allocations().stream().anyMatch(a ->
-                        !a.slotStart().isBefore(job.originalStartTime()) && a.slotStart().isBefore(lastEnd)))
+                        !a.slotStart().isBefore(window.firstSlot()) && a.slotStart().isBefore(lastEnd)))
                 .map(Map.Entry::getKey)
                 .sorted(OptimizationProblem.TIE_BREAK_ORDER)
                 .toList();
         String took = blockers.isEmpty() ? "other jobs use"
                 : "job " + blockers.get(0).label() + " (" + blockers.get(0).priority() + ")"
                 + (blockers.size() > 1 ? " and " + (blockers.size() - 1) + " other(s) use" : " uses");
-        return "Cluster full between " + job.originalStartTime().format(HOUR) + " and " + lastEnd.format(HOUR)
+        return "Cluster full between " + window.firstSlot().format(HOUR) + " and " + lastEnd.format(HOUR)
                 + " UTC: " + took + " the capacity this job needs to finish by its deadline.";
     }
 }

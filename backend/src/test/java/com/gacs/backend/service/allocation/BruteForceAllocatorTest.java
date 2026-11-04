@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import static com.gacs.backend.service.allocation.Fixtures.COSTS;
+import static com.gacs.backend.service.allocation.Fixtures.NO_HORIZON;
 import static com.gacs.backend.service.allocation.Fixtures.T0;
 import static com.gacs.backend.service.allocation.Fixtures.at;
 import static com.gacs.backend.service.allocation.Fixtures.cpuCapacity;
@@ -25,8 +26,8 @@ import static org.assertj.core.api.Assertions.within;
 class BruteForceAllocatorTest {
 
     private static BruteForceAllocator.Result solve(List<OptimizerJob> jobs, PriceSeries prices, SlotCapacity capacity) {
-        BruteForceAllocator.Result result = BruteForceAllocator.solve(jobs, prices, capacity, COSTS, 4);
-        assertThat(ContractRules.violations(jobs, ContractRules.plansOf(result), prices, capacity)).isEmpty();
+        BruteForceAllocator.Result result = BruteForceAllocator.solve(jobs, prices, NO_HORIZON, capacity, COSTS, 4);
+        assertThat(ContractRules.violations(jobs, ContractRules.plansOf(result), prices, NO_HORIZON, capacity)).isEmpty();
         return result;
     }
 

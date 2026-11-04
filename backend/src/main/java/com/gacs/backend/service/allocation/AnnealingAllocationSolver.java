@@ -169,8 +169,8 @@ public final class AnnealingAllocationSolver implements AllocationSolver {
             for (int k = from; k < order.size(); k++) {
                 OptimizerJob job = order.get(k);
                 freeBefore.add(free.copy());
-                JobPlan plan = GreedyAllocator.cheapestPlan(job, free, problem.prices(), costs,
-                        problem.constraintsFor(job), placedSoFar).orElse(null);
+                JobPlan plan = GreedyAllocator.cheapestPlan(job, free, problem.prices(), problem.earliestStart(),
+                        costs, problem.constraintsFor(job), placedSoFar).orElse(null);
                 if (plan != null) {
                     free.reserve(plan);
                     placedSoFar.put(job.id(), plan);

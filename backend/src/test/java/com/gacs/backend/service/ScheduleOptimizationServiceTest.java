@@ -42,11 +42,14 @@ import static org.mockito.Mockito.when;
 class ScheduleOptimizationServiceTest {
 
     private static final LocalDateTime T0 = LocalDateTime.of(2026, 10, 20, 10, 0);
+    /** One hour before {@link #T0}, so every fixture slot is still ahead of the run. */
+    private static final java.time.Clock CLOCK =
+            java.time.Clock.fixed(java.time.Instant.parse("2026-10-20T09:00:00Z"), java.time.ZoneOffset.UTC);
     private static final String OWNER = "operator@example.com";
     private static final EnergyCostModel COSTS = new EnergyCostModel(OptimizerProperties.DEFAULTS);
 
     private final PriceSeriesProvider provider = mock(PriceSeriesProvider.class);
-    private final OptimizationProblemFactory factory = new OptimizationProblemFactory(provider, OptimizerProperties.DEFAULTS);
+    private final OptimizationProblemFactory factory = new OptimizationProblemFactory(provider, OptimizerProperties.DEFAULTS, CLOCK);
     private final ScheduleRunRecorder recorder = mock(ScheduleRunRecorder.class);
     private final ScheduleRunRepository scheduleRuns = mock(ScheduleRunRepository.class);
     private final ScheduleExplanationRepository scheduleExplanations = mock(ScheduleExplanationRepository.class);

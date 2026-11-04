@@ -57,8 +57,8 @@ final class BruteForceAllocator {
     private BruteForceAllocator() {
     }
 
-    static Result solve(List<OptimizerJob> jobs, PriceSeries prices, SlotCapacity capacity, EnergyCostModel costs,
-                        int quanta) {
+    static Result solve(List<OptimizerJob> jobs, PriceSeries prices, LocalDateTime earliestStart,
+                        SlotCapacity capacity, EnergyCostModel costs, int quanta) {
         BaselineCalculator baselines = new BaselineCalculator(capacity);
         Map<Long, JobPlan> exemptPlans = new HashMap<>();
         Map<LocalDateTime, double[]> exemptUse = new HashMap<>();
@@ -79,7 +79,7 @@ final class BruteForceAllocator {
                 .toList();
         List<List<Option>> options = new ArrayList<>();
         for (OptimizerJob job : flexible) {
-            options.add(optionsFor(job, prices, costs, quanta));
+            options.add(optionsFor(job, prices, earliestStart, costs, quanta));
         }
 
         Search search = new Search(flexible, options, capacity, exemptUse);
@@ -98,8 +98,9 @@ final class BruteForceAllocator {
     }
 
     /** Every plan the job's window allows, with shares in steps of 1 / quanta. */
-    private static List<Option> optionsFor(OptimizerJob job, PriceSeries prices, EnergyCostModel costs, int quanta) {
-        JobWindow window = new JobWindow(job, prices);
+    private static List<Option> optionsFor(OptimizerJob job, PriceSeries prices, LocalDateTime earliestStart,
+                                           EnergyCostModel costs, int quanta) {
+        JobWindow window = new JobWindow(job, prices, earliestStart);
         List<Option> result = new ArrayList<>();
         for (LocalDateTime start : window.startSlots()) {
             List<LocalDateTime> run = window.runFrom(start);

@@ -11,7 +11,9 @@ import com.gacs.backend.service.PriceSeries;
 import com.gacs.backend.service.PriceSeriesProvider;
 import org.springframework.stereotype.Service;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -47,10 +49,13 @@ public class OptimizationProblemFactory {
 
     private final PriceSeriesProvider priceSeriesProvider;
     private final OptimizerProperties properties;
+    private final Clock clock;
 
-    public OptimizationProblemFactory(PriceSeriesProvider priceSeriesProvider, OptimizerProperties properties) {
+    public OptimizationProblemFactory(PriceSeriesProvider priceSeriesProvider, OptimizerProperties properties,
+                                      Clock clock) {
         this.priceSeriesProvider = priceSeriesProvider;
         this.properties = properties;
+        this.clock = clock;
     }
 
     public OptimizationProblem build(OptimizeRequestDto request) {
@@ -81,7 +86,23 @@ public class OptimizationProblemFactory {
                         + ", which job " + job.label() + " uses at its original time. Its baseline cost cannot be priced.");
             }
         }
-        return new OptimizationProblem(jobs, prices, capacity, baselinePlans);
+        return new OptimizationProblem(jobs, prices, capacity, baselinePlans, List.of(), List.of(),
+                earliestStart());
+    }
+
+    /**
+     * The earliest hour this run may schedule work into: the current hour, truncated. Work cannot be
+     * started in an hour that has already begun elapsing in full, and a job placed in a past hour
+     * could never actually be run, so no solver may use one (contract section 6.4). The current hour
+     * itself stays usable: starts are on the hour, so excluding it would leave an operator unable to
+     * act on the hour they are in.
+     *
+     * <p>Jobs whose whole window is already past are not rejected here. Their baseline is unaffected
+     * (it describes what would have happened), so validation still passes and the solver reports them
+     * as {@link PerJobStatus#NO_FEASIBLE_SLOT} with a reason, leaving the rest of the plan usable.
+     */
+    private LocalDateTime earliestStart() {
+        return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC).truncatedTo(ChronoUnit.HOURS);
     }
 
     // ------------------------------------------------------------------ jobs

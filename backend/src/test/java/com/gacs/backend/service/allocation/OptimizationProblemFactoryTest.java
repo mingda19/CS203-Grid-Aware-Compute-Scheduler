@@ -33,7 +33,7 @@ import static org.mockito.Mockito.when;
 class OptimizationProblemFactoryTest {
 
     private final PriceSeriesProvider provider = mock(PriceSeriesProvider.class);
-    private final OptimizationProblemFactory factory = new OptimizationProblemFactory(provider, OptimizerProperties.DEFAULTS);
+    private final OptimizationProblemFactory factory = new OptimizationProblemFactory(provider, OptimizerProperties.DEFAULTS, Fixtures.CLOCK_BEFORE_T0);
 
     /** A valid job: 64 CPU-hours from slot 0, may wait 2 hours, finishes by slot 4. */
     private static JobInput validJob(long id) {

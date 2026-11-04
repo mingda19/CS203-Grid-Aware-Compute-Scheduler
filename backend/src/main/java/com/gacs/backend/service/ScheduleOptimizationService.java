@@ -189,16 +189,33 @@ public class ScheduleOptimizationService {
                 + caveatsSentence(result, problem);
     }
 
-    /** How many jobs landed in each outcome, computed once and handed to each sentence below. */
-    private record JobCounts(long total, long optimised, long exempt, long leftOut, long moved) {
+    /**
+     * How many jobs landed in each outcome, computed once and handed to each sentence below.
+     *
+     * @param elapsed of the {@code leftOut} jobs, how many had no start slot left at all because their
+     *                window ended before the run's earliest schedulable hour. Counted separately
+     *                because the summary must not blame capacity for a job that time ran out on - the
+     *                operator's remedy is completely different (contract FR-20).
+     */
+    private record JobCounts(long total, long optimised, long exempt, long leftOut, long elapsed, long moved) {
         static JobCounts of(AllocationResult result, OptimizationProblem problem) {
             long moved = result.outcomes().stream()
                     .filter(o -> o.status() == PerJobStatus.OPTIMISED)
                     .filter(o -> !o.plan().start().equals(o.job().originalStartTime())
                             || !o.plan().allocations().equals(problem.baselineOf(o.job()).allocations()))
                     .count();
+            long elapsed = result.outcomes().stream()
+                    .filter(o -> o.status() == PerJobStatus.NO_FEASIBLE_SLOT)
+                    .filter(o -> problem.windowFor(o.job()).startSlots().isEmpty())
+                    .count();
             return new JobCounts(result.outcomes().size(), count(result, PerJobStatus.OPTIMISED),
-                    count(result, PerJobStatus.UNCHANGED_EXEMPT), count(result, PerJobStatus.NO_FEASIBLE_SLOT), moved);
+                    count(result, PerJobStatus.UNCHANGED_EXEMPT), count(result, PerJobStatus.NO_FEASIBLE_SLOT),
+                    elapsed, moved);
+        }
+
+        /** Jobs left out for want of capacity rather than for want of time. */
+        long blockedByCapacity() {
+            return leftOut - elapsed;
         }
     }
 
@@ -215,10 +232,15 @@ public class ScheduleOptimizationService {
             text.append(String.format(Locale.ROOT,
                     "%d exempt job(s) run at their original time. ", counts.exempt()));
         }
-        if (counts.leftOut() > 0) {
+        if (counts.elapsed() > 0) {
+            text.append(String.format(Locale.ROOT,
+                    "%d job(s) could not be placed because their scheduling window has already passed; "
+                            + "they are left out of the cost totals. ", counts.elapsed()));
+        }
+        if (counts.blockedByCapacity() > 0) {
             text.append(String.format(Locale.ROOT,
                     "%d job(s) could not be placed because other jobs use the capacity they need before their "
-                            + "deadline; they are left out of the cost totals. ", counts.leftOut()));
+                            + "deadline; they are left out of the cost totals. ", counts.blockedByCapacity()));
         }
         return text.toString();
     }

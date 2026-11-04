@@ -10,7 +10,10 @@ import com.gacs.backend.repository.JobRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -24,10 +27,12 @@ public class JobService {
 
     private final JobRepository jobRepository;
     private final ScheduleInputs inputs;
+    private final Clock clock;
 
-    public JobService(JobRepository jobRepository, ScheduleInputs inputs) {
+    public JobService(JobRepository jobRepository, ScheduleInputs inputs, Clock clock) {
         this.inputs = inputs;
         this.jobRepository = jobRepository;
+        this.clock = clock;
     }
 
     /**
@@ -188,6 +193,7 @@ public class JobService {
             throw new IllegalArgumentException("deadline is required");
         }
         validateTiming(request.getOriginalStartTime(), request.getDeadline(), request.getFlexibilityWindowHours());
+        validateNotInThePast(request.getOriginalStartTime(), request.getDeadline());
 
         if (request.getRawConstraints() != null && request.getRawConstraints().length() > 1000) {
             throw new IllegalArgumentException("rawConstraints must not exceed 1000 characters");
@@ -214,6 +220,37 @@ public class JobService {
         }
         if (flexibilityWindowHours != null && flexibilityWindowHours < 0) {
             throw new IllegalArgumentException("flexibilityWindowHours must be non-negative");
+        }
+    }
+
+    /**
+     * Rejects a job whose scheduling window has already elapsed. Nothing can be run in an hour that
+     * has passed, so a job starting before the current hour is not schedulable the moment it is saved:
+     * the optimiser would report it {@code NO_FEASIBLE_SLOT} and the operator could not act on the
+     * plan it produced.
+     *
+     * <p>The current hour itself is allowed. Starts are on the hour, so excluding it would leave an
+     * operator unable to schedule anything in the hour they are working in.
+     *
+     * <p>Applies to updates as well as creates, so a past start cannot be reintroduced by editing.
+     * A job saved before this rule existed therefore needs its start moved forward before any other
+     * edit to it will save - which the message says.
+     *
+     * <p>Deliberately not part of {@link #validateTiming}: the constraint parser shares that method
+     * and only proposes values for the operator to review, so it must still be able to parse "6pm
+     * yesterday" and show it as a reviewable field rather than throw.
+     */
+    public void validateNotInThePast(LocalDateTime originalStartTime, LocalDateTime deadline) {
+        LocalDateTime currentHour = LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC)
+                .truncatedTo(ChronoUnit.HOURS);
+        if (originalStartTime != null && originalStartTime.isBefore(currentHour)) {
+            throw new IllegalArgumentException("originalStartTime " + originalStartTime
+                    + " is in the past; it must be at or after the current hour " + currentHour
+                    + " UTC, because a job cannot be run in an hour that has already passed");
+        }
+        if (deadline != null && !deadline.isAfter(currentHour)) {
+            throw new IllegalArgumentException("deadline " + deadline
+                    + " is in the past; it must be after the current hour " + currentHour + " UTC");
         }
     }
 

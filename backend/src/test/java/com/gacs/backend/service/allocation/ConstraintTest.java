@@ -9,6 +9,7 @@ import java.util.Map;
 import static com.gacs.backend.service.allocation.Fixtures.at;
 import static com.gacs.backend.service.allocation.Fixtures.job;
 import static com.gacs.backend.service.allocation.Fixtures.prices;
+import static com.gacs.backend.service.allocation.Fixtures.window;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** {@link JobWindow#restrictedTo} and {@link PlacementConstraint}'s no-op defaults. */
@@ -29,7 +30,7 @@ class ConstraintTest {
     @Test
     @DisplayName("restrictedTo narrows starts and runs to hours matching the predicate")
     void restrictedToNarrowsWindow() {
-        JobWindow window = new JobWindow(job(1, 20.0, 0.0, 0, 5, 6), prices(1, 1, 1, 1, 1, 1));
+        JobWindow window = window(job(1, 20.0, 0.0, 0, 5, 6), prices(1, 1, 1, 1, 1, 1));
         JobWindow restricted = window.restrictedTo(hour -> hour.equals(at(2)) || hour.equals(at(3)));
 
         assertThat(restricted.startSlots()).containsExactly(at(2), at(3));
@@ -39,7 +40,7 @@ class ConstraintTest {
     @Test
     @DisplayName("restrictedTo never widens what the window already allows")
     void restrictedToNeverWidens() {
-        JobWindow window = new JobWindow(job(1, 20.0, 0.0, 0, 1, 6), prices(1, 1, 1, 1, 1, 1));
+        JobWindow window = window(job(1, 20.0, 0.0, 0, 1, 6), prices(1, 1, 1, 1, 1, 1));
         JobWindow restricted = window.restrictedTo(hour -> true); // an always-true predicate still can't widen
         assertThat(restricted.startSlots()).isEqualTo(window.startSlots());
     }
@@ -47,7 +48,7 @@ class ConstraintTest {
     @Test
     @DisplayName("Repeated restrictedTo calls compose as an AND, only narrowing further")
     void restrictedToComposes() {
-        JobWindow window = new JobWindow(job(1, 20.0, 0.0, 0, 5, 6), prices(1, 1, 1, 1, 1, 1));
+        JobWindow window = window(job(1, 20.0, 0.0, 0, 5, 6), prices(1, 1, 1, 1, 1, 1));
         JobWindow restricted = window.restrictedTo(hour -> !hour.equals(at(1)))
                 .restrictedTo(hour -> !hour.equals(at(3)));
 
@@ -59,7 +60,7 @@ class ConstraintTest {
     void defaultsAreNoOps() {
         PlacementConstraint constraint = new NoOpConstraint();
         OptimizerJob theJob = job(1, 20.0, 0.0, 0, 0, 1);
-        JobWindow window = new JobWindow(theJob, prices(1));
+        JobWindow window = window(theJob, prices(1));
         JobPlan plan = new JobPlan(theJob, List.of(new SlotAllocation(at(0), 1.0)));
 
         assertThat(constraint.restrict(theJob, window, Map.of())).isEqualTo(window);

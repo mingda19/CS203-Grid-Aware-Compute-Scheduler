@@ -30,11 +30,14 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import com.gacs.backend.support.FixedClockConfig;
+import org.springframework.context.annotation.Import;
 
 /**
  * GRID-123 acceptance flow, as a client now runs it: create jobs through the job API, read them back,
  * send them to the optimiser with a forecast location, and check the plan against every contract rule.
  */
+@Import(FixedClockConfig.class)
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")

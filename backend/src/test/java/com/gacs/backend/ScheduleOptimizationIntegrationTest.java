@@ -33,12 +33,15 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import com.gacs.backend.support.FixedClockConfig;
+import org.springframework.context.annotation.Import;
 
 /**
  * Contract tests for {@code POST /api/schedules/optimize} (docs/api-contract.md section 6.4) through the
  * full application: security, JSON, the forecast query, validation, solver and response. Forecast rows are
  * stored in H2 rather than mocked, because the latest-forecast query is part of the contract.
  */
+@Import(FixedClockConfig.class)
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")

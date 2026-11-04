@@ -14,7 +14,10 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 
@@ -31,13 +34,16 @@ class JobServiceTest {
 
     private JobService jobService;
 
+    /** One hour before {@link #start}, so the jobs these tests create are not in the past. */
+    private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-10-20T09:00:00Z"), ZoneOffset.UTC);
+
     private final String owner = "operator@datacenter.io";
     private final LocalDateTime start = LocalDateTime.of(2026, 10, 20, 10, 0);
     private final LocalDateTime deadline = LocalDateTime.of(2026, 10, 21, 18, 0);
 
     @BeforeEach
     void setUp() {
-        jobService = new JobService(jobRepository, org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class));
+        jobService = new JobService(jobRepository, org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class), CLOCK);
     }
 
     @Test

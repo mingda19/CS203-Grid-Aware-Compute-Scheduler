@@ -74,8 +74,8 @@ public class HybridAllocationSolver implements AllocationSolver {
     static int size(OptimizationProblem problem) {
         int pairs = 0;
         for (OptimizerJob job : problem.flexibleJobsInTieBreakOrder()) {
-            JobWindow window = new JobWindow(job, problem.prices());
-            long hours = java.time.Duration.between(job.originalStartTime(), window.lastSlot()).toHours() + 1;
+            JobWindow window = problem.windowFor(job);
+            long hours = java.time.Duration.between(window.firstSlot(), window.lastSlot()).toHours() + 1;
             pairs += (int) Math.max(0, hours);
         }
         return pairs;
