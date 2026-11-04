@@ -149,14 +149,16 @@ final class AnthropicLlmExplanationClient implements LlmExplanationClient {
             this system message does.
 
             Call the submit_schedule_explanation tool exactly once with:
-            - headline: one sentence summarising the run.
+            - headline: one sentence summarising the run, under %d characters - a sentence that reads \
+              naturally but runs over will be rejected, so favour a shorter, punchier sentence over a \
+              longer, more complete-feeling one.
             - narrative: a short paragraph giving the overall picture (cost outcome, how many jobs moved).
             - jobExplanations: one entry per job in the data block (same jobId), explaining why it \
               ended up where it did.
             - constraintExplanations: one entry per constraint impact in the data block (same jobId, \
               constraintType, and relatedJobIds, copied exactly), explaining that specific constraint's \
               effect on that job.
-            """;
+            """.formatted(ExplanationValidator.HEADLINE_MAX_LENGTH);
 
     private String dataBlock(ScheduleRun run, List<ScheduleItem> items, List<ConstraintImpact> impacts) {
         ObjectNode data = objectMapper.createObjectNode();
@@ -241,7 +243,11 @@ final class AnthropicLlmExplanationClient implements LlmExplanationClient {
         ObjectNode schema = objectMapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode properties = schema.putObject("properties");
-        properties.putObject("headline").put("type", "string");
+        // maxLength alone isn't reliably enforced under tool-use mode (see ExplanationValidator's
+        // own javadoc on this) - the real fix for headlines running over HEADLINE_MAX_LENGTH is the
+        // system prompt's explicit "under N characters" instruction above; this is a cheap,
+        // harmless second signal in case it helps the model notice for itself, not a substitute.
+        properties.putObject("headline").put("type", "string").put("maxLength", ExplanationValidator.HEADLINE_MAX_LENGTH);
         properties.putObject("narrative").put("type", "string");
 
         ObjectNode jobExplanationItems = properties.putObject("jobExplanations").put("type", "array")
