@@ -1,5 +1,6 @@
 package com.gacs.backend.service;
 
+import com.gacs.backend.exception.ResourceNotFoundException;
 import com.gacs.backend.dto.AuditEventDetailDto;
 import com.gacs.backend.dto.AuditEventRequestDto;
 import com.gacs.backend.dto.OptimizeResponseDto;
@@ -257,11 +258,24 @@ class AuditEventServiceTest {
     /** Stores run-7 with a plan owned by user 3 and an approval that hashes the stored result. */
     private void storePlanOwnedByUser3(String eventHash) {
         OptimizerRun run = run("run-7");
-        OptimizationPlan plan = new OptimizationPlan(run, user(3L, "owner@gacs.internal"), STORED_RESULT, List.of(5L),
-                run.getCreatedAt());
         when(auditEventRepository.findById(7L)).thenReturn(Optional.of(decision(7L, "run-7", eventHash)));
         when(optimizerRunRepository.findById("run-7")).thenReturn(Optional.of(run));
+        when(planRepository.findById("run-7")).thenReturn(Optional.of(planOwnedByUser3(run)));
+    }
+
+    /**
+     * The event and its plan only. Entitlement is now checked before any run data is loaded, so a
+     * test about an unentitled viewer must not stub the run lookups it will never reach.
+     */
+    private void storePlanOwnedByUser3WithoutRun(String eventHash) {
+        OptimizationPlan plan = planOwnedByUser3(run("run-7"));
+        when(auditEventRepository.findById(7L)).thenReturn(Optional.of(decision(7L, "run-7", eventHash)));
         when(planRepository.findById("run-7")).thenReturn(Optional.of(plan));
+    }
+
+    private static OptimizationPlan planOwnedByUser3(OptimizerRun run) {
+        return new OptimizationPlan(run, user(3L, "owner@gacs.internal"), STORED_RESULT, List.of(5L),
+                run.getCreatedAt());
     }
 
     @Test
@@ -307,29 +321,28 @@ class AuditEventServiceTest {
     }
 
     @Test
-    @DisplayName("AC6.1b — Other users see whether the stored schedule matches, but not the schedule")
-    void testGetEventDetail_NonOwnerSeesNoSchedule() {
-        storePlanOwnedByUser3(ScheduleHashUtil.computeSha256(STORED_RESULT));
+    @DisplayName("AC6.1b — Another operator cannot read the event at all, not just its schedule")
+    void testGetEventDetail_NonOwnerSeesNothing() {
+        storePlanOwnedByUser3WithoutRun(ScheduleHashUtil.computeSha256(STORED_RESULT));
         when(userRepository.findByEmail("other@gacs.internal")).thenReturn(Optional.of(user(9L, "other@gacs.internal")));
 
-        AuditEventDetailDto result = auditEventService.getEventDetail(7L, "other@gacs.internal");
-
-        assertThat(result.scheduleAvailability()).isEqualTo(AuditEventDetailDto.ScheduleAvailability.OWNER_ONLY);
-        assertThat(result.scheduleHashMatches()).isTrue();
-        assertThat(result.schedule()).isNull();
-        assertThat(result.run()).isNotNull();
+        // Hiding only the schedule body still disclosed the actor, action, run id, hash and
+        // rationale, and ids are sequential, so the endpoint could be walked to read every
+        // operator's decisions. Reported as absent rather than forbidden, so its existence is not
+        // confirmed either.
+        assertThatThrownBy(() -> auditEventService.getEventDetail(7L, "other@gacs.internal"))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessageContaining("Audit event not found with id: 7");
     }
 
     @Test
-    @DisplayName("AC6.1b — A viewer with no database user is not treated as the owner")
-    void testGetEventDetail_UnknownViewerSeesNoSchedule() {
-        storePlanOwnedByUser3(ScheduleHashUtil.computeSha256(STORED_RESULT));
+    @DisplayName("AC6.1b — A viewer with no database user cannot read the event")
+    void testGetEventDetail_UnknownViewerSeesNothing() {
+        storePlanOwnedByUser3WithoutRun(ScheduleHashUtil.computeSha256(STORED_RESULT));
         when(userRepository.findByEmail("ghost@gacs.internal")).thenReturn(Optional.empty());
 
-        AuditEventDetailDto result = auditEventService.getEventDetail(7L, "ghost@gacs.internal");
-
-        assertThat(result.scheduleAvailability()).isEqualTo(AuditEventDetailDto.ScheduleAvailability.OWNER_ONLY);
-        assertThat(result.schedule()).isNull();
+        assertThatThrownBy(() -> auditEventService.getEventDetail(7L, "ghost@gacs.internal"))
+                .isInstanceOf(ResourceNotFoundException.class);
     }
 
     @Test
@@ -351,7 +364,9 @@ class AuditEventServiceTest {
         when(optimizerRunRepository.findById("run-missing")).thenReturn(Optional.empty());
         when(planRepository.findById("run-missing")).thenReturn(Optional.empty());
 
-        AuditEventDetailDto result = auditEventService.getEventDetail(8L, "owner@gacs.internal");
+        // Viewed by the operator who performed it: entitlement comes from being the actor, so a run
+        // with no stored plan still reports NOT_STORED rather than being hidden.
+        AuditEventDetailDto result = auditEventService.getEventDetail(8L, "operator@gacs.internal");
 
         assertThat(result.event().runId()).isEqualTo("run-missing");
         assertThat(result.run()).isNull();

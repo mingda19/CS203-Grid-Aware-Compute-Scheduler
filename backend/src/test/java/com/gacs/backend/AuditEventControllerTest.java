@@ -28,6 +28,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
@@ -35,6 +36,7 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verifyNoInteractions;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -196,7 +198,10 @@ class AuditEventControllerTest {
                 validRationale
         );
 
-        when(auditEventService.getEventsByRunId(validRunId)).thenReturn(List.of(event));
+        // A non-admin caller reads only their own events on the run, so the controller goes through
+        // the actor-scoped read. What the endpoint returns is unchanged.
+        when(auditEventService.getEventsByRunIdForActor(validRunId, "operator@gacs.internal"))
+                .thenReturn(List.of(event));
 
         mockMvc.perform(get("/api/audit-events/run/" + validRunId))
                 .andExpect(status().isOk())
@@ -299,6 +304,8 @@ class AuditEventControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true));
 
+        // The request's own filters are bound as before, and the controller adds the ownership scope
+        // from the authenticated principal - never from a request parameter.
         verify(auditEventService).getEvents(
                 eq(new AuditEventFilter(
                         Instant.parse("2026-10-28T00:00:00Z"),
@@ -306,8 +313,42 @@ class AuditEventControllerTest {
                         "operator@gacs",
                         AuditActionType.REJECT,
                         "7f3c",
-                        101L)),
+                        101L).scopedTo("user")),
                 eq(org.springframework.data.domain.PageRequest.of(2, 50)));
+    }
+
+    @Test
+    @WithMockUser(username = "operator@gacs.internal", roles = "USER")
+    @DisplayName("An operator's query is scoped to their own events, whoever they ask about")
+    void getEvents_ScopedToCallerEvenWhenAskingForAnotherOperator() throws Exception {
+        when(auditEventService.getEvents(any(AuditEventFilter.class), any(Pageable.class))).thenReturn(Page.empty());
+
+        mockMvc.perform(get("/api/audit-events").param("actor", "someone.else@gacs.internal"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<AuditEventFilter> used = ArgumentCaptor.forClass(AuditEventFilter.class);
+        verify(auditEventService).getEvents(used.capture(), any(Pageable.class));
+        // The search term is still honoured, but it cannot widen the result set beyond the caller:
+        // onlyActor is an exact match on their own address, so asking after another operator returns
+        // nothing rather than their decisions.
+        assertThat(used.getValue().onlyActor()).isEqualTo("operator@gacs.internal");
+        assertThat(used.getValue().actor()).isEqualTo("someone.else@gacs.internal");
+    }
+
+    @Test
+    @WithMockUser(username = "admin@gacs.internal", roles = "ADMIN")
+    @DisplayName("Even an administrator is scoped: no role widens the endpoint every operator uses")
+    void getEvents_ScopedForAdministratorsToo() throws Exception {
+        when(auditEventService.getEvents(any(AuditEventFilter.class), any(Pageable.class))).thenReturn(Page.empty());
+
+        mockMvc.perform(get("/api/audit-events")).andExpect(status().isOk());
+
+        ArgumentCaptor<AuditEventFilter> used = ArgumentCaptor.forClass(AuditEventFilter.class);
+        verify(auditEventService).getEvents(used.capture(), any(Pageable.class));
+        // An auditor view belongs on its own explicitly-authorised endpoint. A role check here would
+        // mean the scope of the shared endpoint depends on who is asking, which is how the leak
+        // stayed invisible in the first place.
+        assertThat(used.getValue().onlyActor()).isEqualTo("admin@gacs.internal");
     }
 
     @ParameterizedTest

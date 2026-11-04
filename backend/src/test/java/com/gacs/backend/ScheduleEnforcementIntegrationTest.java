@@ -210,7 +210,7 @@ class ScheduleEnforcementIntegrationTest {
         refused(apply(run),"INVALIDATED");
     }
 
-    @Test void applicationIsIdempotentAndRejectionBlocksStarts() throws Exception {
+    @Test void applicationIsIdempotentAndRevocationBlocksStarts() throws Exception {
         String run=optimize(); refused(apply(run),"NOT_APPROVED");
         decide(run,"approve").andExpect(status().isOk());
         String first=apply(run).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
@@ -219,7 +219,9 @@ class ScheduleEnforcementIntegrationTest {
         assertThat(audit.findByRunIdOrderByTimestampDesc(run).stream().filter(e->e.getActionType()==AuditActionType.DISPATCH)).hasSize(1);
         var entry=schedules.findByRunIdOrderByIdAsc(run).getFirst();
         transition(entry.getId(),"Running").andExpect(status().isOk());
-        decide(run,"reject").andExpect(status().isOk()); refused(transition(entry.getId(),"Running"),"NOT_APPROVED");
+        // Withdrawing the approval is what halts it; "reject" is a first decision and is refused here.
+        refused(decide(run,"reject"),"ALREADY_DECIDED");
+        decide(run,"revoke").andExpect(status().isOk()); refused(transition(entry.getId(),"Running"),"NOT_APPROVED");
         transition(entry.getId(),"Completed").andExpect(status().isOk());
     }
 
@@ -259,7 +261,7 @@ class ScheduleEnforcementIntegrationTest {
     @Test void supersessionUsesApprovalOrderAndCannotBeRevived() throws Exception {
         String older=optimize(),newer=optimize();decide(newer,"approve").andExpect(status().isOk());
         decide(older,"approve").andExpect(status().isOk());refused(apply(newer),"STALE");
-        decide(older,"reject").andExpect(status().isOk());refused(decide(newer,"approve"),"STALE");
+        decide(older,"revoke").andExpect(status().isOk());refused(decide(newer,"approve"),"STALE");
     }
 
     @Test void expiryPersistsStaleWithoutAnExportRequest() throws Exception {
@@ -327,11 +329,18 @@ class ScheduleEnforcementIntegrationTest {
         assertThat(audit.findByRunIdOrderByTimestampDesc(run).stream().filter(e->e.getActionType()==AuditActionType.DISPATCH)).hasSize(1);
     }
 
-    @Test void revisionRequestedRunCannotBeAppliedOrStarted() throws Exception {
+    @Test void revokedRunCannotBeAppliedOrStarted() throws Exception {
         String run=optimize();decide(run,"approve").andExpect(status().isOk());apply(run).andExpect(status().isOk());
         long id=schedules.findByRunIdOrderByIdAsc(run).getFirst().getId();
-        decide(run,"revise").andExpect(status().isOk());refused(apply(run),"NOT_APPROVED");
+        decide(run,"revoke").andExpect(status().isOk());refused(apply(run),"NOT_APPROVED");
         refused(transition(id,"Running"),"NOT_APPROVED");
+    }
+
+    /** Revision is a first decision now, so it is reached from PENDING rather than after approval. */
+    @Test void revisionRequestedRunCannotBeApplied() throws Exception {
+        String run=optimize();decide(run,"revise").andExpect(status().isOk());
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.REVISION_REQUESTED);
+        refused(apply(run),"NOT_APPROVED");
     }
 
     @Test void failedInputMutationRollsBackRevisionAndInvalidation() throws Exception {

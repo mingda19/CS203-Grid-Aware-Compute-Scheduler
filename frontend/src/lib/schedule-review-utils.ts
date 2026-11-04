@@ -35,8 +35,16 @@ const TERMINAL_DECISIONS: ReadonlySet<PlanReviewState> = new Set(["APPROVED", "R
 export function decisionUnavailable(plan: SchedulePlanDetail | null, action: ScheduleDecisionAction): string | null {
   const universal = planUnavailable(plan)
   if (universal) return universal
+  // Revoking is the one move still open on a decided plan, and only on an approved one: an approval
+  // may already have dispatched work, so there has to be a way to halt it. A rejected or
+  // revision-requested plan dispatched nothing, so it is final.
+  if (action === "revoke")
+    return plan!.reviewState === "APPROVED" ? null
+      : `Only an approved schedule can be revoked. This one is ${reviewLabels[plan!.reviewState].toLowerCase()}.`
   if (TERMINAL_DECISIONS.has(plan!.reviewState))
-    return `This schedule is already ${reviewLabels[plan!.reviewState].toLowerCase()} and cannot be decided again.`
+    return plan!.reviewState === "APPROVED"
+      ? "This schedule is already approved. Revoke the approval to halt it."
+      : `This schedule is already ${reviewLabels[plan!.reviewState].toLowerCase()} and cannot be decided again.`
   if (action === "approve" && !plan!.recommendation!.items.some(item => item.scheduledStart && item.scheduledEnd)) return "This recommendation has no scheduled jobs to approve."
   return null
 }

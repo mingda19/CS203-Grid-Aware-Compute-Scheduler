@@ -133,9 +133,13 @@ class ScheduleDecisionIntegrationTest {
 
     @Test
     void allActionsAppendHistoryAndUseAuthenticatedDatabaseIdentity() throws Exception {
-        UUID runId = optimize();
-        String snapshot = plans.findById(runId.toString()).orElseThrow().getResultJson();
+        // A run holds one decision for life, so each action gets its own run. What this test is
+        // actually about - that the database identity comes from the authenticated user and never
+        // from the token's numeric claim, and that each decision is recorded against the plan's hash
+        // - is unchanged by that.
         for (AuditActionType action : List.of(AuditActionType.APPROVE, AuditActionType.REJECT, AuditActionType.REVISE)) {
+            UUID runId = optimize();
+            String snapshot = plans.findById(runId.toString()).orElseThrow().getResultJson();
             String response = mvc.perform(post("/api/schedules/" + runId + "/" + action.name().toLowerCase(Locale.ROOT))
                     // Even a signed token's numeric claim is not trusted as the database identity.
                     .header("Authorization", "Bearer " + jwt.generateAccessToken(owner.getEmail(), -123L, "ROLE_USER", "Operator"))
@@ -154,22 +158,32 @@ class ScheduleDecisionIntegrationTest {
             assertThat(saved.getActionType()).isEqualTo(action);
             assertThat(saved.getTimestamp()).isCloseTo(Instant.parse(timestamp), within(1, java.time.temporal.ChronoUnit.MICROS));
             assertThat(saved.getOperatorRationale()).isEqualTo("reviewed");
+
+            String expectedHash = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(snapshot.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            assertThat(history(runId)).singleElement().satisfies(d -> {
+                assertThat(d.getActor()).isEqualTo(owner.getEmail());
+                assertThat(d.getScheduleHash()).isEqualTo(expectedHash);
+            });
+            OptimizationPlan plan = plans.findById(runId.toString()).orElseThrow();
+            assertThat(plan.getReviewState()).isEqualTo(state(action));
+            // Deciding never rewrites the plan it was decided on.
+            assertThat(plan.getResultJson()).isEqualTo(snapshot);
         }
-        mvc.perform(post("/api/schedules/" + runId + "/approve").with(user(owner.getEmail()))
-                .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed again\"}"))
+
+        // Revoking an approval appends a second decision to that run's history, and is the only
+        // transition left open on a decided run.
+        UUID approved = optimize();
+        mvc.perform(post("/api/schedules/" + approved + "/approve").with(user(owner.getEmail()))
+                .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
             .andExpect(status().isOk());
-        var history = history(runId);
-        assertThat(history).extracting(AuditEvent::getActionType)
-            .containsExactly(AuditActionType.APPROVE, AuditActionType.REJECT, AuditActionType.REVISE, AuditActionType.APPROVE);
-        String expectedHash = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
-            .digest(snapshot.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-        assertThat(history).allSatisfy(d -> {
-            assertThat(d.getActor()).isEqualTo(owner.getEmail());
-            assertThat(d.getScheduleHash()).isEqualTo(expectedHash);
-        });
-        OptimizationPlan plan = plans.findById(runId.toString()).orElseThrow();
-        assertThat(plan.getReviewState()).isEqualTo(ReviewState.APPROVED);
-        assertThat(plan.getResultJson()).isEqualTo(snapshot);
+        mvc.perform(post("/api/schedules/" + approved + "/revoke").with(user(owner.getEmail()))
+                .contentType(APPLICATION_JSON).content("{\"comment\":\"halting it\"}"))
+            .andExpect(status().isOk());
+        assertThat(history(approved)).extracting(AuditEvent::getActionType)
+            .containsExactly(AuditActionType.APPROVE, AuditActionType.REVOKE);
+        assertThat(plans.findById(approved.toString()).orElseThrow().getReviewState())
+            .isEqualTo(ReviewState.REJECTED);
     }
 
     @Test
@@ -262,14 +276,28 @@ class ScheduleDecisionIntegrationTest {
                 }));
             }
             start.countDown();
-            for (var call : calls) assertThat(call.get(15, TimeUnit.SECONDS).decisionId()).isNotNull();
+            // Exactly one of the two lands: a decision is terminal, so the loser is refused rather
+            // than quietly overwriting the winner. That the race has a definite winner is a stronger
+            // guarantee than the old one, where both wrote and the final state depended on ordering.
+            int accepted = 0;
+            for (var call : calls) {
+                try {
+                    assertThat(call.get(15, TimeUnit.SECONDS).decisionId()).isNotNull();
+                    accepted++;
+                } catch (java.util.concurrent.ExecutionException refused) {
+                    assertThat(refused.getCause())
+                        .isInstanceOf(com.gacs.backend.exception.ScheduleExportRejectedException.class)
+                        .hasMessageContaining("cannot be decided again");
+                }
+            }
+            assertThat(accepted).isEqualTo(1);
         }
         var history = history(runId);
-        assertThat(history).hasSize(2);
-        assertThat(history).extracting(AuditEvent::getActionType)
-            .containsExactlyInAnyOrder(AuditActionType.APPROVE, AuditActionType.REJECT);
+        assertThat(history).hasSize(1);
+        assertThat(history.getFirst().getActionType())
+            .isIn(AuditActionType.APPROVE, AuditActionType.REJECT);
         assertThat(plans.findById(runId.toString()).orElseThrow().getReviewState())
-            .isEqualTo(state(history.getLast().getActionType()));
+            .isEqualTo(state(history.getFirst().getActionType()));
     }
     @Test
     void planPersistenceFailureRollsBackRunAndExplanation() throws Exception {

@@ -88,6 +88,10 @@ public class OptimizationPlan {
             case APPROVE -> ReviewState.APPROVED;
             case REJECT -> ReviewState.REJECTED;
             case REVISE -> ReviewState.REVISION_REQUESTED;
+            // A revoked approval lands in REJECTED so that every existing execution gate - which
+            // already refuses to apply, start or export anything not APPROVED - halts the schedule
+            // without needing to learn a new state.
+            case REVOKE -> ReviewState.REJECTED;
             default -> throw new IllegalArgumentException("Unsupported schedule decision: " + action);
         };
     }

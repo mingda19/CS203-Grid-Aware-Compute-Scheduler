@@ -107,15 +107,39 @@ public class ScheduleReviewService {
         com.gacs.backend.model.ReviewState.APPROVED, com.gacs.backend.model.ReviewState.REJECTED,
         com.gacs.backend.model.ReviewState.REVISION_REQUESTED);
 
+    /**
+     * The one move still open on a run that already holds a decision: withdrawing an approval.
+     *
+     * <p>A first decision is terminal - that is what stops a plan being approved twice, or approved
+     * and then rejected as though both were open choices. But an approval that has already dispatched
+     * work has to stay reversible, or there is no way to halt a running schedule at all, which in a
+     * product whose whole premise is human control would be the more serious defect. So exactly one
+     * transition survives: {@code APPROVED -> REVOKE}. A rejected or revision-requested run is final,
+     * since nothing was dispatched from it and there is nothing to halt.
+     */
+    private static boolean isRevocationOfApproval(com.gacs.backend.model.ReviewState state,
+                                                  AuditActionType action) {
+        return state == com.gacs.backend.model.ReviewState.APPROVED && action == AuditActionType.REVOKE;
+    }
+
     @Transactional(noRollbackFor = com.gacs.backend.exception.ScheduleExportRejectedException.class)
     public ScheduleDecisionDto decide(UUID runId, AuditActionType action, String comment, String email) {
         OptimizationPlan plan = gate.owned(runId, email);
         User operator = plan.getOwner();
-        if (TERMINAL_DECISIONS.contains(plan.getReviewState()))
+        if (TERMINAL_DECISIONS.contains(plan.getReviewState())
+            && !isRevocationOfApproval(plan.getReviewState(), action))
             throw new com.gacs.backend.exception.ScheduleExportRejectedException(
                 com.gacs.backend.exception.ScheduleExportRejectedException.Reason.ALREADY_DECIDED,
                 "Schedule run " + runId + " is already " + plan.getReviewState().name().toLowerCase(java.util.Locale.ROOT).replace('_', ' ')
-                    + " and cannot be decided again");
+                    + " and cannot be decided again"
+                    + (plan.getReviewState() == com.gacs.backend.model.ReviewState.APPROVED
+                        ? ". Revoke the approval instead to halt it." : ""));
+        if (action == AuditActionType.REVOKE
+            && plan.getReviewState() != com.gacs.backend.model.ReviewState.APPROVED)
+            throw new com.gacs.backend.exception.ScheduleExportRejectedException(
+                com.gacs.backend.exception.ScheduleExportRejectedException.Reason.ALREADY_DECIDED,
+                "Schedule run " + runId + " is " + plan.getReviewState().name().toLowerCase(java.util.Locale.ROOT).replace('_', ' ')
+                    + ", not approved, so there is no approval to revoke");
         if (action == AuditActionType.APPROVE || plan.getReviewState() == com.gacs.backend.model.ReviewState.INVALIDATED
             || plan.getReviewState() == com.gacs.backend.model.ReviewState.STALE) gate.check(plan, email, false);
         plan.recordDecision(action);
