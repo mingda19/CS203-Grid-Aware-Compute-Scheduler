@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/dialog"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
 import { toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
+import { elapsedJobLabel, elapsedJobsConfirmation, elapsedStartJobs } from "@/lib/elapsed-jobs"
 import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
 
@@ -102,6 +103,10 @@ export default function JobsPage() {
   const [optimizationPlan, setOptimizationPlan] = React.useState<OptimizeResponse | null>(null)
   const [optimizeOpen, setOptimizeOpen] = React.useState(false)
   const [jobToDelete, setJobToDelete] = React.useState<ComputeJob | null>(null)
+  // The jobs whose start time has already passed, held while the operator decides whether to let
+  // the optimiser reschedule them. Null means no question is pending - the common path, where no
+  // job has elapsed and optimising must not cost an extra click.
+  const [elapsedToConfirm, setElapsedToConfirm] = React.useState<ComputeJob[] | null>(null)
   const [deletingJob, setDeletingJob] = React.useState(false)
 
   const [jobExplanations, setJobExplanations] = React.useState<JobExplanation[]>([])
@@ -353,23 +358,51 @@ export default function JobsPage() {
     }
   }
 
-  // Schedule Optimization execution
+  /** The jobs this run would submit: everything not already cancelled, completed or running. */
+  const schedulableJobs = () => jobs.filter(job => !["CANCELLED", "COMPLETED", "RUNNING"].includes(job.status))
+
+  /**
+   * Schedule optimisation, with one question in front of it.
+   *
+   * A job whose start time has passed has a flexibility window anchored to a time that no longer
+   * exists, so the optimiser has nowhere to put it and reports it NO_FEASIBLE_SLOT even when its
+   * deadline is hours away. It can instead be rescheduled into the hours between now and that
+   * deadline - but that places it outside the window the operator specified, so it is their call,
+   * not an inference from the data. Hence the confirmation, which names the jobs.
+   *
+   * If nothing has elapsed there is no dialog: the common path keeps exactly one click.
+   */
   const runOptimization = async () => {
     if (jobs.length === 0) {
       setError("Add at least one compute job before running schedule optimization.")
       return
     }
+    const pending = schedulableJobs()
+    if (!pending.length) {
+      setError("No pending jobs are available for optimization.")
+      return
+    }
+    const elapsed = elapsedStartJobs(pending)
+    if (elapsed.length) {
+      setError("")
+      setElapsedToConfirm(elapsed)
+      return
+    }
+    await optimize(false)
+  }
+
+  const optimize = async (rescheduleElapsedJobs: boolean) => {
     setError("")
     setOptimizing(true)
 
     // Build optimize payload ensuring originalStartTime is truncated to the hour
-    const schedulableJobs = jobs.filter(job => !["CANCELLED", "COMPLETED", "RUNNING"].includes(job.status))
-    if (!schedulableJobs.length) {
+    const pending = schedulableJobs()
+    if (!pending.length) {
       setError("No pending jobs are available for optimization.")
       setOptimizing(false)
       return
     }
-    const optimizeJobs = schedulableJobs.map(toOptimizeJobInput)
+    const optimizeJobs = pending.map(toOptimizeJobInput)
 
     try {
       const response = await optimizerApi.optimize({
@@ -380,6 +413,8 @@ export default function JobsPage() {
           maxConcurrentCpuHours: Number(facility.maxCpuHours),
           maxConcurrentGpuHours: Number(facility.maxGpuHours),
         },
+        // Only ever true because the operator just confirmed it for these jobs.
+        ...(rescheduleElapsedJobs ? { rescheduleElapsedJobs: true } : {}),
       })
       if (!response.success || !response.data) {
         throw new Error(response.message || "Failed to generate schedule")
@@ -751,6 +786,58 @@ export default function JobsPage() {
           )}
         </CardContent>
       </Card>
+
+      {/*
+        Elapsed-start confirmation. Shown only when at least one job's start time has already gone
+        by; optimising when nothing has elapsed does not pass through here at all. Choosing
+        "Optimize anyway" is what sends rescheduleElapsedJobs - the operator's explicit consent to
+        placement outside the window they originally set.
+      */}
+      <Dialog open={!!elapsedToConfirm} onOpenChange={open => { if (!open && !optimizing) setElapsedToConfirm(null) }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {elapsedToConfirm?.length === 1
+                ? "One job's start time has passed"
+                : `${elapsedToConfirm?.length ?? 0} jobs' start times have passed`}
+            </DialogTitle>
+            <DialogDescription>
+              {elapsedToConfirm ? elapsedJobsConfirmation(elapsedToConfirm.length) : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-56 overflow-y-auto rounded-md border p-3">
+            <ul className="space-y-1 text-sm">
+              {elapsedToConfirm?.map(job => (
+                <li key={job.id} className="flex flex-wrap items-baseline justify-between gap-2">
+                  {/* Name and id, not the id alone: an operator cannot tell which job "#118" is. */}
+                  <span className="font-medium">{elapsedJobLabel(job)}</span>
+                  <span className="text-xs text-muted-foreground">
+                    was due {formatMarketDateTime(job.originalStartTime)} {MARKET_ZONE_LABEL}, deadline{" "}
+                    {formatMarketDateTime(job.deadline)} {MARKET_ZONE_LABEL}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={optimizing}
+              onClick={() => setElapsedToConfirm(null)}>Cancel</Button>
+            {/*
+              Optimising without the flag stays available: it is today's behaviour, and an operator
+              who would rather fix the start times themselves should not have to accept a widened
+              window to see the rest of the plan.
+            */}
+            <Button type="button" variant="outline" disabled={optimizing}
+              onClick={() => { setElapsedToConfirm(null); void optimize(false) }}>
+              Leave them out
+            </Button>
+            <Button type="button" disabled={optimizing}
+              onClick={() => { setElapsedToConfirm(null); void optimize(true) }}>
+              {optimizing ? "Solving Schedule…" : "Reschedule and optimize"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Optimizer Results Dialog */}
       <Dialog open={optimizeOpen} onOpenChange={setOptimizeOpen}>

@@ -423,3 +423,23 @@ export function currentMarketHourInput(now: Date | string | number = Date.now())
   const field = (type: string) => parts.find((p) => p.type === type)?.value ?? "00"
   return `${field("year")}-${field("month")}-${field("day")}T${field("hour")}:00`
 }
+
+/**
+ * The instant the current market hour began, as a `Date`.
+ *
+ * Built from {@link currentMarketHourInput} and {@link marketWallTimeToUtc} rather than by
+ * truncating `Date.now()`, so the offset is resolved for the instant being converted and this module
+ * stays the only place that knows about market time. Callers get an instant, which is what a
+ * comparison against a UTC timestamp from the API needs: job times travel as timezone-free strings
+ * that mean UTC, and comparing those against a market wall-clock string would be wrong by the
+ * offset - and ambiguous for the repeated hour when Central Time falls back.
+ *
+ * This is the same boundary the optimiser enforces server-side (`OptimizationProblem.earliestStart`,
+ * the current hour truncated), so "has this job's start passed?" gets the same answer on both sides.
+ */
+export function currentMarketHourStart(now: Date | string | number = Date.now()): Date {
+  const [date, time] = currentMarketHourInput(now).split("T")
+  const [year, month, day] = date.split("-").map(Number)
+  const [hour] = time.split(":").map(Number)
+  return marketWallTimeToUtc(year, month, day, hour, 0, 0)
+}

@@ -5,7 +5,7 @@ import type { SchedulePlanDetail } from "./api"
 const plan: SchedulePlanDetail = { runId: "run", reviewState: "PENDING", invalidationReason: null, invalidatedAt: null, appliedAt: null,
   recommendation: { runId: "run", status: "SCHEDULED", provenOptimal: true, baselineCostUsd: 2, optimizedCostUsd: 1, projectedSavingsUsd: 1,
     projectedSavingsPercent: 50, plainEnglishExplanation: "Shifted", usedSeededFallbackPrices: false,
-    items: [{ jobId: 1, jobName: "Train", baselineStart: "2026-11-02T10:00:00Z", scheduledStart: "2026-11-02T11:00:00Z", scheduledEnd: "2026-11-02T12:00:00Z", allocatedCpuHours: 1, allocatedGpuHours: 0, allocations: [], perJobStatus: "OPTIMISED", reason: null, baselineCostUsd: 2, optimizedCostUsd: 1, savingsUsd: 1 }] } }
+    items: [{ jobId: 1, jobName: "Train", baselineStart: "2026-11-02T10:00:00Z", scheduledStart: "2026-11-02T11:00:00Z", scheduledEnd: "2026-11-02T12:00:00Z", allocatedCpuHours: 1, allocatedGpuHours: 0, allocations: [], perJobStatus: "OPTIMISED", reason: null, baselineCostUsd: 2, optimizedCostUsd: 1, savingsUsd: 1, rescheduledFromElapsedStart: false }] } }
 
 describe("review controls", () => {
   it("requires a nonblank justification of at most 2,000 characters", () => {

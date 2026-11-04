@@ -63,7 +63,7 @@ public class OptimizationProblemFactory {
         if (request == null) {
             throw invalid("request body is required");
         }
-        List<OptimizerJob> jobs = jobs(request.jobs());
+        List<OptimizerJob> jobs = reanchorElapsed(jobs(request.jobs()), request.reschedulesElapsedJobs());
         SlotCapacity capacity = capacity(request.clusterCapacity(), request.capacityOverrides());
 
         BaselineCalculator baselines = new BaselineCalculator(capacity);
@@ -98,6 +98,42 @@ public class OptimizationProblemFactory {
     }
 
     /**
+     * Re-anchors the start window of every job whose {@code originalStartTime} has already passed, if
+     * and only if the request opted in ({@code rescheduleElapsedJobs}).
+     *
+     * <p>Without the opt-in, such a job keeps a window of {@code [originalStartTime,
+     * originalStartTime + flexibilityWindowHours]} that can lie entirely behind the current hour, so
+     * it has no usable start slot and the solver reports it {@code NO_FEASIBLE_SLOT} - correct, but
+     * blunt: the deadline may still be hours away, and the only thing wrong with the job is that the
+     * operator did not get to it in time. With the opt-in its window becomes {@code [now, last slot
+     * that still finishes by the deadline]} (see {@link OptimizerJob#latestStart()}).
+     *
+     * <p>Three limits are deliberate:
+     * <ul>
+     *   <li>the flag is applied per job, only where the start has really elapsed, so the response can
+     *       say exactly which jobs moved for this reason rather than to save money;</li>
+     *   <li>exempt jobs are untouched - {@link OptimizerJob#reanchoredToDeadline()} returns them
+     *       unchanged - because an exempt job's whole meaning is that it runs at its original time;</li>
+     *   <li>a job whose <em>deadline</em> has also passed gains nothing: its last usable slot is
+     *       still behind the current hour, so there is no window left to widen and it stays
+     *       infeasible, with or without the flag.</li>
+     * </ul>
+     *
+     * <p>Baselines are computed after this, from {@code originalStartTime} as always, which is what
+     * keeps the comparison honest: see {@code ScheduleOptimizationService}'s note on what a saving
+     * means for a job whose baseline has partly elapsed.
+     */
+    private List<OptimizerJob> reanchorElapsed(List<OptimizerJob> jobs, boolean optedIn) {
+        if (!optedIn) {
+            return jobs;
+        }
+        LocalDateTime now = earliestStart();
+        return jobs.stream()
+                .map(job -> job.originalStartTime().isBefore(now) ? job.reanchoredToDeadline() : job)
+                .toList();
+    }
+
+    /**
      * The earliest hour this run may schedule work into: the current hour, truncated. Work cannot be
      * started in an hour that has already begun elapsing in full, and a job placed in a past hour
      * could never actually be run, so no solver may use one (contract section 6.4). The current hour
@@ -106,7 +142,9 @@ public class OptimizationProblemFactory {
      *
      * <p>Jobs whose whole window is already past are not rejected here. Their baseline is unaffected
      * (it describes what would have happened), so validation still passes and the solver reports them
-     * as {@link PerJobStatus#NO_FEASIBLE_SLOT} with a reason, leaving the rest of the plan usable.
+     * as {@link PerJobStatus#NO_FEASIBLE_SLOT} with a reason, leaving the rest of the plan usable. A
+     * request may instead opt in to rescheduling them, which re-anchors their start window to their
+     * deadline rather than their vanished start time - see {@link #reanchorElapsed}.
      */
     private LocalDateTime earliestStart() {
         return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC).truncatedTo(ChronoUnit.HOURS);

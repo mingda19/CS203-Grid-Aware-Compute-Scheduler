@@ -180,6 +180,15 @@ export interface OptimizeRequest {
     maxCpuHours: number
     maxGpuHours: number
   }>
+  /**
+   * Opt in to rescheduling jobs whose originalStartTime has already passed, letting them start
+   * anywhere from the current hour up to the last slot that still lets them finish by their
+   * deadline. Omitted (or false) keeps each job's stated window exactly, which is the default.
+   *
+   * This widens placement beyond what the operator originally specified, so it is only ever sent
+   * after they confirm a dialog naming the affected jobs - never inferred from the data.
+   */
+  rescheduleElapsedJobs?: boolean
 }
 
 export interface AllocationSlot {
@@ -202,6 +211,16 @@ export interface ScheduleItem {
   baselineCostUsd: number | null
   optimizedCostUsd: number | null
   savingsUsd: number | null
+  /**
+   * True when this job was placed only because the run opted in to rescheduling jobs whose
+   * originalStartTime had already passed: its start window was re-anchored from
+   * [originalStartTime, originalStartTime + flexibilityWindowHours] to
+   * [current hour, last slot that still finishes by its deadline]. Such a job moved because its
+   * start had elapsed, not (or not only) to save money, and its savings are measured against a
+   * baseline that itself already partly elapsed - so the table labels it rather than presenting it
+   * alongside ordinary cost optimisation.
+   */
+  rescheduledFromElapsedStart: boolean
 }
 
 export interface OptimizeResponse {

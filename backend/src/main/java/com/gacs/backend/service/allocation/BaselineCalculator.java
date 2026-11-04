@@ -30,9 +30,27 @@ public final class BaselineCalculator {
      * Prices are not needed here.
      */
     public Baseline baseline(OptimizerJob job) {
+        return runFrom(job, job.originalStartTime());
+    }
+
+    /**
+     * The same fill as {@link #baseline}, but starting at {@code from} instead of the job's original
+     * start - so a caller can ask "could this job still finish by its deadline if it started here,
+     * alone on the cluster?" without duplicating the fill rule.
+     *
+     * <p>Used by {@link AllocationResult} to tell two unscheduled-job causes apart that otherwise
+     * look identical: not enough hours left before the deadline, versus other jobs holding the
+     * capacity. {@code build()} admits a job on the strength of its baseline fitting from its
+     * <em>original</em> start; once that start has passed, fewer hours remain, and the job can become
+     * unplaceable for reasons that have nothing to do with contention. Blaming capacity for that sends
+     * the operator to the wrong remedy.
+     *
+     * @return a {@link Baseline} whose {@code finishesByDeadline} answers that question
+     */
+    public Baseline runFrom(OptimizerJob job, LocalDateTime from) {
         List<SlotAllocation> allocations = new ArrayList<>();
         double remaining = 1.0;
-        LocalDateTime slot = job.originalStartTime();
+        LocalDateTime slot = from;
 
         while (remaining > DONE_TOLERANCE && !slot.plusHours(1).isAfter(job.deadline())) {
             double share = Math.min(remaining, capacity.limitAt(slot).maxShare(job));

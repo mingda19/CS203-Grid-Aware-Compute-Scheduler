@@ -35,8 +35,34 @@ public record OptimizeRequestDto(
     List<ForecastPointInput> forecast,
 
     @Schema(description = "Per-slot capacity; takes precedence over clusterCapacity for that slot")
-    List<CapacityOverrideInput> capacityOverrides
+    List<CapacityOverrideInput> capacityOverrides,
+
+    @Schema(description = "When true, a job whose originalStartTime has already passed may start "
+        + "anywhere from the current hour up to the last slot that still lets it finish by its "
+        + "deadline, instead of being reported NO_FEASIBLE_SLOT because its flexibility window is "
+        + "anchored to a start time that no longer exists. Defaults to false, which keeps the "
+        + "operator's stated window exactly. This widens placement beyond what was originally "
+        + "specified, so it must be an explicit choice: the UI asks for confirmation, naming the "
+        + "affected jobs, before sending it. It never weakens the rule that no slot may begin "
+        + "before the current hour, and a job whose deadline has also passed stays infeasible.",
+        example = "false", defaultValue = "false")
+    Boolean rescheduleElapsedJobs
 ) {
+
+    /**
+     * Convenience for the default behaviour, and what every caller predating the elapsed-job option
+     * means: keep each job's window exactly as specified.
+     */
+    public OptimizeRequestDto(List<JobInput> jobs, ClusterCapacityInput clusterCapacity, String forecastLocation,
+                              Integer horizonHours, List<ForecastPointInput> forecast,
+                              List<CapacityOverrideInput> capacityOverrides) {
+        this(jobs, clusterCapacity, forecastLocation, horizonHours, forecast, capacityOverrides, false);
+    }
+
+    /** {@code rescheduleElapsedJobs} with its absent-means-false default applied. */
+    public boolean reschedulesElapsedJobs() {
+        return Boolean.TRUE.equals(rescheduleElapsedJobs);
+    }
 
     @Schema(description = "One job submitted for placement")
     public record JobInput(

@@ -101,7 +101,9 @@ export function PlanRecommendation({ plan }: { plan: SchedulePlanDetail }) {
           <td className="p-2">{item.jobName} <span className="text-muted-foreground">(#{item.jobId})</span></td><td className="p-2">{formatMarketDateTime(item.baselineStart)}</td>
           <td className="p-2">{item.scheduledStart ? formatMarketDateTime(item.scheduledStart) : "Not scheduled"}</td>
           <td className="p-2">{item.scheduledEnd ? formatMarketDateTime(item.scheduledEnd) : "—"}</td>
-          <td className="p-2">{item.perJobStatus.replaceAll("_", " ").toLowerCase()}{item.reason && <p>{item.reason}</p>}</td>
+          <td className="p-2">{item.perJobStatus.replaceAll("_", " ").toLowerCase()}{item.reason && <p>{item.reason}</p>}
+            {/* Why it moved: its start had passed, not that a cheaper hour was found. */}
+            {item.rescheduledFromElapsedStart && <p className="text-amber-700 dark:text-amber-400">Rescheduled: start time had passed</p>}</td>
           <td className="p-2">{item.savingsUsd == null ? "Unavailable" : money(item.savingsUsd)}</td>
         </tr>)}</tbody>
       </table></div>

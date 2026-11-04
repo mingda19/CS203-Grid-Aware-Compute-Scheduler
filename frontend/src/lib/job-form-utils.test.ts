@@ -58,3 +58,39 @@ describe("market wall time <-> API UTC round trip", () => {
     expect(toInputDate("")).toBe("")
   })
 })
+
+/**
+ * Task 3. The elapsed-job widening must never be sent unless the operator confirmed it, so the
+ * request body carries the flag only when asked for and is otherwise byte-for-byte what it was.
+ */
+describe("opting in to rescheduling jobs whose start has passed", () => {
+  const job: ComputeJob = {
+    id: 1, name: "Training", cpuHours: 4, gpuHours: 0, originalStartTime: "2026-11-05T10:00:00",
+    deadline: "2026-11-05T15:00:00", flexibilityWindowHours: 2, isExempt: false, status: "PENDING",
+  }
+
+  const bodyOf = async (payload: Parameters<typeof optimizerApi.optimize>[0]) => {
+    setAccessToken("test-token")
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
+    vi.stubGlobal("fetch", fetchMock)
+    await optimizerApi.optimize(payload)
+    return JSON.parse(fetchMock.mock.calls[0][1].body)
+  }
+
+  it("omits the flag entirely on the default path", async () => {
+    const body = await bodyOf({ jobs: [toOptimizeJobInput(job)], forecastLocation: "LZ_NORTH" })
+    // Absent, not false: the server's default is false either way, and an absent key keeps the
+    // payload identical to what every caller sent before this option existed.
+    expect("rescheduleElapsedJobs" in body).toBe(false)
+  })
+
+  it("sends the flag when the operator confirmed it", async () => {
+    const body = await bodyOf({
+      jobs: [toOptimizeJobInput(job)], forecastLocation: "LZ_NORTH", rescheduleElapsedJobs: true,
+    })
+    expect(body.rescheduleElapsedJobs).toBe(true)
+    // And nothing else about the request changes.
+    expect(body.jobs[0].originalStartTime).toBe(job.originalStartTime)
+    expect(body.jobs[0].flexibilityWindowHours).toBe(job.flexibilityWindowHours)
+  })
+})
