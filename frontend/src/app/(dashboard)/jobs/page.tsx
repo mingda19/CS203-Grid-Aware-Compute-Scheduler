@@ -5,6 +5,7 @@ import Link from "next/link"
 import { BriefcaseBusiness, Eye, Pencil, Plus, RefreshCw, Trash2, Sparkles, TrendingUp, Clock, Calendar, Server, Check, ArrowRight, SlidersHorizontal } from "lucide-react"
 import {
   jobsApi,
+  priceApi,
   optimizerApi,
   facilityApi,
   type JobExplanation,
@@ -32,8 +33,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { HelpTip } from "@/components/ui/help-tip"
+import { EstimatedPriceBadge } from "@/components/ui/estimated-price-badge"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
-import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, effectiveStart, maxJobHours, type ScheduleMode, toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
+import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, effectiveStart, forecastEndMs, maxJobHours, usesEstimatedPrices, type ScheduleMode, toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
 import { elapsedJobLabel, elapsedJobsConfirmation, elapsedStartJobs } from "@/lib/elapsed-jobs"
 import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
@@ -102,6 +104,9 @@ export default function JobsPage() {
   const [editing, setEditing] = React.useState<ComputeJob | null>(null)
   const [viewing, setViewing] = React.useState<ComputeJob | null>(null)
   const [parseReviewPending, setParseReviewPending] = React.useState(false)
+  // End of the stored forecast (ms); null until known. Drives the "Estimated prices" flag and warning.
+  const [forecastEnd, setForecastEnd] = React.useState<number | null>(null)
+  const [estimatedToConfirm, setEstimatedToConfirm] = React.useState<ComputeJobPayload | null>(null)
   const [form, setForm] = React.useState<FormState>(blankForm)
 
   // Optimizer state
@@ -183,6 +188,14 @@ export default function JobsPage() {
       location: loc,
     }))
   }
+
+  React.useEffect(() => {
+    let active = true
+    priceApi.getForecast({ location: facility.location, hours: 168 })
+      .then((r) => { if (active && r.data) setForecastEnd(forecastEndMs(r.data.points)) })
+      .catch(() => { if (active) setForecastEnd(null) }) // unknown forecast: show no warning rather than a wrong one
+    return () => { active = false }
+  }, [facility.location])
 
   const loadJobs = React.useCallback(async () => {
     setLoading(true)
@@ -326,6 +339,15 @@ export default function JobsPage() {
       parsedAt: form.parsedAt,
       confirmationOutcome: form.confirmationOutcome,
     }
+    // Ask once when the save newly pushes the window past the forecast (an edit that already was past it stays quiet).
+    if (usesEstimatedPrices(payload.deadline, forecastEnd) && !(editing && usesEstimatedPrices(editing.deadline, forecastEnd))) {
+      setEstimatedToConfirm(payload)
+      return
+    }
+    await persist(payload)
+  }
+
+  const persist = async (payload: ComputeJobPayload) => {
     setSaving(true)
     try {
       if (editing) await jobsApi.update(editing.id, payload)
@@ -742,7 +764,10 @@ export default function JobsPage() {
                   {jobs.map((job) => (
                     <tr key={job.id} className="border-b last:border-0 hover:bg-muted/30">
                       <td className="px-3 py-3 font-mono text-xs text-muted-foreground">#{job.id}</td>
-                      <td className="px-3 py-3 font-medium text-foreground">{job.name}</td>
+                      <td className="px-3 py-3 font-medium text-foreground">
+                        {job.name}
+                        {usesEstimatedPrices(job.deadline, forecastEnd) && <div className="mt-1"><EstimatedPriceBadge /></div>}
+                      </td>
                       <td className="px-3 py-3">
                         {job.cpuHours} CPU · {job.gpuHours} GPU
                       </td>
@@ -1237,6 +1262,28 @@ export default function JobsPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Estimated-price confirmation (masterplan D10) */}
+      <Dialog open={!!estimatedToConfirm} onOpenChange={(open) => { if (!open && !saving) setEstimatedToConfirm(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Prices are estimated for this job</DialogTitle>
+            <DialogDescription>
+              Prices for this period are estimated from history, not forecast. The plan can change when forecast data arrives.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={saving} onClick={() => setEstimatedToConfirm(null)}>Cancel</Button>
+            <Button
+              type="button"
+              disabled={saving}
+              onClick={async () => { const p = estimatedToConfirm; setEstimatedToConfirm(null); if (p) await persist(p) }}
+            >
+              {editing ? "Save changes" : "Create job"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* View Dialog */}
       <Dialog open={viewOpen} onOpenChange={setViewOpen}>
         <DialogContent>
@@ -1248,6 +1295,7 @@ export default function JobsPage() {
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 py-3 text-sm">
               <Detail label="Job ID" value={String(viewing.id)} />
               {viewing.description && <Detail label="Description" value={viewing.description} />}
+              {usesEstimatedPrices(viewing.deadline, forecastEnd) && <EstimatedPriceBadge />}
               <Detail label="Status" value={viewing.status} />
               <Detail label="CPU hours" value={String(viewing.cpuHours)} />
               <Detail label="GPU hours" value={String(viewing.gpuHours)} />

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { optimizerApi, setAccessToken, type ComputeJob } from "./api"
-import { effectiveFlexHours, effectiveStart, maxJobHours, toApiUtcDate, toInputDate, toOptimizeJobInput, windowHours } from "./job-form-utils"
+import { forecastEndMs, usesEstimatedPrices, effectiveFlexHours, effectiveStart, maxJobHours, toApiUtcDate, toInputDate, toOptimizeJobInput, windowHours } from "./job-form-utils"
 
 afterEach(() => { vi.unstubAllGlobals(); setAccessToken(null) })
 
@@ -115,4 +115,15 @@ describe("schedule mode", () => {
     expect(effectiveStart("immediate", "", "2026-11-05T11:00")).toBe("2026-11-05T11:00")
     expect(effectiveStart("flexible", start, "2026-11-05T11:00")).toBe(start)
   })
+})
+
+describe("estimated prices", () => {
+  const end = forecastEndMs([{ intervalStartUtc: "2026-11-05T10:00:00" }, { intervalStartUtc: "2026-11-05T12:00:00" }])
+  it("ends the forecast at the close of its last hour", () => expect(end).toBe(Date.parse("2026-11-05T13:00:00Z")))
+  it("flags a deadline beyond the forecast only", () => {
+    expect(usesEstimatedPrices("2026-11-05T13:00:00", end)).toBe(false)
+    expect(usesEstimatedPrices("2026-11-05T14:00:00", end)).toBe(true)
+  })
+  it("makes no claim while the forecast is unknown", () => expect(usesEstimatedPrices("2030-01-01T00:00:00", null)).toBe(false))
+  it("treats an empty forecast as all estimated", () => expect(usesEstimatedPrices("2026-11-05T14:00:00", forecastEndMs([]))).toBe(true))
 })
