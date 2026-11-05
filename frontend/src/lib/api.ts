@@ -45,6 +45,12 @@ export interface PriceForecastPoint {
   predictedPrice: number | null
   modelVersion: string
   generatedAt: string
+  /**
+   * How much to trust this interval's prediction, 0-1, normalised from the model's stored forecast
+   * error ratio. Omitted by the API while unavailable (no RMSE reference yet for the model version),
+   * so null means "not known", never "no confidence". Contract FR-10.
+   */
+  confidenceScore: number | null
 }
 
 export interface PriceForecast {

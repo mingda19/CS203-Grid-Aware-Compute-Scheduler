@@ -1,12 +1,26 @@
 import { describe, it, expect } from "vitest"
-import { layoutEvents, type CalendarEvent } from "./GoogleCalendarView"
+import { layoutEvents, runLengthHours, splitAcrossDays, type CalendarEvent } from "./GoogleCalendarView"
 
 const colorScheme = { bg: "", border: "", text: "", badge: "", dot: "" }
 
 function event(id: string, startHour: number, durationHours: number, startMinute = 0): CalendarEvent {
+  // These lane-layout cases only care about start and duration within one day, so the instants are
+  // derived from them rather than stated: splitAcrossDays has its own cases below.
+  const start = Date.UTC(2026, 10, 4, startHour, startMinute)
   return {
     id, title: id, type: "ML Training", cluster: "c", powerKw: 10, savings: "$1",
     status: "Scheduled", dateStr: "2026-11-04", startHour, startMinute, durationHours, colorScheme,
+    startUtc: new Date(start).toISOString(),
+    endUtc: new Date(start + durationHours * 3_600_000).toISOString(),
+  }
+}
+
+/** A run stated by its real instants, which is what splitAcrossDays works from. */
+function run(id: string, startUtc: string, endUtc: string): CalendarEvent {
+  return {
+    id, title: id, type: "ML Training", cluster: "c", powerKw: 10, savings: "$1",
+    status: "Scheduled", dateStr: "", startHour: 0, startMinute: 0, durationHours: 0, colorScheme,
+    startUtc, endUtc,
   }
 }
 
@@ -56,5 +70,79 @@ describe("layoutEvents (bug 5: overlapping same-slot jobs render side by side)",
     expect(byId.a.lane).not.toBe(byId.b.lane)
     expect(byId.b.lane).not.toBe(byId.c.lane)
     expect(byId.a.lane).toBe(byId.c.lane) // non-overlapping, so free to share a's now-vacated lane
+  })
+})
+
+describe("splitAcrossDays (a run crossing midnight is drawn in every day column it touches)", () => {
+  it("leaves a run inside one day as a single segment", () => {
+    const segments = splitAcrossDays(run("a", "2026-11-05T15:00:00Z", "2026-11-05T18:00:00Z"))
+
+    expect(segments).toHaveLength(1)
+    expect(segments[0]).toMatchObject({ dateStr: "2026-11-05", startHour: 9, durationHours: 3 })
+    expect(segments[0].continuesBefore).toBeFalsy()
+    expect(segments[0].continuesAfter).toBeFalsy()
+  })
+
+  it("splits the reported 52-hour run from 03:00 into three days instead of overflowing one", () => {
+    // 03:00 CT on 05 Nov is 09:00Z; 52 hours later is 07:00 CT on 07 Nov.
+    const segments = splitAcrossDays(run("gpt-agent-7", "2026-11-05T09:00:00Z", "2026-11-07T13:00:00Z"))
+
+    expect(segments.map((s) => [s.dateStr, s.startHour, s.durationHours])).toEqual([
+      ["2026-11-05", 3, 21],
+      ["2026-11-06", 0, 24],
+      ["2026-11-07", 0, 7],
+    ])
+  })
+
+  it("marks which segments continue, so three boxes read as one run", () => {
+    const segments = splitAcrossDays(run("a", "2026-11-05T09:00:00Z", "2026-11-07T13:00:00Z"))
+
+    expect(segments.map((s) => [s.continuesBefore ?? false, s.continuesAfter ?? false])).toEqual([
+      [false, true], [true, true], [true, false],
+    ])
+  })
+
+  it("keeps the run's id on every segment but gives each a distinct render key", () => {
+    const segments = splitAcrossDays(run("gpt-agent-7", "2026-11-05T09:00:00Z", "2026-11-07T13:00:00Z"))
+
+    expect(new Set(segments.map((s) => s.id))).toEqual(new Set(["gpt-agent-7"]))
+    expect(new Set(segments.map((s) => s.segmentKey)).size).toBe(3)
+  })
+
+  it("does not emit an empty segment for a run ending exactly at midnight", () => {
+    // 00:00 CT on 06 Nov is 06:00Z. That instant belongs to the 5th, not the 6th.
+    const segments = splitAcrossDays(run("a", "2026-11-05T09:00:00Z", "2026-11-06T06:00:00Z"))
+
+    expect(segments.map((s) => s.dateStr)).toEqual(["2026-11-05"])
+    expect(segments[0].durationHours).toBe(21)
+  })
+
+  it("gives the autumn DST day its true 25 hours rather than assuming 24", () => {
+    // Clocks go back on 01 Nov 2026, so that market day is 25 hours long. Splitting by adding 24
+    // hours would leave an hour of the run unplaced and shift every later segment.
+    const segments = splitAcrossDays(run("a", "2026-10-31T19:00:00Z", "2026-11-02T18:00:00Z"))
+    const first = segments.find((s) => s.dateStr === "2026-11-01")
+
+    expect(first?.durationHours).toBe(25)
+    expect(first?.startHour).toBe(0)
+  })
+
+  it("tolerates a zero-length or inverted run instead of looping forever", () => {
+    expect(splitAcrossDays(run("a", "2026-11-05T09:00:00Z", "2026-11-05T09:00:00Z"))).toHaveLength(1)
+    expect(splitAcrossDays(run("a", "2026-11-05T12:00:00Z", "2026-11-05T09:00:00Z"))).toHaveLength(1)
+  })
+})
+
+describe("runLengthHours", () => {
+  it("reports the whole run, not the clicked segment", () => {
+    const whole = run("a", "2026-11-05T09:00:00Z", "2026-11-07T13:00:00Z")
+
+    expect(runLengthHours(whole)).toBe(52)
+    // Every segment still answers for the whole run, which is what the detail dialog shows.
+    expect(splitAcrossDays(whole).map(runLengthHours)).toEqual([52, 52, 52])
+  })
+
+  it("never goes negative on an inverted run", () => {
+    expect(runLengthHours(run("a", "2026-11-05T12:00:00Z", "2026-11-05T09:00:00Z"))).toBe(0)
   })
 })

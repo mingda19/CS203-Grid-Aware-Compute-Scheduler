@@ -7,9 +7,9 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { workloadScheduleApi, type WorkloadSchedule } from "@/lib/api"
 import {
-  getMarketHoursMinutes, getMarketDateString, MARKET_ZONE_LABEL,
+  getMarketHoursMinutes, getMarketDateString, MARKET_ZONE_LABEL, formatMarketDateTime,
   addMarketDays, addMarketMonths, marketDayOfWeek, marketDaysInMonth,
-  marketDateStringFromParts, marketDateLabelAnchor,
+  marketDateStringFromParts, marketDateLabelAnchor, marketDateToUtcIso,
 } from "@/lib/date-utils"
 
 export type WorkloadType = "ML Training" | "Crypto Mining" | "HPC Batch" | "HVAC Pre-Cool" | "Grid Alert"
@@ -26,6 +26,15 @@ export interface CalendarEvent {
   startHour: number // 0-23
   startMinute: number // 0 or 30
   durationHours: number // e.g. 2, 3.5, 4
+  /** The run's true bounds. Kept so a run spanning days can be clipped per day; see splitAcrossDays. */
+  startUtc: string
+  endUtc: string
+  /** Set on a segment that began on an earlier day, so it is drawn as continuing rather than starting. */
+  continuesBefore?: boolean
+  /** Set on a segment that runs past midnight into the next day. */
+  continuesAfter?: boolean
+  /** Unique per rendered segment; `id` stays the run's id so selection still resolves to the run. */
+  segmentKey?: string
   colorScheme: {
     bg: string
     border: string
@@ -120,9 +129,61 @@ function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
     startHour,
     startMinute,
     durationHours: Math.max((end.getTime() - start.getTime()) / 3_600_000, 0),
+    startUtc: start.toISOString(),
+    endUtc: end.toISOString(),
     colorScheme: TYPE_CONFIG[type],
     notes: schedule.notes ?? undefined,
   }
+}
+
+/**
+ * Splits a run into one segment per market day it covers, each clipped to that day.
+ *
+ * <p>A day column positions a run by its start hour and sizes it by its duration, so a run longer
+ * than the hours left in its first day used to render as a single box taller than the column - a
+ * 52-hour job starting 03:00 Thursday drew one box running 52 hours off the bottom of Thursday
+ * instead of continuing into Friday and Saturday. Each segment gets its own date, start and
+ * duration, so every day it touches draws the part belonging to that day.
+ *
+ * <p>Clipping is computed from the real instants against each market day's own midnight rather than
+ * by adding 24 hours, because a market day is 23 or 25 hours long across a DST transition. Segments
+ * keep the run's {@code id} so clicking any of them still opens the same run, and carry
+ * {@code continuesBefore}/{@code continuesAfter} so the UI can show them as one run rather than
+ * several jobs that happen to share a name.
+ */
+/** A run's whole length in hours, independent of how it was split across day columns. */
+export function runLengthHours(event: CalendarEvent): number {
+  return Math.max((new Date(event.endUtc).getTime() - new Date(event.startUtc).getTime()) / 3_600_000, 0)
+}
+
+export function splitAcrossDays(event: CalendarEvent): CalendarEvent[] {
+  const start = new Date(event.startUtc)
+  const end = new Date(event.endUtc)
+  if (!(end.getTime() > start.getTime())) return [{ ...event, segmentKey: event.id }]
+
+  const segments: CalendarEvent[] = []
+  const lastDate = getMarketDateString(end.getTime() - 1) // -1ms: an end exactly at midnight belongs to the day before
+  for (let date = getMarketDateString(start); ; date = addMarketDays(date, 1)) {
+    const dayStart = new Date(marketDateToUtcIso(date)).getTime()
+    const dayEnd = new Date(marketDateToUtcIso(addMarketDays(date, 1))).getTime()
+    const from = Math.max(start.getTime(), dayStart)
+    const to = Math.min(end.getTime(), dayEnd)
+    if (to > from) {
+      const { hours, minutes } = getMarketHoursMinutes(from)
+      segments.push({
+        ...event,
+        dateStr: date,
+        startHour: hours,
+        startMinute: minutes,
+        durationHours: (to - from) / 3_600_000,
+        continuesBefore: from > start.getTime(),
+        continuesAfter: to < end.getTime(),
+        segmentKey: `${event.id}@${date}`,
+      })
+    }
+    if (date === lastDate) break
+  }
+  return segments.length ? segments : [{ ...event, segmentKey: event.id }]
 }
 
 interface LaidOutEvent {
@@ -236,6 +297,16 @@ export function GoogleCalendarView() {
       return true
     })
   }, [events, activeTypes, searchQuery])
+
+  /**
+   * Every visible run split into per-day segments, so a run that crosses midnight is drawn in each
+   * day column it touches instead of overflowing the first one. Computed once per filtered list
+   * rather than per column.
+   */
+  const daySegments = React.useMemo(
+    () => filteredEvents.flatMap(splitAcrossDays),
+    [filteredEvents],
+  )
 
   // Navigation handlers. currentDate is a market-date label anchor (see its
   // declaration), so stepping by day/week/month is pure calendar-string arithmetic -
@@ -767,7 +838,7 @@ export function GoogleCalendarView() {
                 {/* 7 Days Columns */}
                 <div className="grid grid-cols-7 flex-1 divide-x divide-border/80 relative">
                   {weekDays.map((colDay, colIdx) => {
-                    const dayEvents = filteredEvents.filter((e) => e.dateStr === colDay.dateStr)
+                    const dayEvents = daySegments.filter((e) => e.dateStr === colDay.dateStr)
 
                     return (
                       <div
@@ -804,7 +875,7 @@ export function GoogleCalendarView() {
 
                           return (
                             <button
-                              key={ev.id}
+                              key={ev.segmentKey ?? ev.id}
                               onClick={() => setSelectedEvent(ev)}
                               style={{
                                 top: `${topPx}px`,
@@ -873,7 +944,7 @@ export function GoogleCalendarView() {
               {/* 7x6 month grid */}
               <div className="grid grid-cols-7 flex-1 auto-rows-fr divide-x divide-y divide-border/60 min-h-[640px]">
                 {monthCells.map((cell, idx) => {
-                  const dayEvents = filteredEvents.filter((e) => e.dateStr === cell.dateStr)
+                  const dayEvents = daySegments.filter((e) => e.dateStr === cell.dateStr)
 
                   return (
                     <div
@@ -912,7 +983,7 @@ export function GoogleCalendarView() {
                       <div className="space-y-1 overflow-hidden flex-1">
                         {dayEvents.slice(0, 3).map((ev) => (
                           <button
-                            key={ev.id}
+                            key={ev.segmentKey ?? ev.id}
                             onClick={(e) => {
                               e.stopPropagation()
                               setSelectedEvent(ev)
@@ -955,7 +1026,7 @@ export function GoogleCalendarView() {
                     {currentDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" })}
                   </h3>
                   <p className="text-xs text-muted-foreground">
-                    {filteredEvents.filter((e) => e.dateStr === toDateStr(currentDate)).length} workloads scheduled for
+                    {daySegments.filter((e) => e.dateStr === toDateStr(currentDate)).length} workloads scheduled for
                     this 24-hour cycle
                   </p>
                 </div>
@@ -1000,7 +1071,7 @@ export function GoogleCalendarView() {
                   )}
 
                   {/* Events - side by side within a lane when they share a slot (bug 5) */}
-                  {layoutEvents(filteredEvents.filter((e) => e.dateStr === toDateStr(currentDate)))
+                  {layoutEvents(daySegments.filter((e) => e.dateStr === toDateStr(currentDate)))
                     .map(({ event: ev, lane, laneCount }) => {
                       const topPx = ev.startHour * 60 + (ev.startMinute / 60) * 60
                       const heightPx = Math.max(ev.durationHours * 60 - 4, 36)
@@ -1010,7 +1081,7 @@ export function GoogleCalendarView() {
 
                       return (
                         <button
-                          key={ev.id}
+                          key={ev.segmentKey ?? ev.id}
                           onClick={() => setSelectedEvent(ev)}
                           style={{
                             top: `${topPx}px`,
@@ -1186,9 +1257,12 @@ export function GoogleCalendarView() {
             <div className="space-y-3 py-2 text-xs">
               <div className="flex items-center gap-3 text-muted-foreground">
                 <CalendarIcon className="h-4 w-4 text-blue-500 shrink-0" />
+                {/* The run's own start and length, not the clicked segment's. A run crossing midnight
+                    is drawn as one segment per day, so a segment's date and duration are the part in
+                    that column - reporting those here would understate a multi-day run. */}
                 <span className="font-medium text-foreground">
-                  {selectedEvent.dateStr} • {String(selectedEvent.startHour).padStart(2, "0")}:
-                  {String(selectedEvent.startMinute).padStart(2, "0")} {MARKET_ZONE_LABEL} ({selectedEvent.durationHours} hours)
+                  {formatMarketDateTime(selectedEvent.startUtc)} → {formatMarketDateTime(selectedEvent.endUtc)}
+                  {" "}({runLengthHours(selectedEvent).toFixed(runLengthHours(selectedEvent) % 1 === 0 ? 0 : 1)} hours)
                 </span>
               </div>
 

@@ -52,10 +52,14 @@ public class ScheduleReviewService {
     private final ScheduleGate gate;
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
 
+    private final com.gacs.backend.repository.WorkloadScheduleRepository schedules;
+
     public ScheduleReviewService(ScheduleOptimizationService optimizer,
                                  OptimizationPlanRecorder planRecorder, AuditEventService audit,
                                  AllocationSolver solver, OptimizerProperties properties,
-                                 UserRepository users, Clock clock, ScheduleInputs inputs, ScheduleGate gate) {
+                                 UserRepository users, Clock clock, ScheduleInputs inputs, ScheduleGate gate,
+                                 com.gacs.backend.repository.WorkloadScheduleRepository schedules) {
+        this.schedules = schedules;
         this.optimizer = optimizer;
         this.planRecorder = planRecorder;
         this.audit = audit;
@@ -108,6 +112,25 @@ public class ScheduleReviewService {
         com.gacs.backend.model.ReviewState.REVISION_REQUESTED);
 
     /**
+     * Removes the calendar entries this run dispatched.
+     *
+     * <p>Flipping the review state alone was not enough. It makes every execution gate refuse to
+     * start or resume the work, but the {@code WorkloadSchedule} rows stay at {@code Scheduled} and
+     * keep rendering on the timetable indefinitely - so to an operator the revocation looked like it
+     * had silently failed. There is no cancelled status to move them to ({@code
+     * ScheduleApplicationService} only ever writes Scheduled, Running, Throttled and Completed), and
+     * the decision is to drop the rows rather than invent one: the audit log already records the
+     * APPROVE, the DISPATCH and the REVOKE, so what happened stays reconstructable without keeping a
+     * dead row on the calendar.
+     *
+     * <p>Runs in the same transaction as the decision, so a failure here rolls the revocation back
+     * rather than leaving a revoked plan whose work is still on the timetable.
+     */
+    private void discardCalendarEntries(UUID runId) {
+        schedules.deleteAll(schedules.findByRunIdOrderByIdAsc(runId.toString()));
+    }
+
+    /**
      * The one move still open on a run that already holds a decision: withdrawing an approval.
      *
      * <p>A first decision is terminal - that is what stops a plan being approved twice, or approved
@@ -146,6 +169,7 @@ public class ScheduleReviewService {
         AuditEventResponseDto event = audit.recordEvent(new AuditEventRequestDto(action,
             runId.toString(), ScheduleHashUtil.computeSha256(plan.getResultJson()), comment));
         if (action == AuditActionType.APPROVE) gate.supersede(plan);
+        if (action == AuditActionType.REVOKE) discardCalendarEntries(runId);
         return new ScheduleDecisionDto(event.id(), runId, event.actionType(), operator.getId(),
             event.operatorRationale(), event.timestamp(), plan.getReviewState());
     }

@@ -221,8 +221,14 @@ class ScheduleEnforcementIntegrationTest {
         transition(entry.getId(),"Running").andExpect(status().isOk());
         // Withdrawing the approval is what halts it; "reject" is a first decision and is refused here.
         refused(decide(run,"reject"),"ALREADY_DECIDED");
-        decide(run,"revoke").andExpect(status().isOk()); refused(transition(entry.getId(),"Running"),"NOT_APPROVED");
-        transition(entry.getId(),"Completed").andExpect(status().isOk());
+        // Revocation now deletes the run's calendar entries outright, so a transition on one is not
+        // "refused because the plan is no longer approved" (403) - the entry is simply gone (404).
+        // Previously the row survived and sat on the timetable at Scheduled forever, which is the
+        // defect this replaced.
+        decide(run,"revoke").andExpect(status().isOk());
+        transition(entry.getId(),"Running").andExpect(status().isNotFound());
+        transition(entry.getId(),"Completed").andExpect(status().isNotFound());
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).isEmpty();
     }
 
     @Test void invalidationDoesNotInterruptRunningButBlocksResume() throws Exception {
@@ -329,11 +335,36 @@ class ScheduleEnforcementIntegrationTest {
         assertThat(audit.findByRunIdOrderByTimestampDesc(run).stream().filter(e->e.getActionType()==AuditActionType.DISPATCH)).hasSize(1);
     }
 
+    @Test void revokingAnApprovedRunClearsItsCalendarEntries() throws Exception {
+        String run=optimize(); decide(run,"approve").andExpect(status().isOk());
+        apply(run).andExpect(status().isOk());
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).isNotEmpty();
+
+        decide(run,"revoke").andExpect(status().isOk());
+
+        // Flipping the review state only stopped the work from starting; the rows stayed on the
+        // timetable, so the revocation looked like it had failed.
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).isEmpty();
+    }
+
+    @Test void revokingClearsEntriesEvenOnceTheyAreRunning() throws Exception {
+        String run=optimize(); decide(run,"approve").andExpect(status().isOk());
+        apply(run).andExpect(status().isOk());
+        long id=schedules.findByRunIdOrderByIdAsc(run).getFirst().getId();
+        transition(id,"Running").andExpect(status().isOk());
+
+        decide(run,"revoke").andExpect(status().isOk());
+
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).isEmpty();
+        assertThat(schedules.findById(id)).isEmpty();
+    }
+
     @Test void revokedRunCannotBeAppliedOrStarted() throws Exception {
         String run=optimize();decide(run,"approve").andExpect(status().isOk());apply(run).andExpect(status().isOk());
         long id=schedules.findByRunIdOrderByIdAsc(run).getFirst().getId();
         decide(run,"revoke").andExpect(status().isOk());refused(apply(run),"NOT_APPROVED");
-        refused(transition(id,"Running"),"NOT_APPROVED");
+        // The plan itself is still refused as NOT_APPROVED, but its entry no longer exists to start.
+        transition(id,"Running").andExpect(status().isNotFound());
     }
 
     /** Revision is a first decision now, so it is reached from PENDING rather than after approval. */

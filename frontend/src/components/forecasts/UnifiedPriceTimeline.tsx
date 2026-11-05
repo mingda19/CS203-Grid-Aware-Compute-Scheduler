@@ -16,7 +16,9 @@ import { RefreshCw, Sparkles } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { DataStatusBadge } from "@/components/ui/data-status-badge"
+import { cn } from "@/lib/utils"
 import { priceApi, type PricePoint, type PriceForecastPoint } from "@/lib/api"
+import { aggregateConfidence, confidenceBand, confidenceTone, formatConfidence } from "@/lib/forecast-confidence"
 import { formatMarketDateTime, formatMarketChartTick, marketZoneAbbrev, MARKET_TIMEZONE, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 
 export type HorizonPreset = "24h" | "48h" | "7d"
@@ -59,6 +61,8 @@ export interface TimelineDataPoint {
   forecastUpper: number | null
   forecastLower: number | null
   isForecast: boolean
+  /** 0-1 for a forecast interval; null for an actual, or when the model has no error reference. */
+  confidenceScore: number | null
   isTransition?: boolean
   cleanSharePercent: number | null
   modelVersion?: string
@@ -198,6 +202,7 @@ export function UnifiedPriceTimeline({
         forecastUpper: null,
         forecastLower: null,
         isForecast: false,
+        confidenceScore: null,
         cleanSharePercent: null,
       })
     }
@@ -240,6 +245,7 @@ export function UnifiedPriceTimeline({
         forecastUpper: null,
         forecastLower: null,
         isForecast: true,
+        confidenceScore: f.confidenceScore ?? null,
         modelVersion: f.modelVersion,
         cleanSharePercent: null,
       })
@@ -361,6 +367,16 @@ export function UnifiedPriceTimeline({
       telemetry: computedTelemetry,
     }
   }, [historyPoints, forecastPoints, activeHub, isLoading, nowMs])
+
+  /**
+   * Run-level confidence over the forecast intervals only. Averaged across the intervals that carry
+   * a score, with the unscored ones counted separately rather than folded in as zeros, so a horizon
+   * the model has little error history for cannot read as confident (contract FR-10, FR-04).
+   */
+  const forecastConfidence = React.useMemo(
+    () => aggregateConfidence(forecastPoints.map((f) => f.confidenceScore)),
+    [forecastPoints],
+  )
 
   const onTelemetryChangeRef = React.useRef(onTelemetryChange)
   React.useEffect(() => {
@@ -566,6 +582,19 @@ export function UnifiedPriceTimeline({
                           </span>
                         </div>
 
+                        {isFc && (
+                          <div className="flex items-baseline justify-between pt-0.5">
+                            <span className="text-muted-foreground">Confidence:</span>
+                            {pt.confidenceScore == null ? (
+                              <span className="font-mono text-[11px] text-muted-foreground">Not available</span>
+                            ) : (
+                              <span className={cn("font-mono font-semibold text-[11px]", confidenceTone(pt.confidenceScore))}>
+                                {Math.round(pt.confidenceScore * 100)}% · {confidenceBand(pt.confidenceScore)}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
                         <div className="text-[10px] text-muted-foreground/75 font-mono pt-0.5">
                           {pt.fullTimeLocal}
                         </div>
@@ -642,7 +671,7 @@ export function UnifiedPriceTimeline({
           </div>
 
           <div className="text-[11px] text-muted-foreground">
-            Displaying {chartData.length} intervals in <strong>{MARKET_TIMEZONE}</strong>
+            Displaying {chartData.length} intervals in <strong>{MARKET_TIMEZONE}</strong>{forecastConfidence.mean != null && <> · Model confidence <strong className={confidenceTone(forecastConfidence.mean)}>{formatConfidence(forecastConfidence.mean)}</strong>{forecastConfidence.missing > 0 && <> ({forecastConfidence.missing} interval(s) unscored)</>}</>}{forecastConfidence.mean == null && forecastConfidence.missing > 0 && <> · Model confidence <strong className="text-muted-foreground">not available</strong></>}
           </div>
         </CardFooter>
       )}
