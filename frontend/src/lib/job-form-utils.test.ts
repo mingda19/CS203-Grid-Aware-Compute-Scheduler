@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { optimizerApi, setAccessToken, type ComputeJob } from "./api"
-import { toApiUtcDate, toInputDate, toOptimizeJobInput } from "./job-form-utils"
+import { maxJobHours, toApiUtcDate, toInputDate, toOptimizeJobInput, windowHours } from "./job-form-utils"
 
 afterEach(() => { vi.unstubAllGlobals(); setAccessToken(null) })
 
@@ -92,5 +92,16 @@ describe("opting in to rescheduling jobs whose start has passed", () => {
     // And nothing else about the request changes.
     expect(body.jobs[0].originalStartTime).toBe(job.originalStartTime)
     expect(body.jobs[0].flexibilityWindowHours).toBe(job.flexibilityWindowHours)
+  })
+})
+
+describe("hours maximum", () => {
+  it("scales the per-slot cap by whole window hours", () => {
+    expect(windowHours("2026-11-05T10:00", "2026-11-05T22:30")).toBe(12.5)
+    expect(maxJobHours(256, "2026-11-05T10:00", "2026-11-05T22:30")).toBe(256 * 12)
+  })
+  it("has no maximum without a usable window", () => {
+    expect(maxJobHours(256, "", "2026-11-05T22:00")).toBe(Infinity)
+    expect(maxJobHours(256, "2026-11-05T10:00", "2026-11-05T10:30")).toBe(Infinity)
   })
 })
