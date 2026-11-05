@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { useRouter, useSearchParams } from "next/navigation"
 import { BriefcaseBusiness, Eye, Pencil, Plus, RefreshCw, Trash2, Sparkles, TrendingUp, Clock, Calendar, Server, Check, ArrowRight, SlidersHorizontal } from "lucide-react"
 import {
   jobsApi,
@@ -91,6 +92,19 @@ const getWindowDurationText = (start: string, end: string) => {
   } catch {
     return ""
   }
+}
+
+// The shell's "Create Job" button links here with ?new=1. useSearchParams needs its own Suspense boundary.
+function OpenCreateOnParam({ onOpen }: { onOpen: () => void }) {
+  const wanted = useSearchParams().get("new") === "1"
+  const router = useRouter()
+  React.useEffect(() => {
+    if (!wanted) return
+    onOpen()
+    router.replace("/jobs") // clear the param so a refresh does not reopen the form
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wanted])
+  return null
 }
 
 export default function JobsPage() {
@@ -476,6 +490,7 @@ export default function JobsPage() {
 
   return (
     <div className="space-y-6" id="jobs-root">
+      <React.Suspense fallback={null}><OpenCreateOnParam onOpen={openCreate} /></React.Suspense>
       <div className="flex flex-col gap-4 rounded-2xl border border-border bg-gradient-to-r from-card to-card/60 p-6 shadow-xs sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-2">

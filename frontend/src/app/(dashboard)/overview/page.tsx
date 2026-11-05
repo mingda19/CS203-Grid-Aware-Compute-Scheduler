@@ -315,7 +315,7 @@ export default function OverviewPage() {
                   Create a compute job to start optimizing execution against wholesale power prices.
                 </p>
                 <Button asChild size="sm" className="mt-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs">
-                  <Link href="/jobs">
+                  <Link href="/jobs?new=1">
                     <Plus className="h-3.5 w-3.5 mr-1.5" /> Create Job
                   </Link>
                 </Button>
