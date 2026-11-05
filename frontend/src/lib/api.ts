@@ -77,6 +77,8 @@ export type ConfirmationOutcome = "PENDING" | "CONFIRMED" | "REJECTED"
  */
 export type WorkloadCategory = "ML_TRAINING" | "CRYPTO_MINING" | "HPC_BATCH" | "HVAC_PRE_COOL" | "GRID_ALERT"
 
+export const PRIORITY_LABELS: Record<JobPriority, string> = { CRITICAL: "Critical", HIGH: "High", NORMAL: "Normal", LOW: "Low" }
+
 export const WORKLOAD_CATEGORY_LABELS: Record<WorkloadCategory, string> = {
   ML_TRAINING: "ML Training",
   CRYPTO_MINING: "Crypto Mining",
@@ -89,6 +91,7 @@ export interface ComputeJob {
   id: number
   ownerEmail?: string
   name: string
+  description?: string | null
   cpuHours: number
   gpuHours: number
   originalStartTime: string
@@ -108,6 +111,7 @@ export interface ComputeJob {
 export type ComputeJobPayload = Pick<ComputeJob,
   "name" | "cpuHours" | "gpuHours" | "originalStartTime" | "deadline" | "flexibilityWindowHours" | "isExempt"
 > & {
+  description?: string | null
   rawConstraints?: string | null
   parsedAt?: string | null
   confirmationOutcome?: ConfirmationOutcome | null

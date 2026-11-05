@@ -294,6 +294,19 @@ export function JobDateTimePicker({
             </button>
             <button
               type="button"
+              onClick={() => {
+                const next = new Date(Date.UTC(nowMarket.year, nowMarket.month - 1, nowMarket.day + 1)).toISOString().slice(0, 10)
+                const currentHour = parsed ? parsed.hour : parseInt(earliest.slice(11, 13), 10)
+                const currentMinute = parsed ? parsed.minute : 0
+                onChange(notBeforeEarliest(`${next}T${pad2(currentHour)}:${pad2(currentMinute)}`))
+                setOpen(false)
+              }}
+              className="text-emerald-600 hover:text-emerald-700 font-medium"
+            >
+              Tomorrow
+            </button>
+            <button
+              type="button"
               onClick={() => setOpen(false)}
               className="text-muted-foreground hover:text-foreground font-medium"
             >
