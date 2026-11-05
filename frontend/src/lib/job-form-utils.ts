@@ -77,3 +77,15 @@ export const JOB_TEMPLATES = [
   { label: "Light Script", cpuHours: "2", gpuHours: "0", workloadCategory: "HPC_BATCH", priority: "LOW" },
   { label: "ML Training", cpuHours: "0", gpuHours: "8", workloadCategory: "ML_TRAINING", priority: "NORMAL" },
 ] as const
+
+// API timestamps are timezone-free UTC strings; add the Z so Date.parse does not read them as local time.
+const utcMs = (v: string) => Date.parse(/Z$|[+-]\d\d:\d\d$/.test(v) ? v : `${v}Z`)
+
+// End (ms) of the last stored forecast hour. 0 when no forecast is stored.
+export const forecastEndMs = (points: { intervalStartUtc: string }[]) =>
+  points.reduce((end, p) => Math.max(end, utcMs(p.intervalStartUtc) + 36e5), 0)
+
+// True when any hour a job may use lies beyond the forecast, so the backend prices it from history
+// (masterplan D10). `forecastEnd` null means the forecast is unknown (loading or failed): no claim either way.
+export const usesEstimatedPrices = (deadlineUtc: string, forecastEnd: number | null) =>
+  forecastEnd !== null && utcMs(deadlineUtc) > forecastEnd
