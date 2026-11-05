@@ -70,3 +70,10 @@ export const effectiveFlexHours = (mode: ScheduleMode, flexInput: string, start:
 // An immediate job whose start has slipped into a past hour moves to the current hour instead of failing.
 export const effectiveStart = (mode: ScheduleMode, start: string, earliest: string) =>
   mode === "immediate" && start < earliest ? earliest : start
+
+// Starting points for operators who do not know their hours. Frontend only; the values are plain form fields.
+export const JOB_TEMPLATES = [
+  { label: "Data Processing Batch", cpuHours: "32", gpuHours: "0", workloadCategory: "HPC_BATCH", priority: "NORMAL" },
+  { label: "Light Script", cpuHours: "2", gpuHours: "0", workloadCategory: "HPC_BATCH", priority: "LOW" },
+  { label: "ML Training", cpuHours: "0", gpuHours: "8", workloadCategory: "ML_TRAINING", priority: "NORMAL" },
+] as const
