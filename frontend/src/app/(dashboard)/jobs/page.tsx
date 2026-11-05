@@ -85,7 +85,7 @@ const getWindowDurationText = (start: string, end: string) => {
     const diffHours = (date2.getTime() - date1.getTime()) / (1000 * 60 * 60)
     if (diffHours < 0) return "⚠️ Deadline is before start time"
     if (diffHours === 0) return "0 hours (starts at deadline)"
-    return `${diffHours % 1 === 0 ? diffHours : diffHours.toFixed(1)} hours span`
+    return `${diffHours % 1 === 0 ? diffHours : diffHours.toFixed(1)} hours`
   } catch {
     return ""
   }
@@ -299,7 +299,7 @@ export default function JobsPage() {
     event.preventDefault()
     setError("")
     if (parseReviewPending) {
-      setError("Confirm the proposed constraints or discard the text changes before saving.")
+      setError("Confirm the proposed constraints or restore the original text before saving.")
       return
     }
     const cpuHours = Number(form.cpuHours)
@@ -1083,7 +1083,7 @@ export default function JobsPage() {
 
       {/* Create / Edit Form Dialog */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
-        <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
           <form onSubmit={submit}>
             <DialogHeader>
               <DialogTitle>{editing ? "Edit compute job" : "Create compute job"}</DialogTitle>
@@ -1091,7 +1091,7 @@ export default function JobsPage() {
                 Enter resource requirements and allowed scheduling window. Times are shown in ERCOT market local time (Central).
               </DialogDescription>
             </DialogHeader>
-            <div className="grid gap-4 py-5 sm:grid-cols-2">
+            <div className="grid gap-4 py-6 sm:grid-cols-2">
               <Field label="Job title">
                 <Input
                   value={form.name}
@@ -1117,19 +1117,19 @@ export default function JobsPage() {
                   </select>
                 </Field>
               )}
-              <div className="space-y-1.5 text-sm sm:col-span-2">
+              <div className="space-y-2 text-sm sm:col-span-2">
                 <label htmlFor="job-description" className="block font-medium">Description (optional)</label>
                 <textarea
                   id="job-description"
                   rows={3}
                   maxLength={1000}
-                  className="w-full rounded-md border bg-background p-3 text-sm"
+                  className="w-full rounded-md border bg-background px-4 py-2 text-sm"
                   placeholder="What this job does"
                   value={form.description}
                   onChange={(e) => setForm({ ...form, description: e.target.value })}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3 sm:col-span-2">
+              <div className="grid grid-cols-2 gap-4 sm:col-span-2">
                 <Field label="CPU hours">
                   <Input
                     type="number"
@@ -1153,7 +1153,17 @@ export default function JobsPage() {
                   />
                 </Field>
               </div>
-              <div className="space-y-3 rounded-md border p-3 sm:col-span-2">
+              <div className="grid content-start gap-4 rounded-md border p-4">
+                <Field label={`Start time (${MARKET_ZONE_LABEL})`}>
+                  <JobDateTimePicker
+                    id="job-original-start"
+                    value={form.originalStartTime}
+                    onChange={(val) => setForm({ ...form, originalStartTime: val })}
+                    placeholder={`Select start date & hour (${MARKET_ZONE_LABEL})...`}
+                    mode="start"
+                    required
+                  />
+                </Field>
                 <Field label={`Deadline (${MARKET_ZONE_LABEL})`}>
                   <JobDateTimePicker
                     id="job-deadline"
@@ -1165,18 +1175,8 @@ export default function JobsPage() {
                     required
                   />
                 </Field>
-                <Field label={`Start time (${MARKET_ZONE_LABEL})`}>
-                  <JobDateTimePicker
-                    id="job-original-start"
-                    value={form.originalStartTime}
-                    onChange={(val) => setForm({ ...form, originalStartTime: val })}
-                    placeholder={`Select start date & hour (${MARKET_ZONE_LABEL})...`}
-                    mode="start"
-                    required
-                  />
-                </Field>
-                <div className="rounded-md bg-muted/50 p-2.5 text-xs flex min-h-10 items-center justify-between border border-border/60">
-                  <span className="text-muted-foreground flex items-center gap-1.5">
+                <div className="mt-2 rounded-md bg-muted/50 p-2 text-xs flex min-h-10 items-center justify-between border border-border/60">
+                  <span className="text-muted-foreground flex items-center gap-2">
                     <Clock className="h-3.5 w-3.5 text-emerald-500" />
                     <span>Scheduling Window:</span>
                   </span>
@@ -1185,11 +1185,35 @@ export default function JobsPage() {
                   </span>
                 </div>
               </div>
+              <div className="grid content-start gap-4">
+                <Field label="Priority">
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={form.priority}
+                    onChange={(e) => setForm({ ...form, priority: e.target.value as JobPriority })}
+                  >
+                    {(Object.keys(PRIORITY_LABELS) as JobPriority[]).map((p) => (
+                      <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Job type">
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={form.workloadCategory}
+                    onChange={(e) => setForm({ ...form, workloadCategory: e.target.value as WorkloadCategory })}
+                  >
+                    {Object.entries(WORKLOAD_CATEGORY_LABELS).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
               <fieldset className="grid gap-2 sm:col-span-2">
-                <legend className="mb-1 text-sm font-medium">Scheduling</legend>
+                <legend className="mb-2 text-sm font-medium">Scheduling</legend>
                 {([["flexible", "Flexible schedule", "The scheduler may move this job to cheaper hours before the deadline."],
                   ["locked", "Lock schedule", "The scheduler will not move this job. It runs at the start time you choose."]] as const).map(([mode, label, help]) => (
-                  <label key={mode} className="flex cursor-pointer items-start gap-2 rounded-md border p-2.5 text-sm">
+                  <label key={mode} className="flex cursor-pointer items-start gap-2 rounded-md border p-4 text-sm">
                     <input
                       type="radio"
                       name="schedule-mode"
@@ -1206,28 +1230,6 @@ export default function JobsPage() {
                   </label>
                 ))}
               </fieldset>
-              <Field label="Priority">
-                <select
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  value={form.priority}
-                  onChange={(e) => setForm({ ...form, priority: e.target.value as JobPriority })}
-                >
-                  {(Object.keys(PRIORITY_LABELS) as JobPriority[]).map((p) => (
-                    <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Job type">
-                <select
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  value={form.workloadCategory}
-                  onChange={(e) => setForm({ ...form, workloadCategory: e.target.value as WorkloadCategory })}
-                >
-                  {Object.entries(WORKLOAD_CATEGORY_LABELS).map(([value, label]) => (
-                    <option key={value} value={value}>{label}</option>
-                  ))}
-                </select>
-              </Field>
             </div>
             {formOpen && <ConstraintParseReview
               draft={{
@@ -1254,7 +1256,7 @@ export default function JobsPage() {
                 setError("")
               }}
             />}
-            {error && <p role="alert" className="my-3 text-sm text-destructive">{error}</p>}
+            {error && <p role="alert" className="my-4 text-sm text-destructive">{error}</p>}
             <DialogFooter className="mt-6">
               <Button type="button" variant="outline" onClick={() => setFormOpen(false)}>
                 Cancel
@@ -1377,7 +1379,7 @@ export default function JobsPage() {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="space-y-1.5 text-sm">
+    <label className="space-y-2 text-sm">
       <span className="block font-medium">{label}</span>
       {children}
     </label>

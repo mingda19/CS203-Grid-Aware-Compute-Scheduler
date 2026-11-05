@@ -51,18 +51,17 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
 
   const blocker = review ? constraintReviewBlocker(review.result, review.draft, draft) : null
   return (
-    <section aria-label="Natural-language constraints" className="mt-4 space-y-3 rounded-lg border bg-muted/20 p-4">
+    <section aria-label="Natural-language constraints" className="mt-4 space-y-4 rounded-lg border bg-muted/20 p-4">
       <div>
         <label htmlFor="raw-job-constraints" className="text-sm font-medium">Describe scheduling constraints</label>
         <p id="constraints-help" className="text-xs text-muted-foreground">Optional. Describe timing, flexibility, priority, or exemption. Times are interpreted in ERCOT market local time (Central). Parsing does not save or change the job.</p>
       </div>
       <textarea id="raw-job-constraints" aria-describedby="constraints-help" maxLength={1000} rows={3}
-        className="w-full rounded-md border bg-background p-3 text-sm"
+        className="w-full rounded-md border bg-background px-4 py-2 text-sm"
         placeholder="e.g. can wait 4 hours, high priority"
         value={raw} onChange={e => { invalidate(); setRaw(e.target.value); onPendingChange(e.target.value !== confirmedSource) }} />
       <div className="flex flex-wrap items-center gap-2">
         <Button type="button" variant="outline" disabled={loading || !raw.trim()} onClick={() => void parse()}>{loading ? "Parsing…" : "Parse and review"}</Button>
-        <Button type="button" variant="ghost" onClick={() => { invalidate(); setRaw(confirmedSource); onPendingChange(false) }}>Discard text changes</Button>
         <span className="text-xs text-muted-foreground">{raw.length}/1,000 characters</span>
       </div>
       {loading && <p role="status" className="text-sm">Parsing constraints for review…</p>}
@@ -92,13 +91,13 @@ export function ConstraintComparison({ raw, result }: { raw: string; result: Con
     ["priority", "Priority", result.fields.priority ?? "Not set"],
     ["isExempt", "Exempt from rescheduling", result.fields.isExempt == null ? "Not set" : result.fields.isExempt ? "Yes" : "No"],
   ]
-  return <div className="space-y-3">
+  return <div className="space-y-4">
     <div className="grid gap-4 md:grid-cols-2">
-      <div className="min-w-0 rounded-md border bg-background p-3">
+      <div className="min-w-0 rounded-md border bg-background p-4">
         <h4 className="mb-2 text-sm font-semibold">Original text</h4>
         <p className="whitespace-pre-wrap break-words text-sm">{raw}</p>
       </div>
-      <div className="min-w-0 rounded-md border bg-background p-3">
+      <div className="min-w-0 rounded-md border bg-background p-4">
         <h4 className="mb-2 text-sm font-semibold">Proposed values</h4>
         <dl className="space-y-2 text-sm">{values.map(([field, label, value]) => {
           const evidence = result.evidence.filter(item => item.field === field)
