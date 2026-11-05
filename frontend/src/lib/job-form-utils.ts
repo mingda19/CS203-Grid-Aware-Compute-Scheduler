@@ -40,3 +40,18 @@ export const toApiUtcDate = (value: string, onTheHour = false) => {
   const finalMinute = onTheHour ? 0 : minute
   return marketWallTimeToUtc(year, month, day, hour, finalMinute, 0).toISOString().slice(0, 19)
 }
+
+// Wall-clock hours between two datetime-local strings ("YYYY-MM-DDTHH:mm").
+// ponytail: ignores the 1h DST jump; the backend re-validates, so the error is at most one hour.
+export const windowHours = (start: string, end: string) =>
+  start && end ? (Date.parse(`${end}:00Z`) - Date.parse(`${start}:00Z`)) / 36e5 : 0
+
+// Facility caps are per slot, so a job spread over N hourly slots may need N times the cap.
+// No usable window means no maximum yet (Infinity).
+export const maxJobHours = (perSlotCap: number, start: string, end: string) => {
+  const hours = Math.floor(windowHours(start, end))
+  return hours >= 1 ? perSlotCap * hours : Infinity
+}
+
+// type="number" still accepts these characters (exponent and sign), so block them at the key.
+export const BLOCKED_NUMBER_KEYS = ["e", "E", "+", "-"]

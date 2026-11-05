@@ -31,7 +31,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
-import { toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
+import { BLOCKED_NUMBER_KEYS, maxJobHours, toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
 import { elapsedJobLabel, elapsedJobsConfirmation, elapsedStartJobs } from "@/lib/elapsed-jobs"
 import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
@@ -218,6 +218,10 @@ export default function JobsPage() {
     }
   }, [])
 
+  const maxCpu = maxJobHours(Number(facility.maxCpuHours), form.originalStartTime, form.deadline)
+  const maxGpu = maxJobHours(Number(facility.maxGpuHours), form.originalStartTime, form.deadline)
+  const blockNumberKeys = (e: React.KeyboardEvent) => { if (BLOCKED_NUMBER_KEYS.includes(e.key)) e.preventDefault() }
+
   const openCreate = () => {
     setEditing(null)
     setParseReviewPending(false)
@@ -268,8 +272,17 @@ export default function JobsPage() {
     const cpuHours = Number(form.cpuHours)
     const gpuHours = Number(form.gpuHours)
     const flexibilityWindowHours = Number(form.flexibilityWindowHours)
+    if (!Number.isFinite(cpuHours) || !Number.isFinite(gpuHours) || cpuHours < 0 || gpuHours < 0) {
+      setError("CPU and GPU hours must be plain non-negative numbers.")
+      return
+    }
     if (cpuHours === 0 && gpuHours === 0) {
       setError("Enter CPU hours, GPU hours, or both.")
+      return
+    }
+    // Pasted values such as "1e9" pass the key block, so the cap is enforced here too.
+    if (cpuHours > maxCpu || gpuHours > maxGpu) {
+      setError(`Hours exceed what the facility can run in this window (max ${maxCpu} CPU-h, ${maxGpu} GPU-h).`)
       return
     }
     if (form.deadline < form.originalStartTime) {
@@ -1075,8 +1088,10 @@ export default function JobsPage() {
                     step="any"
                     required
                     value={form.cpuHours}
+                    onKeyDown={blockNumberKeys}
                     onChange={(e) => setForm({ ...form, cpuHours: e.target.value })}
                   />
+                  {Number.isFinite(maxCpu) && <span className="text-xs text-muted-foreground">Max {maxCpu} for this window</span>}
                 </Field>
                 <Field label="GPU hours">
                   <Input
@@ -1085,8 +1100,10 @@ export default function JobsPage() {
                     step="any"
                     required
                     value={form.gpuHours}
+                    onKeyDown={blockNumberKeys}
                     onChange={(e) => setForm({ ...form, gpuHours: e.target.value })}
                   />
+                  {Number.isFinite(maxGpu) && <span className="text-xs text-muted-foreground">Max {maxGpu} for this window</span>}
                 </Field>
               </div>
               <Field label={`Original start time (${MARKET_ZONE_LABEL})`}>
