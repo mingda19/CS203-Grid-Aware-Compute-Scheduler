@@ -120,6 +120,7 @@ export default function JobsPage() {
   const [parseReviewPending, setParseReviewPending] = React.useState(false)
   // End of the stored forecast (ms); null until known. Drives the "Estimated prices" flag and warning.
   const [forecastEnd, setForecastEnd] = React.useState<number | null>(null)
+  const [template, setTemplate] = React.useState("") // label of the chosen template; "" = none
   const [estimatedToConfirm, setEstimatedToConfirm] = React.useState<ComputeJobPayload | null>(null)
   const [form, setForm] = React.useState<FormState>(blankForm)
 
@@ -258,6 +259,7 @@ export default function JobsPage() {
   const openCreate = () => {
     setEditing(null)
     setParseReviewPending(false)
+    setTemplate("")
     setForm({ ...blankForm(), originalStartTime: currentMarketHourInput() })
     setError("")
     setFormOpen(true)
@@ -1094,43 +1096,7 @@ export default function JobsPage() {
                 Enter resource requirements and allowed scheduling window. Times are shown in ERCOT market local time (Central).
               </DialogDescription>
             </DialogHeader>
-            {formOpen && <ConstraintParseReview
-              draft={{
-                originalStartTime: form.originalStartTime ? toApiUtcDate(form.originalStartTime, true) : null,
-                deadline: form.deadline ? toApiUtcDate(form.deadline) : null,
-                flexibilityWindowHours: form.scheduleMode === "immediate" ? 0 : form.flexibilityWindowHours === "" ? null : Number(form.flexibilityWindowHours),
-                priority: form.priority,
-                isExempt: form.isExempt,
-              }}
-              confirmedSource={form.rawConstraints ?? ""}
-              onPendingChange={setParseReviewPending}
-              onConfirm={(result, rawConstraints) => {
-                setForm((current) => ({
-                  ...current,
-                  originalStartTime: result.fields.originalStartTime ? toInputDate(result.fields.originalStartTime) : "",
-                  deadline: result.fields.deadline ? toInputDate(result.fields.deadline) : "",
-                  flexibilityWindowHours: result.fields.flexibilityWindowHours ? String(result.fields.flexibilityWindowHours) : "",
-                  scheduleMode: result.fields.flexibilityWindowHours === 0 ? "immediate" : "flexible",
-                  priority: result.fields.priority ?? current.priority,
-                  isExempt: result.fields.isExempt ?? current.isExempt,
-                  rawConstraints,
-                  parsedAt: result.parsedAt,
-                  confirmationOutcome: "CONFIRMED",
-                }))
-                setError("")
-              }}
-            />}
             <div className="grid gap-4 py-5 sm:grid-cols-2">
-              {!editing && (
-                <div className="flex flex-wrap items-center gap-2 text-xs sm:col-span-2">
-                  <span className="text-muted-foreground">Start from a template:</span>
-                  {JOB_TEMPLATES.map(({ label, ...fields }) => (
-                    <Button key={label} type="button" size="sm" variant="outline" onClick={() => setForm((f) => ({ ...f, ...fields, name: f.name || label }))}>
-                      {label}
-                    </Button>
-                  ))}
-                </div>
-              )}
               <Field label="Job title">
                 <Input
                   value={form.name}
@@ -1140,14 +1106,34 @@ export default function JobsPage() {
                   placeholder="e.g. Model fine-tuning run"
                 />
               </Field>
-              <Field label="Description (optional)">
-                <Input
-                  value={form.description}
+              {!editing && (
+                <Field label="Template (optional)">
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={template}
+                    onChange={(e) => {
+                      setTemplate(e.target.value)
+                      const t = JOB_TEMPLATES.find((item) => item.label === e.target.value)
+                      if (t) setForm((f) => ({ ...f, cpuHours: t.cpuHours, gpuHours: t.gpuHours, workloadCategory: t.workloadCategory, priority: t.priority, name: f.name || t.label }))
+                    }}
+                  >
+                    <option value="">None</option>
+                    {JOB_TEMPLATES.map((t) => <option key={t.label} value={t.label}>{t.label}</option>)}
+                  </select>
+                </Field>
+              )}
+              <div className="space-y-1.5 text-sm sm:col-span-2">
+                <label htmlFor="job-description" className="block font-medium">Description (optional)</label>
+                <textarea
+                  id="job-description"
+                  rows={3}
                   maxLength={1000}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+                  className="w-full rounded-md border bg-background p-3 text-sm"
                   placeholder="What this job does"
+                  value={form.description}
+                  onChange={(e) => setForm({ ...form, description: e.target.value })}
                 />
-              </Field>
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="CPU hours">
                   <Input
@@ -1159,7 +1145,6 @@ export default function JobsPage() {
                     onKeyDown={blockNumberKeys}
                     onChange={(e) => setForm({ ...form, cpuHours: e.target.value })}
                   />
-                  {Number.isFinite(maxCpu) && <span className="text-xs text-muted-foreground">Max {maxCpu} for this window</span>}
                 </Field>
                 <Field label="GPU hours">
                   <Input
@@ -1171,7 +1156,6 @@ export default function JobsPage() {
                     onKeyDown={blockNumberKeys}
                     onChange={(e) => setForm({ ...form, gpuHours: e.target.value })}
                   />
-                  {Number.isFinite(maxGpu) && <span className="text-xs text-muted-foreground">Max {maxGpu} for this window</span>}
                 </Field>
               </div>
               <Field label={`Deadline (${MARKET_ZONE_LABEL})`}>
@@ -1216,17 +1200,15 @@ export default function JobsPage() {
                   required
                 />
               </Field>
-              {form.originalStartTime && form.deadline && (
-                <div className="rounded-md bg-muted/50 p-2.5 text-xs flex items-center justify-between border border-border/60">
-                  <span className="text-muted-foreground flex items-center gap-1.5">
-                    <Clock className="h-3.5 w-3.5 text-emerald-500" />
-                    <span>Scheduling Window:</span>
-                  </span>
-                  <span className={`font-mono font-medium ${form.deadline < form.originalStartTime ? "text-destructive font-semibold" : "text-foreground"}`}>
-                    {getWindowDurationText(form.originalStartTime, form.deadline)}
-                  </span>
-                </div>
-              )}
+              <div className="rounded-md bg-muted/50 p-2.5 text-xs flex min-h-10 items-center justify-between border border-border/60">
+                <span className="text-muted-foreground flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5 text-emerald-500" />
+                  <span>Scheduling Window:</span>
+                </span>
+                <span className={`font-mono font-medium ${form.deadline && form.deadline < form.originalStartTime ? "text-destructive font-semibold" : "text-foreground"}`}>
+                  {getWindowDurationText(form.originalStartTime, form.deadline) || "—"}
+                </span>
+              </div>
               <Field label="Priority">
                 <select
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
@@ -1264,7 +1246,33 @@ export default function JobsPage() {
                 </HelpTip>
               </div>
             </div>
-            {error && <p role="alert" className="mb-3 text-sm text-destructive">{error}</p>}
+            {formOpen && <ConstraintParseReview
+              draft={{
+                originalStartTime: form.originalStartTime ? toApiUtcDate(form.originalStartTime, true) : null,
+                deadline: form.deadline ? toApiUtcDate(form.deadline) : null,
+                flexibilityWindowHours: form.scheduleMode === "immediate" ? 0 : form.flexibilityWindowHours === "" ? null : Number(form.flexibilityWindowHours),
+                priority: form.priority,
+                isExempt: form.isExempt,
+              }}
+              confirmedSource={form.rawConstraints ?? ""}
+              onPendingChange={setParseReviewPending}
+              onConfirm={(result, rawConstraints) => {
+                setForm((current) => ({
+                  ...current,
+                  originalStartTime: result.fields.originalStartTime ? toInputDate(result.fields.originalStartTime) : "",
+                  deadline: result.fields.deadline ? toInputDate(result.fields.deadline) : "",
+                  flexibilityWindowHours: result.fields.flexibilityWindowHours ? String(result.fields.flexibilityWindowHours) : "",
+                  scheduleMode: result.fields.flexibilityWindowHours === 0 ? "immediate" : "flexible",
+                  priority: result.fields.priority ?? current.priority,
+                  isExempt: result.fields.isExempt ?? current.isExempt,
+                  rawConstraints,
+                  parsedAt: result.parsedAt,
+                  confirmationOutcome: "CONFIRMED",
+                }))
+                setError("")
+              }}
+            />}
+            {error && <p role="alert" className="my-3 text-sm text-destructive">{error}</p>}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setFormOpen(false)}>
                 Cancel
