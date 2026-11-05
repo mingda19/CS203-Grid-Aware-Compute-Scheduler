@@ -153,58 +153,94 @@ export function JobDateTimePicker({
     setOpen(false)
   }
 
+  const dateValue = parsed ? value.slice(0, 10) : ""
+  const timeValue = parsed ? value.slice(11, 16) : ""
+  // The hour floor only binds on the earliest day, so a later date may pick any time.
+  const timeMin = !dateValue || dateValue === earliestDate ? earliest.slice(11, 16) : undefined
+
+  // A new date keeps the time already chosen, else the floor's own hour (never the past: see notBeforeEarliest).
+  const setDate = (date: string) => {
+    if (!date) return onChange("")
+    const time = parsed ? `${pad2(parsed.hour)}:${pad2(parsed.minute)}` : `${earliest.slice(11, 13)}:00`
+    onChange(notBeforeEarliest(`${date}T${time}`))
+  }
+  // A time with no date yet lands on the earliest day.
+  const setTime = (time: string) => {
+    if (time) onChange(notBeforeEarliest(`${dateValue || earliestDate}T${time}`))
+  }
+
   const alignRight = align === "right" || mode === "deadline"
 
   return (
     <div className="relative w-full" ref={containerRef}>
-      {/* Direct editable input with calendar toggle button */}
-      <div className="relative flex items-center">
-        <input
-          id={id}
-          name={id}
-          type="datetime-local"
-          step={mode === "start" ? "3600" : "60"}
-          required={required}
-          disabled={disabled}
-          value={value}
-          min={earliest}
-          onChange={(e) => onChange(e.target.value)}
-          className={cn(
-            "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 pr-16 text-sm ring-offset-background",
-            "file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-            "disabled:cursor-not-allowed disabled:opacity-50",
-            "[&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:w-0",
-            error && "border-destructive ring-destructive",
-            open && "ring-1 ring-emerald-500 border-emerald-500"
-          )}
-        />
+      {/* Two controls, one value: a date (with the calendar dropdown) and a time. */}
+      <div className="flex gap-2">
+        <div className="relative flex flex-1 items-center">
+          <input
+            id={id}
+            name={id}
+            type="date"
+            aria-label={`${mode === "start" ? "Start" : "Deadline"} date`}
+            required={required}
+            disabled={disabled}
+            value={dateValue}
+            min={earliestDate}
+            onChange={(e) => setDate(e.target.value)}
+            className={cn(
+              "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 pr-16 text-sm ring-offset-background",
+              "placeholder:text-muted-foreground",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+              "[&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:w-0",
+              error && "border-destructive ring-destructive",
+              open && "ring-1 ring-emerald-500 border-emerald-500"
+            )}
+          />
 
-        <div className="absolute right-1.5 flex items-center gap-1">
-          {value && !disabled && (
+          <div className="absolute right-1.5 flex items-center gap-1">
+            {value && !disabled && (
+              <button
+                type="button"
+                onClick={() => onChange("")}
+                title="Clear date and time"
+                className="p-1 text-muted-foreground hover:text-foreground rounded transition-colors"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+
             <button
               type="button"
-              onClick={() => onChange("")}
-              title="Clear timing"
-              className="p-1 text-muted-foreground hover:text-foreground rounded transition-colors"
+              disabled={disabled}
+              onClick={() => setOpen(!open)}
+              title="Toggle calendar dropdown"
+              className={cn(
+                "p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors",
+                open && "bg-emerald-500/20"
+              )}
             >
-              <X className="h-3.5 w-3.5" />
+              <CalendarIcon className="h-4 w-4" />
             </button>
-          )}
-
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => setOpen(!open)}
-            title="Toggle calendar dropdown"
-            className={cn(
-              "p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors",
-              open && "bg-emerald-500/20"
-            )}
-          >
-            <CalendarIcon className="h-4 w-4" />
-          </button>
+          </div>
         </div>
+
+        <input
+          id={id ? `${id}-time` : undefined}
+          type="time"
+          min={timeMin}
+          step={mode === "start" ? "3600" : "60"}
+          aria-label={`${mode === "start" ? "Start" : "Deadline"} time`}
+          required={required}
+          disabled={disabled}
+          value={timeValue}
+          onChange={(e) => setTime(e.target.value)}
+          className={cn(
+            "flex h-10 w-32 shrink-0 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+            "disabled:cursor-not-allowed disabled:opacity-50",
+            error && "border-destructive ring-destructive"
+          )}
+        />
       </div>
 
       {/* Pure Compact Calendar Dropdown */}
