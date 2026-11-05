@@ -33,7 +33,7 @@ import {
 } from "@/components/ui/dialog"
 import { HelpTip } from "@/components/ui/help-tip"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
-import { BLOCKED_NUMBER_KEYS, effectiveFlexHours, effectiveStart, maxJobHours, type ScheduleMode, toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
+import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, effectiveStart, maxJobHours, type ScheduleMode, toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
 import { elapsedJobLabel, elapsedJobsConfirmation, elapsedStartJobs } from "@/lib/elapsed-jobs"
 import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
@@ -1081,6 +1081,16 @@ export default function JobsPage() {
               }}
             />}
             <div className="grid gap-4 py-5 sm:grid-cols-2">
+              {!editing && (
+                <div className="flex flex-wrap items-center gap-2 text-xs sm:col-span-2">
+                  <span className="text-muted-foreground">Start from a template:</span>
+                  {JOB_TEMPLATES.map(({ label, ...fields }) => (
+                    <Button key={label} type="button" size="sm" variant="outline" onClick={() => setForm((f) => ({ ...f, ...fields, name: f.name || label }))}>
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+              )}
               <Field label="Job title">
                 <Input
                   value={form.name}
