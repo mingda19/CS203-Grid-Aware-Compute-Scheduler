@@ -407,6 +407,26 @@ class JobServiceTest {
     }
 
     @Test
+    @DisplayName("description: stored on create, kept when omitted on update, cleared when blank")
+    void description_createKeepClear() {
+        when(jobRepository.save(any(Job.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        JobRequestDto create = JobRequestDto.builder().name("D").cpuHours(1.0).gpuHours(0.0)
+                .originalStartTime(start).deadline(deadline).description("  nightly ETL  ").build();
+        assertThat(jobService.createJob(create, owner).getDescription()).isEqualTo("nightly ETL");
+
+        Job existing = Job.builder().id(204L).ownerEmail(owner).name("D").cpuHours(1.0).gpuHours(0.0)
+                .originalStartTime(start).deadline(deadline).description("nightly ETL").status("PENDING").build();
+        when(jobRepository.findByIdAndOwnerEmail(204L, owner)).thenReturn(Optional.of(existing));
+        JobRequestDto omit = JobRequestDto.builder().name("D").cpuHours(1.0).gpuHours(0.0)
+                .originalStartTime(start).deadline(deadline).build();
+        assertThat(jobService.updateJob(204L, omit, owner).getDescription()).isEqualTo("nightly ETL");
+
+        JobRequestDto blank = JobRequestDto.builder().name("D").cpuHours(1.0).gpuHours(0.0)
+                .originalStartTime(start).deadline(deadline).description("   ").build();
+        assertThat(jobService.updateJob(204L, blank, owner).getDescription()).isNull();
+    }
+
+    @Test
     @DisplayName("updateJob changes workloadCategory when supplied")
     void updateJob_ChangesWorkloadCategory() {
         Job existing = Job.builder()
