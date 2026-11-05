@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { optimizerApi, setAccessToken, type ComputeJob } from "./api"
-import { maxJobHours, toApiUtcDate, toInputDate, toOptimizeJobInput, windowHours } from "./job-form-utils"
+import { effectiveFlexHours, effectiveStart, maxJobHours, toApiUtcDate, toInputDate, toOptimizeJobInput, windowHours } from "./job-form-utils"
 
 afterEach(() => { vi.unstubAllGlobals(); setAccessToken(null) })
 
@@ -103,5 +103,16 @@ describe("hours maximum", () => {
   it("has no maximum without a usable window", () => {
     expect(maxJobHours(256, "", "2026-11-05T22:00")).toBe(Infinity)
     expect(maxJobHours(256, "2026-11-05T10:00", "2026-11-05T10:30")).toBe(Infinity)
+  })
+})
+
+describe("schedule mode", () => {
+  const [start, deadline] = ["2026-11-05T10:00", "2026-11-05T22:00"]
+  it("immediate allows no delay", () => expect(effectiveFlexHours("immediate", "5", start, deadline)).toBe(0))
+  it("flexible defaults to the whole window", () => expect(effectiveFlexHours("flexible", "", start, deadline)).toBe(12))
+  it("flexible keeps an explicit value", () => expect(effectiveFlexHours("flexible", "4", start, deadline)).toBe(4))
+  it("immediate moves a stale start to the current hour", () => {
+    expect(effectiveStart("immediate", "", "2026-11-05T11:00")).toBe("2026-11-05T11:00")
+    expect(effectiveStart("flexible", start, "2026-11-05T11:00")).toBe(start)
   })
 })
