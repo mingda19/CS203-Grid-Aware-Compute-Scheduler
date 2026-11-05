@@ -235,7 +235,7 @@ export function JobDateTimePicker({
           value={timeValue}
           onChange={(e) => setTime(e.target.value)}
           className={cn(
-            "flex h-10 w-32 shrink-0 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background",
+            "flex h-10 w-28 shrink-0 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
             "disabled:cursor-not-allowed disabled:opacity-50",
             error && "border-destructive ring-destructive"
@@ -247,7 +247,7 @@ export function JobDateTimePicker({
       {open && (
         <div
           className={cn(
-            "absolute z-50 w-[280px] sm:w-[300px] rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-xl animate-in fade-in-0 zoom-in-95 top-full mt-1.5",
+            "absolute z-50 w-[280px] sm:w-[300px] rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-xl animate-in fade-in-0 zoom-in-95 top-full mt-1.5",
             alignRight ? "right-0" : "left-0"
           )}
         >
