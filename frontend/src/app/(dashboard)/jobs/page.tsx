@@ -31,7 +31,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
-import { BLOCKED_NUMBER_KEYS, maxJobHours, toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
+import { BLOCKED_NUMBER_KEYS, effectiveFlexHours, effectiveStart, maxJobHours, type ScheduleMode, toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
 import { elapsedJobLabel, elapsedJobsConfirmation, elapsedStartJobs } from "@/lib/elapsed-jobs"
 import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
@@ -42,7 +42,8 @@ type FormState = {
   gpuHours: string
   originalStartTime: string
   deadline: string
-  flexibilityWindowHours: string
+  flexibilityWindowHours: string // "" = whole window (see effectiveFlexHours)
+  scheduleMode: ScheduleMode
   priority: JobPriority
   workloadCategory: WorkloadCategory
   isExempt: boolean
@@ -57,7 +58,8 @@ const blankForm = (): FormState => ({
   gpuHours: "0",
   originalStartTime: "",
   deadline: "",
-  flexibilityWindowHours: "0",
+  flexibilityWindowHours: "",
+  scheduleMode: "flexible",
   priority: "NORMAL",
   workloadCategory: "ML_TRAINING",
   isExempt: false,
@@ -225,7 +227,7 @@ export default function JobsPage() {
   const openCreate = () => {
     setEditing(null)
     setParseReviewPending(false)
-    setForm(blankForm())
+    setForm({ ...blankForm(), originalStartTime: currentMarketHourInput() })
     setError("")
     setFormOpen(true)
   }
@@ -240,7 +242,8 @@ export default function JobsPage() {
       gpuHours: String(job.gpuHours),
       originalStartTime: toInputDate(job.originalStartTime),
       deadline: toInputDate(job.deadline),
-      flexibilityWindowHours: String(job.flexibilityWindowHours),
+      flexibilityWindowHours: job.flexibilityWindowHours > 0 ? String(job.flexibilityWindowHours) : "",
+      scheduleMode: job.flexibilityWindowHours > 0 ? "flexible" : "immediate",
       priority: job.priority ?? "NORMAL",
       workloadCategory: job.workloadCategory ?? "ML_TRAINING",
       isExempt: job.isExempt,
@@ -271,7 +274,6 @@ export default function JobsPage() {
     }
     const cpuHours = Number(form.cpuHours)
     const gpuHours = Number(form.gpuHours)
-    const flexibilityWindowHours = Number(form.flexibilityWindowHours)
     if (!Number.isFinite(cpuHours) || !Number.isFinite(gpuHours) || cpuHours < 0 || gpuHours < 0) {
       setError("CPU and GPU hours must be plain non-negative numbers.")
       return
@@ -293,7 +295,9 @@ export default function JobsPage() {
     // phrasing. A job starting in an elapsed hour can never be run, so it is rejected on save rather
     // than left for the optimiser to report as unschedulable.
     const earliest = currentMarketHourInput()
-    if (form.originalStartTime < earliest) {
+    const startInput = effectiveStart(form.scheduleMode, form.originalStartTime, earliest)
+    const flexibilityWindowHours = effectiveFlexHours(form.scheduleMode, form.flexibilityWindowHours, startInput, form.deadline)
+    if (startInput < earliest) {
       setError(`Start time has passed. Choose ${earliest.replace("T", " ")} ${MARKET_ZONE_LABEL} or later.`)
       return
     }
@@ -306,7 +310,7 @@ export default function JobsPage() {
       name: form.name.trim(),
       cpuHours,
       gpuHours,
-      originalStartTime: toApiUtcDate(form.originalStartTime, true),
+      originalStartTime: toApiUtcDate(startInput, true),
       deadline: toApiUtcDate(form.deadline, false),
       flexibilityWindowHours,
       priority: form.priority,
@@ -1049,7 +1053,7 @@ export default function JobsPage() {
               draft={{
                 originalStartTime: form.originalStartTime ? toApiUtcDate(form.originalStartTime, true) : null,
                 deadline: form.deadline ? toApiUtcDate(form.deadline) : null,
-                flexibilityWindowHours: form.flexibilityWindowHours === "" ? null : Number(form.flexibilityWindowHours),
+                flexibilityWindowHours: form.scheduleMode === "immediate" ? 0 : form.flexibilityWindowHours === "" ? null : Number(form.flexibilityWindowHours),
                 priority: form.priority,
                 isExempt: form.isExempt,
               }}
@@ -1060,7 +1064,8 @@ export default function JobsPage() {
                   ...current,
                   originalStartTime: result.fields.originalStartTime ? toInputDate(result.fields.originalStartTime) : "",
                   deadline: result.fields.deadline ? toInputDate(result.fields.deadline) : "",
-                  flexibilityWindowHours: result.fields.flexibilityWindowHours == null ? "" : String(result.fields.flexibilityWindowHours),
+                  flexibilityWindowHours: result.fields.flexibilityWindowHours ? String(result.fields.flexibilityWindowHours) : "",
+                  scheduleMode: result.fields.flexibilityWindowHours === 0 ? "immediate" : "flexible",
                   priority: result.fields.priority ?? current.priority,
                   isExempt: result.fields.isExempt ?? current.isExempt,
                   rawConstraints,
@@ -1106,16 +1111,6 @@ export default function JobsPage() {
                   {Number.isFinite(maxGpu) && <span className="text-xs text-muted-foreground">Max {maxGpu} for this window</span>}
                 </Field>
               </div>
-              <Field label={`Original start time (${MARKET_ZONE_LABEL})`}>
-                <JobDateTimePicker
-                  id="job-original-start"
-                  value={form.originalStartTime}
-                  onChange={(val) => setForm({ ...form, originalStartTime: val })}
-                  placeholder={`Select start date & hour (${MARKET_ZONE_LABEL})...`}
-                  mode="start"
-                  required
-                />
-              </Field>
               <Field label={`Deadline (${MARKET_ZONE_LABEL})`}>
                 <JobDateTimePicker
                   id="job-deadline"
@@ -1124,6 +1119,37 @@ export default function JobsPage() {
                   placeholder={`Select deadline (${MARKET_ZONE_LABEL})...`}
                   mode="deadline"
                   minDateTime={form.originalStartTime}
+                  required
+                />
+              </Field>
+              <fieldset className="grid gap-2 sm:col-span-2">
+                <legend className="mb-1 text-sm font-medium">Scheduling</legend>
+                {([["flexible", "Flexible schedule", "The scheduler may start the job at any hour before the deadline."],
+                  ["immediate", "Start immediately", "Run at the start time with no delay."]] as const).map(([mode, label, help]) => (
+                  <label key={mode} className="flex cursor-pointer items-start gap-2 rounded-md border p-2.5 text-sm">
+                    <input
+                      type="radio"
+                      name="schedule-mode"
+                      className="mt-1"
+                      checked={form.scheduleMode === mode}
+                      onChange={() => setForm({ ...form, scheduleMode: mode, flexibilityWindowHours: "" })}
+                    />
+                    <span>
+                      <span className="block font-medium">{label}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {mode === "flexible" && form.flexibilityWindowHours ? `The scheduler may delay the start by up to ${form.flexibilityWindowHours} h.` : help}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+              <Field label={`Start time (${MARKET_ZONE_LABEL})`}>
+                <JobDateTimePicker
+                  id="job-original-start"
+                  value={form.originalStartTime}
+                  onChange={(val) => setForm({ ...form, originalStartTime: val })}
+                  placeholder={`Select start date & hour (${MARKET_ZONE_LABEL})...`}
+                  mode="start"
                   required
                 />
               </Field>
@@ -1138,16 +1164,6 @@ export default function JobsPage() {
                   </span>
                 </div>
               )}
-              <Field label="Flexibility window (hours)">
-                <Input
-                  type="number"
-                  min="0"
-                  step="1"
-                  required
-                  value={form.flexibilityWindowHours}
-                  onChange={(e) => setForm({ ...form, flexibilityWindowHours: e.target.value })}
-                />
-              </Field>
               <Field label="Priority">
                 <select
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
