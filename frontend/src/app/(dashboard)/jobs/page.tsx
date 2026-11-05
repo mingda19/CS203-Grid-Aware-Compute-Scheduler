@@ -1083,7 +1083,7 @@ export default function JobsPage() {
 
       {/* Create / Edit Form Dialog */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
-        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
+        <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
           <form onSubmit={submit}>
             <DialogHeader>
               <DialogTitle>{editing ? "Edit compute job" : "Create compute job"}</DialogTitle>
@@ -1153,7 +1153,31 @@ export default function JobsPage() {
                   />
                 </Field>
               </div>
-              <div className="grid content-start gap-4 rounded-md border p-4">
+              <div className="grid gap-4 sm:col-span-2 sm:grid-cols-2">
+                <Field label="Priority">
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={form.priority}
+                    onChange={(e) => setForm({ ...form, priority: e.target.value as JobPriority })}
+                  >
+                    {(Object.keys(PRIORITY_LABELS) as JobPriority[]).map((p) => (
+                      <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Job type">
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={form.workloadCategory}
+                    onChange={(e) => setForm({ ...form, workloadCategory: e.target.value as WorkloadCategory })}
+                  >
+                    {Object.entries(WORKLOAD_CATEGORY_LABELS).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <div className="grid content-start gap-4 rounded-md border p-4 sm:col-span-2">
                 <Field label={`Start time (${MARKET_ZONE_LABEL})`}>
                   <JobDateTimePicker
                     id="job-original-start"
@@ -1184,30 +1208,6 @@ export default function JobsPage() {
                     {getWindowDurationText(form.originalStartTime, form.deadline) || "—"}
                   </span>
                 </div>
-              </div>
-              <div className="grid content-start gap-4">
-                <Field label="Priority">
-                  <select
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                    value={form.priority}
-                    onChange={(e) => setForm({ ...form, priority: e.target.value as JobPriority })}
-                  >
-                    {(Object.keys(PRIORITY_LABELS) as JobPriority[]).map((p) => (
-                      <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Job type">
-                  <select
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                    value={form.workloadCategory}
-                    onChange={(e) => setForm({ ...form, workloadCategory: e.target.value as WorkloadCategory })}
-                  >
-                    {Object.entries(WORKLOAD_CATEGORY_LABELS).map(([value, label]) => (
-                      <option key={value} value={value}>{label}</option>
-                    ))}
-                  </select>
-                </Field>
               </div>
               <fieldset className="grid gap-2 sm:col-span-2">
                 <legend className="mb-2 text-sm font-medium">Scheduling</legend>
