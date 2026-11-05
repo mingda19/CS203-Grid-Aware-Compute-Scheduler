@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { MARKET_TIMEZONE, MARKET_ZONE_LABEL, marketZoneDescriptor, type MarketZoneDescriptor } from "@/lib/date-utils"
-import { Zap, LayoutDashboard, CalendarClock, BriefcaseBusiness, TrendingDown, CheckCircle2, FileText, Bell, Menu, Sun, Moon, ShieldCheck, ChevronRight, Sparkles, LogOut, HelpCircle, Clock } from "lucide-react"
+import { Zap, LayoutDashboard, CalendarClock, BriefcaseBusiness, TrendingDown, CheckCircle2, FileText, Bell, Menu, Sun, Moon, ShieldCheck, ChevronRight, Sparkles, LogOut, HelpCircle, Clock, Plus } from "lucide-react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 
@@ -384,6 +384,13 @@ export function AppShell({ children }: AppShellProps) {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            {/* Global quick action (masterplan D1): the Jobs page opens its create form on ?new=1 */}
+            <Button asChild size="sm" className="bg-emerald-600 text-white hover:bg-emerald-700">
+              <Link href="/jobs?new=1" aria-label="Create job">
+                <Plus className="h-4 w-4 sm:mr-1.5" />
+                <span className="hidden sm:inline">Create Job</span>
+              </Link>
+            </Button>
             {/* Market (ERCOT) local timezone indicator */}
             <TooltipProvider>
               <Tooltip>
