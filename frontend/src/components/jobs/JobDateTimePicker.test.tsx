@@ -17,7 +17,9 @@ const render = (props: Partial<React.ComponentProps<typeof JobDateTimePicker>> =
     <JobDateTimePicker id="start" value="" onChange={() => {}} {...props} />,
   )
 
-const minAttribute = (html: string) => html.match(/min="([^"]*)"/)?.[1]
+// The date and the time are separate inputs: `min` is the earliest date, `timeMin` the earliest time on that date.
+const minAttribute = (html: string) => html.match(/type="date"[^>]*?min="([^"]*)"/)?.[1]
+const timeMin = (html: string) => html.match(/type="time"[^>]*?min="([^"]*)"/)?.[1]
 
 describe("current market hour floor", () => {
   it("floors to the hour in market time, in both seasons", () => {
@@ -39,22 +41,24 @@ describe("current market hour floor", () => {
 describe("job date-time picker lower bound", () => {
   it("floors to the current market hour when no minimum is given", () => {
     // The start picker passes no minDateTime, so without a floor of its own it offered past dates.
-    expect(minAttribute(render())).toBe(currentMarketHourInput())
+    expect(minAttribute(render())).toBe(currentMarketHourInput().slice(0, 10))
   })
 
   it("takes a later minimum when one is given", () => {
     // The deadline picker passes the chosen start, which is always at or after the current hour.
     const laterThanNow = "2099-01-01T08:00"
-    expect(minAttribute(render({ minDateTime: laterThanNow, mode: "deadline" }))).toBe(laterThanNow)
+    const html = render({ minDateTime: laterThanNow, mode: "deadline" })
+    expect(minAttribute(html)).toBe("2099-01-01")
+    expect(timeMin(html)).toBe("08:00")
   })
 
   it("ignores a minimum that is itself in the past", () => {
     // A deadline picker bounded by an elapsed start must still refuse elapsed hours.
     expect(minAttribute(render({ minDateTime: "2020-01-01T08:00", mode: "deadline" })))
-      .toBe(currentMarketHourInput())
+      .toBe(currentMarketHourInput().slice(0, 10))
   })
 
   it("keeps the floor on the hour, so a start on the hour is always reachable", () => {
-    expect(minAttribute(render())?.endsWith(":00")).toBe(true)
+    expect(timeMin(render())?.endsWith(":00")).toBe(true)
   })
 })

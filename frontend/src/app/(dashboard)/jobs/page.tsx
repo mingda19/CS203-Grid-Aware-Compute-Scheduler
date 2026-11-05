@@ -1129,7 +1129,7 @@ export default function JobsPage() {
                   onChange={(e) => setForm({ ...form, description: e.target.value })}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-3 sm:col-span-2">
                 <Field label="CPU hours">
                   <Input
                     type="number"
@@ -1153,17 +1153,38 @@ export default function JobsPage() {
                   />
                 </Field>
               </div>
-              <Field label={`Deadline (${MARKET_ZONE_LABEL})`}>
-                <JobDateTimePicker
-                  id="job-deadline"
-                  value={form.deadline}
-                  onChange={(val) => setForm({ ...form, deadline: val })}
-                  placeholder={`Select deadline (${MARKET_ZONE_LABEL})...`}
-                  mode="deadline"
-                  minDateTime={form.originalStartTime}
-                  required
-                />
-              </Field>
+              <div className="space-y-3 rounded-md border p-3 sm:col-span-2">
+                <Field label={`Deadline (${MARKET_ZONE_LABEL})`}>
+                  <JobDateTimePicker
+                    id="job-deadline"
+                    value={form.deadline}
+                    onChange={(val) => setForm({ ...form, deadline: val })}
+                    placeholder={`Select deadline (${MARKET_ZONE_LABEL})...`}
+                    mode="deadline"
+                    minDateTime={form.originalStartTime}
+                    required
+                  />
+                </Field>
+                <Field label={`Start time (${MARKET_ZONE_LABEL})`}>
+                  <JobDateTimePicker
+                    id="job-original-start"
+                    value={form.originalStartTime}
+                    onChange={(val) => setForm({ ...form, originalStartTime: val })}
+                    placeholder={`Select start date & hour (${MARKET_ZONE_LABEL})...`}
+                    mode="start"
+                    required
+                  />
+                </Field>
+                <div className="rounded-md bg-muted/50 p-2.5 text-xs flex min-h-10 items-center justify-between border border-border/60">
+                  <span className="text-muted-foreground flex items-center gap-1.5">
+                    <Clock className="h-3.5 w-3.5 text-emerald-500" />
+                    <span>Scheduling Window:</span>
+                  </span>
+                  <span className={`font-mono font-medium ${form.deadline && form.deadline < form.originalStartTime ? "text-destructive font-semibold" : "text-foreground"}`}>
+                    {getWindowDurationText(form.originalStartTime, form.deadline) || "—"}
+                  </span>
+                </div>
+              </div>
               <fieldset className="grid gap-2 sm:col-span-2">
                 <legend className="mb-1 text-sm font-medium">Scheduling</legend>
                 {([["flexible", "Flexible schedule", "The scheduler may move this job to cheaper hours before the deadline."],
@@ -1185,25 +1206,6 @@ export default function JobsPage() {
                   </label>
                 ))}
               </fieldset>
-              <Field label={`Start time (${MARKET_ZONE_LABEL})`}>
-                <JobDateTimePicker
-                  id="job-original-start"
-                  value={form.originalStartTime}
-                  onChange={(val) => setForm({ ...form, originalStartTime: val })}
-                  placeholder={`Select start date & hour (${MARKET_ZONE_LABEL})...`}
-                  mode="start"
-                  required
-                />
-              </Field>
-              <div className="rounded-md bg-muted/50 p-2.5 text-xs flex min-h-10 items-center justify-between border border-border/60">
-                <span className="text-muted-foreground flex items-center gap-1.5">
-                  <Clock className="h-3.5 w-3.5 text-emerald-500" />
-                  <span>Scheduling Window:</span>
-                </span>
-                <span className={`font-mono font-medium ${form.deadline && form.deadline < form.originalStartTime ? "text-destructive font-semibold" : "text-foreground"}`}>
-                  {getWindowDurationText(form.originalStartTime, form.deadline) || "—"}
-                </span>
-              </div>
               <Field label="Priority">
                 <select
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
@@ -1253,7 +1255,7 @@ export default function JobsPage() {
               }}
             />}
             {error && <p role="alert" className="my-3 text-sm text-destructive">{error}</p>}
-            <DialogFooter>
+            <DialogFooter className="mt-6">
               <Button type="button" variant="outline" onClick={() => setFormOpen(false)}>
                 Cancel
               </Button>
