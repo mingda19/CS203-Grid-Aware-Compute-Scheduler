@@ -198,7 +198,7 @@ export function AppShell({ children }: AppShellProps) {
 
   const navItems: NavItem[] = [
     { label: "Operations Overview", icon: LayoutDashboard, href: "/overview", active: pathname === "/overview" || pathname === "/" },
-    { label: "Workload Scheduler", icon: CalendarClock, href: "/workloads", active: pathname?.startsWith("/workloads") },
+    { label: "Schedule", icon: CalendarClock, href: "/workloads", active: pathname?.startsWith("/workloads") },
     { label: "Compute Jobs", icon: BriefcaseBusiness, href: "/jobs", active: pathname?.startsWith("/jobs") },
     { label: "Price Forecast", icon: TrendingDown, href: "/forecasts", active: pathname?.startsWith("/forecasts") },
     { label: "Pending Approvals", icon: CheckCircle2, href: "/approvals", active: pathname?.startsWith("/approvals") },

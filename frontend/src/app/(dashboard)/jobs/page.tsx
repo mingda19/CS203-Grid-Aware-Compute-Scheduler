@@ -13,6 +13,7 @@ import {
   type JobPriority,
   type WorkloadCategory,
   WORKLOAD_CATEGORY_LABELS,
+  PRIORITY_LABELS,
   type OptimizeResponse,
   type ScheduleItem,
   type FacilityConfig,
@@ -30,6 +31,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { HelpTip } from "@/components/ui/help-tip"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
 import { BLOCKED_NUMBER_KEYS, effectiveFlexHours, effectiveStart, maxJobHours, type ScheduleMode, toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
 import { elapsedJobLabel, elapsedJobsConfirmation, elapsedStartJobs } from "@/lib/elapsed-jobs"
@@ -38,6 +40,7 @@ import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
 
 type FormState = {
   name: string
+  description: string
   cpuHours: string
   gpuHours: string
   originalStartTime: string
@@ -54,6 +57,7 @@ type FormState = {
 
 const blankForm = (): FormState => ({
   name: "",
+  description: "",
   cpuHours: "0",
   gpuHours: "0",
   originalStartTime: "",
@@ -238,6 +242,7 @@ export default function JobsPage() {
     setError("")
     setForm({
       name: job.name,
+      description: job.description ?? "",
       cpuHours: String(job.cpuHours),
       gpuHours: String(job.gpuHours),
       originalStartTime: toInputDate(job.originalStartTime),
@@ -288,7 +293,7 @@ export default function JobsPage() {
       return
     }
     if (form.deadline < form.originalStartTime) {
-      setError("Deadline must be at or after the original start time.")
+      setError("Deadline must be at or after the start time.")
       return
     }
     // Checked here as well as server-side so the operator sees market time rather than the API's UTC
@@ -308,6 +313,7 @@ export default function JobsPage() {
     // originalStartTime is formatted to exact hour (00 minutes) per optimizer specification
     const payload: ComputeJobPayload = {
       name: form.name.trim(),
+      description: form.description.trim(),
       cpuHours,
       gpuHours,
       originalStartTime: toApiUtcDate(startInput, true),
@@ -455,7 +461,7 @@ export default function JobsPage() {
             <h1 className="text-2xl font-bold tracking-tight">Compute Jobs</h1>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Manage compute workloads and run grid-aware schedule optimization against ERCOT LMP pricing signals.
+            Manage compute jobs and run grid-aware schedule optimization against ERCOT LMP pricing signals.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -680,7 +686,7 @@ export default function JobsPage() {
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="text-lg">Your Compute Workloads</CardTitle>
+              <CardTitle className="text-lg">Your Compute Jobs</CardTitle>
               <CardDescription>
                 {jobs.length} registered {jobs.length === 1 ? "job" : "jobs"} available for scheduling
               </CardDescription>
@@ -727,7 +733,7 @@ export default function JobsPage() {
                     <th className="px-3 py-3">Flexibility</th>
                     <th className="px-3 py-3">Priority</th>
                     <th className="px-3 py-3">Category</th>
-                    <th className="px-3 py-3">Exemption</th>
+                    <th className="px-3 py-3">Lock</th>
                     <th className="px-3 py-3">Status</th>
                     <th className="px-3 py-3">Actions</th>
                   </tr>
@@ -743,7 +749,7 @@ export default function JobsPage() {
                       <td className="px-3 py-3">{displayDate(job.originalStartTime)}</td>
                       <td className="px-3 py-3">{displayDate(job.deadline)}</td>
                       <td className="px-3 py-3">{`${job.flexibilityWindowHours}h`}</td>
-                      <td className="px-3 py-3">{job.priority ?? "NORMAL"}</td>
+                      <td className="px-3 py-3">{PRIORITY_LABELS[job.priority ?? "NORMAL"]}</td>
                       <td className="px-3 py-3">{WORKLOAD_CATEGORY_LABELS[job.workloadCategory ?? "ML_TRAINING"]}</td>
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-2">
@@ -752,12 +758,11 @@ export default function JobsPage() {
                             checked={job.isExempt}
                             disabled={updatingExemptionId === job.id}
                             onCheckedChange={(checked) => void setJobExempt(job, Boolean(checked))}
-                            aria-label={`${job.isExempt ? "Remove exemption from" : "Mark"} ${job.name} ${job.isExempt ? "as reschedulable" : "as exempt"
-                              }`}
+                            aria-label={`${job.isExempt ? "Unlock" : "Lock"} ${job.name}`}
                           />
                           {job.isExempt ? (
                             <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
-                              Exempt
+                              Locked
                             </span>
                           ) : (
                             <span className="text-xs text-muted-foreground">Flexible</span>
@@ -1076,13 +1081,21 @@ export default function JobsPage() {
               }}
             />}
             <div className="grid gap-4 py-5 sm:grid-cols-2">
-              <Field label="Job name">
+              <Field label="Job title">
                 <Input
                   value={form.name}
                   maxLength={255}
                   required
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                   placeholder="e.g. Model fine-tuning run"
+                />
+              </Field>
+              <Field label="Description (optional)">
+                <Input
+                  value={form.description}
+                  maxLength={1000}
+                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+                  placeholder="What this job does"
                 />
               </Field>
               <div className="grid grid-cols-2 gap-3">
@@ -1170,13 +1183,12 @@ export default function JobsPage() {
                   value={form.priority}
                   onChange={(e) => setForm({ ...form, priority: e.target.value as JobPriority })}
                 >
-                  <option value="CRITICAL">CRITICAL</option>
-                  <option value="HIGH">HIGH</option>
-                  <option value="NORMAL">NORMAL</option>
-                  <option value="LOW">LOW</option>
+                  {(Object.keys(PRIORITY_LABELS) as JobPriority[]).map((p) => (
+                    <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>
+                  ))}
                 </select>
               </Field>
-              <Field label="Workload category">
+              <Field label="Job type">
                 <select
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   value={form.workloadCategory}
@@ -1194,9 +1206,12 @@ export default function JobsPage() {
                   onCheckedChange={(isExempt) => setForm({ ...form, isExempt: Boolean(isExempt) })}
                 />
                 <label htmlFor="job-is-exempt" className="cursor-pointer">
-                  <span className="block font-medium">Exempt from rescheduling</span>
-                  <span className="text-xs text-muted-foreground">Keep this job at its original start time.</span>
+                  <span className="block font-medium">Lock schedule</span>
+                  <span className="text-xs text-muted-foreground">Keep this job at its start time.</span>
                 </label>
+                <HelpTip label="Lock schedule">
+                  After the scheduler places this job, it will not pause or move it. Use this for work that must run at a fixed time.
+                </HelpTip>
               </div>
             </div>
             {error && <p role="alert" className="mb-3 text-sm text-destructive">{error}</p>}
@@ -1222,15 +1237,16 @@ export default function JobsPage() {
           {viewing && (
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 py-3 text-sm">
               <Detail label="Job ID" value={String(viewing.id)} />
+              {viewing.description && <Detail label="Description" value={viewing.description} />}
               <Detail label="Status" value={viewing.status} />
               <Detail label="CPU hours" value={String(viewing.cpuHours)} />
               <Detail label="GPU hours" value={String(viewing.gpuHours)} />
               <Detail label="Original start" value={displayDate(viewing.originalStartTime)} />
               <Detail label="Deadline" value={displayDate(viewing.deadline)} />
               <Detail label="Flexibility" value={`${viewing.flexibilityWindowHours} hours`} />
-              <Detail label="Priority" value={viewing.priority ?? "NORMAL"} />
-              <Detail label="Workload category" value={WORKLOAD_CATEGORY_LABELS[viewing.workloadCategory ?? "ML_TRAINING"]} />
-              <Detail label="Exempt" value={viewing.isExempt ? "Yes" : "No"} />
+              <Detail label="Priority" value={PRIORITY_LABELS[viewing.priority ?? "NORMAL"]} />
+              <Detail label="Job type" value={WORKLOAD_CATEGORY_LABELS[viewing.workloadCategory ?? "ML_TRAINING"]} />
+              <Detail label="Locked" value={viewing.isExempt ? "Yes" : "No"} />
             </dl>
           )}
           <DialogFooter>
