@@ -32,6 +32,10 @@ public class JobRequestDto {
     @Size(max = 255, message = "Job name must not exceed 255 characters")
     private String name;
 
+    @Schema(description = "Optional free-text description; omitted on update preserves it, blank clears it")
+    @Size(max = 1000, message = "description must not exceed 1000 characters")
+    private String description;
+
     @Schema(description = "Total CPU core-hours required", example = "64.0", requiredMode = Schema.RequiredMode.REQUIRED)
     @NotNull(message = "cpuHours is required")
     @PositiveOrZero(message = "cpuHours must be non-negative")

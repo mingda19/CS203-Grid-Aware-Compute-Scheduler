@@ -31,6 +31,9 @@ public class JobResponseDto {
     @Schema(description = "Workload name", example = "LLM Fine-Tuning Run #42")
     private String name;
 
+    @Schema(description = "Optional free-text description; null when none")
+    private String description;
+
     @Schema(description = "Total CPU core-hours required", example = "64.0")
     private Double cpuHours;
 
@@ -93,6 +96,7 @@ public class JobResponseDto {
                 .id(job.getId())
                 .ownerEmail(job.getOwnerEmail())
                 .name(job.getName())
+                .description(job.getDescription())
                 .cpuHours(job.getCpuHours())
                 .gpuHours(job.getGpuHours())
                 .originalStartTime(job.getOriginalStartTime())

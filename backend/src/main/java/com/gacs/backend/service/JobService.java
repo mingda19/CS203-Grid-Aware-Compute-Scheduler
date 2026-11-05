@@ -73,6 +73,7 @@ public class JobService {
         Job job = Job.builder()
                 .ownerEmail(ownerEmail)
                 .name(request.getName().trim())
+                .description(blankToNull(request.getDescription()))
                 .cpuHours(request.getCpuHours() != null ? request.getCpuHours() : 0.0)
                 .gpuHours(request.getGpuHours() != null ? request.getGpuHours() : 0.0)
                 .originalStartTime(request.getOriginalStartTime())
@@ -105,6 +106,10 @@ public class JobService {
         applyParseMetadata(existing, request);
 
         existing.setName(request.getName().trim());
+        // Not a scheduling input, so it is outside the ScheduleInputs comparison below.
+        if (request.getDescription() != null) {
+            existing.setDescription(blankToNull(request.getDescription()));
+        }
         existing.setCpuHours(request.getCpuHours() != null ? request.getCpuHours() : 0.0);
         existing.setGpuHours(request.getGpuHours() != null ? request.getGpuHours() : 0.0);
         existing.setOriginalStartTime(request.getOriginalStartTime());
@@ -130,6 +135,10 @@ public class JobService {
         }
         Job updated = jobRepository.save(existing);
         return JobResponseDto.fromEntity(updated);
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     /** Resolve and validate provenance before changing the managed entity. */

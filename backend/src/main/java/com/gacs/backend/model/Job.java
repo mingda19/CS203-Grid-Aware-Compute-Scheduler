@@ -35,6 +35,9 @@ public class Job {
     @Column(nullable = false, length = 255)
     private String name;
 
+    @Column(length = 1000)
+    private String description;
+
     @Builder.Default
     @Column(name = "cpu_hours", nullable = false)
     private Double cpuHours = 0.0;
