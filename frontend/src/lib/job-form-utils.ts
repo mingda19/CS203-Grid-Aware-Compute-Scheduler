@@ -56,20 +56,15 @@ export const maxJobHours = (perSlotCap: number, start: string, end: string) => {
 // type="number" still accepts these characters (exponent and sign), so block them at the key.
 export const BLOCKED_NUMBER_KEYS = ["e", "E", "+", "-"]
 
-export type ScheduleMode = "flexible" | "immediate"
+export type ScheduleMode = "flexible" | "locked"
 
-// "Start immediately" allows no delay. "Flexible schedule" lets the optimiser start the job anywhere
-// before the deadline (the backend caps the start by the deadline), unless an explicit hours value
-// came from a saved job or a confirmed natural-language parse.
+// "Lock schedule" (sent as isExempt) allows no delay. "Flexible schedule" lets the optimiser start the job
+// anywhere before the deadline (the backend caps the start by the deadline), unless an explicit hours value
+// ("" means none) came from a saved job or a confirmed natural-language parse.
 export const effectiveFlexHours = (mode: ScheduleMode, flexInput: string, start: string, deadline: string) => {
-  if (mode === "immediate") return 0
-  const explicit = Number(flexInput)
-  return explicit > 0 ? explicit : Math.max(0, Math.floor(windowHours(start, deadline)))
+  if (mode === "locked") return 0
+  return flexInput !== "" ? Number(flexInput) : Math.max(0, Math.floor(windowHours(start, deadline)))
 }
-
-// An immediate job whose start has slipped into a past hour moves to the current hour instead of failing.
-export const effectiveStart = (mode: ScheduleMode, start: string, earliest: string) =>
-  mode === "immediate" && start < earliest ? earliest : start
 
 // Starting points for operators who do not know their hours. Frontend only; the values are plain form fields.
 export const JOB_TEMPLATES = [

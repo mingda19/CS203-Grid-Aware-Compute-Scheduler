@@ -33,10 +33,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { HelpTip } from "@/components/ui/help-tip"
 import { EstimatedPriceBadge } from "@/components/ui/estimated-price-badge"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
-import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, effectiveStart, forecastEndMs, maxJobHours, usesEstimatedPrices, type ScheduleMode, toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
+import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, forecastEndMs, maxJobHours, usesEstimatedPrices, type ScheduleMode, toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
 import { elapsedJobLabel, elapsedJobsConfirmation, elapsedStartJobs } from "@/lib/elapsed-jobs"
 import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
@@ -49,10 +48,9 @@ type FormState = {
   originalStartTime: string
   deadline: string
   flexibilityWindowHours: string // "" = whole window (see effectiveFlexHours)
-  scheduleMode: ScheduleMode
+  scheduleMode: ScheduleMode // "locked" is saved as isExempt
   priority: JobPriority
   workloadCategory: WorkloadCategory
-  isExempt: boolean
   rawConstraints?: string | null
   parsedAt?: string | null
   confirmationOutcome?: ComputeJobPayload["confirmationOutcome"]
@@ -69,7 +67,6 @@ const blankForm = (): FormState => ({
   scheduleMode: "flexible",
   priority: "NORMAL",
   workloadCategory: "ML_TRAINING",
-  isExempt: false,
 })
 
 const displayDate = (value?: string) => (value ? formatMarketDateTime(value) : "—")
@@ -276,11 +273,10 @@ export default function JobsPage() {
       gpuHours: String(job.gpuHours),
       originalStartTime: toInputDate(job.originalStartTime),
       deadline: toInputDate(job.deadline),
-      flexibilityWindowHours: job.flexibilityWindowHours > 0 ? String(job.flexibilityWindowHours) : "",
-      scheduleMode: job.flexibilityWindowHours > 0 ? "flexible" : "immediate",
+      flexibilityWindowHours: String(job.flexibilityWindowHours),
+      scheduleMode: job.isExempt ? "locked" : "flexible",
       priority: job.priority ?? "NORMAL",
       workloadCategory: job.workloadCategory ?? "ML_TRAINING",
-      isExempt: job.isExempt,
       rawConstraints: job.rawConstraints,
       parsedAt: job.parsedAt,
       confirmationOutcome: job.confirmationOutcome,
@@ -329,9 +325,8 @@ export default function JobsPage() {
     // phrasing. A job starting in an elapsed hour can never be run, so it is rejected on save rather
     // than left for the optimiser to report as unschedulable.
     const earliest = currentMarketHourInput()
-    const startInput = effectiveStart(form.scheduleMode, form.originalStartTime, earliest)
-    const flexibilityWindowHours = effectiveFlexHours(form.scheduleMode, form.flexibilityWindowHours, startInput, form.deadline)
-    if (startInput < earliest) {
+    const flexibilityWindowHours = effectiveFlexHours(form.scheduleMode, form.flexibilityWindowHours, form.originalStartTime, form.deadline)
+    if (form.originalStartTime < earliest) {
       setError(`Start time has passed. Choose ${earliest.replace("T", " ")} ${MARKET_ZONE_LABEL} or later.`)
       return
     }
@@ -345,12 +340,12 @@ export default function JobsPage() {
       description: form.description.trim(),
       cpuHours,
       gpuHours,
-      originalStartTime: toApiUtcDate(startInput, true),
+      originalStartTime: toApiUtcDate(form.originalStartTime, true),
       deadline: toApiUtcDate(form.deadline, false),
       flexibilityWindowHours,
       priority: form.priority,
       workloadCategory: form.workloadCategory,
-      isExempt: form.isExempt,
+      isExempt: form.scheduleMode === "locked",
       rawConstraints: form.rawConstraints,
       parsedAt: form.parsedAt,
       confirmationOutcome: form.confirmationOutcome,
@@ -1171,8 +1166,8 @@ export default function JobsPage() {
               </Field>
               <fieldset className="grid gap-2 sm:col-span-2">
                 <legend className="mb-1 text-sm font-medium">Scheduling</legend>
-                {([["flexible", "Flexible schedule", "The scheduler may start the job at any hour before the deadline."],
-                  ["immediate", "Start immediately", "Run at the start time with no delay."]] as const).map(([mode, label, help]) => (
+                {([["flexible", "Flexible schedule", "The scheduler may move this job to cheaper hours before the deadline."],
+                  ["locked", "Lock schedule", "The scheduler will not move this job. It runs at the start time you choose."]] as const).map(([mode, label, help]) => (
                   <label key={mode} className="flex cursor-pointer items-start gap-2 rounded-md border p-2.5 text-sm">
                     <input
                       type="radio"
@@ -1184,7 +1179,7 @@ export default function JobsPage() {
                     <span>
                       <span className="block font-medium">{label}</span>
                       <span className="text-xs text-muted-foreground">
-                        {mode === "flexible" && form.flexibilityWindowHours ? `The scheduler may delay the start by up to ${form.flexibilityWindowHours} h.` : help}
+                        {mode === "flexible" && Number(form.flexibilityWindowHours) > 0 ? `The scheduler may delay the start by up to ${form.flexibilityWindowHours} h.` : help}
                       </span>
                     </span>
                   </label>
@@ -1231,28 +1226,14 @@ export default function JobsPage() {
                   ))}
                 </select>
               </Field>
-              <div className="flex items-center gap-3 self-end rounded-md border p-3 text-sm">
-                <Checkbox
-                  id="job-is-exempt"
-                  checked={form.isExempt}
-                  onCheckedChange={(isExempt) => setForm({ ...form, isExempt: Boolean(isExempt) })}
-                />
-                <label htmlFor="job-is-exempt" className="cursor-pointer">
-                  <span className="block font-medium">Lock schedule</span>
-                  <span className="text-xs text-muted-foreground">Keep this job at its start time.</span>
-                </label>
-                <HelpTip label="Lock schedule">
-                  After the scheduler places this job, it will not pause or move it. Use this for work that must run at a fixed time.
-                </HelpTip>
-              </div>
             </div>
             {formOpen && <ConstraintParseReview
               draft={{
                 originalStartTime: form.originalStartTime ? toApiUtcDate(form.originalStartTime, true) : null,
                 deadline: form.deadline ? toApiUtcDate(form.deadline) : null,
-                flexibilityWindowHours: form.scheduleMode === "immediate" ? 0 : form.flexibilityWindowHours === "" ? null : Number(form.flexibilityWindowHours),
+                flexibilityWindowHours: form.scheduleMode === "locked" ? 0 : form.flexibilityWindowHours === "" ? null : Number(form.flexibilityWindowHours),
                 priority: form.priority,
-                isExempt: form.isExempt,
+                isExempt: form.scheduleMode === "locked",
               }}
               confirmedSource={form.rawConstraints ?? ""}
               onPendingChange={setParseReviewPending}
@@ -1261,10 +1242,9 @@ export default function JobsPage() {
                   ...current,
                   originalStartTime: result.fields.originalStartTime ? toInputDate(result.fields.originalStartTime) : "",
                   deadline: result.fields.deadline ? toInputDate(result.fields.deadline) : "",
-                  flexibilityWindowHours: result.fields.flexibilityWindowHours ? String(result.fields.flexibilityWindowHours) : "",
-                  scheduleMode: result.fields.flexibilityWindowHours === 0 ? "immediate" : "flexible",
+                  flexibilityWindowHours: result.fields.flexibilityWindowHours == null ? "" : String(result.fields.flexibilityWindowHours),
+                  scheduleMode: (result.fields.isExempt ?? current.scheduleMode === "locked") ? "locked" : "flexible",
                   priority: result.fields.priority ?? current.priority,
-                  isExempt: result.fields.isExempt ?? current.isExempt,
                   rawConstraints,
                   parsedAt: result.parsedAt,
                   confirmationOutcome: "CONFIRMED",

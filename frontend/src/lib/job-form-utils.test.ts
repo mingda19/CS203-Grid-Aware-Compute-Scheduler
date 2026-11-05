@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { optimizerApi, setAccessToken, type ComputeJob } from "./api"
-import { forecastEndMs, usesEstimatedPrices, effectiveFlexHours, effectiveStart, maxJobHours, toApiUtcDate, toInputDate, toOptimizeJobInput, windowHours } from "./job-form-utils"
+import { forecastEndMs, usesEstimatedPrices, effectiveFlexHours, maxJobHours, toApiUtcDate, toInputDate, toOptimizeJobInput, windowHours } from "./job-form-utils"
 
 afterEach(() => { vi.unstubAllGlobals(); setAccessToken(null) })
 
@@ -108,13 +108,10 @@ describe("hours maximum", () => {
 
 describe("schedule mode", () => {
   const [start, deadline] = ["2026-11-05T10:00", "2026-11-05T22:00"]
-  it("immediate allows no delay", () => expect(effectiveFlexHours("immediate", "5", start, deadline)).toBe(0))
+  it("locked allows no delay", () => expect(effectiveFlexHours("locked", "5", start, deadline)).toBe(0))
   it("flexible defaults to the whole window", () => expect(effectiveFlexHours("flexible", "", start, deadline)).toBe(12))
   it("flexible keeps an explicit value", () => expect(effectiveFlexHours("flexible", "4", start, deadline)).toBe(4))
-  it("immediate moves a stale start to the current hour", () => {
-    expect(effectiveStart("immediate", "", "2026-11-05T11:00")).toBe("2026-11-05T11:00")
-    expect(effectiveStart("flexible", start, "2026-11-05T11:00")).toBe(start)
-  })
+  it("flexible keeps a saved zero (a job saved with no delay and no lock)", () => expect(effectiveFlexHours("flexible", "0", start, deadline)).toBe(0))
 })
 
 describe("estimated prices", () => {
