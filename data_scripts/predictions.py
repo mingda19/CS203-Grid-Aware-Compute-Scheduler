@@ -415,14 +415,26 @@ def load_exogenous(engine: sa.Engine, start: datetime, end: datetime) -> pd.Data
     start, end = pd.Timestamp(start), pd.Timestamp(end)
     out = pd.DataFrame({"time": pd.date_range(start, end, freq="h")})
 
-    gas = load_single_column(engine, "fuel_price", "period", "henry_hub_price_usd_mmbtu",
-                             start - timedelta(days=5), end)
+    # Floored at a FIXED boundary (start - this much), not at whichever row
+    # the DB happens to return first: henry_hub only has rows on trading
+    # days, so a weekend/holiday gap (observed up to 4 days long) sitting
+    # right at the fetch's lower edge used to push gas.index.min() later
+    # than intended, silently shrinking shift(3)'s lookback margin to zero
+    # and producing a real, reproducible NaN for the oldest day(s) of
+    # whatever window called this (seen in production: update.py's
+    # per-anchor-day build_sequence calls, scattered on specific anchors
+    # whose window edge happened to land on such a gap). GAS_MAX_STALE_DAYS
+    # (the ffill tolerance) + 3 (the deepest shift, lag3d) guarantees a real
+    # trading day still exists before the cutoff shift(3) needs, even in
+    # the worst observed gap.
+    gas_floor = (start - timedelta(days=GAS_MAX_STALE_DAYS + 3)).floor("D")
+    gas = load_single_column(engine, "fuel_price", "period", "henry_hub_price_usd_mmbtu", gas_floor, end)
     gas = gas.set_index("time")["henry_hub_price_usd_mmbtu"]
     if not gas.empty:
         # Extend the daily index through the target day before the ffill:
         # stopping at the last published row would leave every day after it
         # (i.e. any real day-ahead run) without a lag value at all.
-        days = pd.date_range(gas.index.min(), max(gas.index.max(), end.floor("D")), freq="D")
+        days = pd.date_range(gas_floor, max(gas.index.max(), end.floor("D")), freq="D")
         gas = gas.reindex(days).ffill(limit=GAS_MAX_STALE_DAYS)
     out["henry_hub_price_usd_mmbtu_lag2d"] = out["time"].dt.floor("D").map(gas.shift(2))
     out["henry_hub_price_usd_mmbtu_lag3d"] = out["time"].dt.floor("D").map(gas.shift(3))
