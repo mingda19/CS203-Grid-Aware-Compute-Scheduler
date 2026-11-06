@@ -1,22 +1,23 @@
-# Render Blueprint - defines ONLY the daily ingestion+prediction cron job.
+# Render Blueprint - defines the scheduled Python data cron jobs:
+#   1. Daily Ingestion & Price Prediction (gacs-daily-ingestion-prediction)
+#   2. Weekly Continuous-Learning Tune (gacs-weekly-continuous-tune)
+#
 # Deliberately does not define the existing Spring Boot web service (it was
 # created by hand in the Render dashboard, not from a Blueprint) - connecting
-# this file should add this one new service, not touch that one.
+# this file should add these cron services without touching that one.
 #
 # Setup (one-time, in the Render dashboard - this file alone does not
 # activate anything): New -> Blueprint -> select this repo -> Render parses
-# this file and shows a preview -> it will prompt for the 3 "sync: false"
-# env vars below (same values as your local .env) -> Apply.
+# this file and shows a preview -> it will prompt for the "sync: false"
+# env vars below (same values as your .env) -> Apply.
 #
-# Verify the field names below against Render's current Blueprint docs when
-# applying this - Render's schema has shifted over time (e.g. `env` vs
-# `runtime`), and the dashboard will show a validation error before creating
-# anything if something's out of date, rather than silently misconfiguring.
-#
-# Render documents cron schedules as UTC, so 21:00 UTC is written directly
-# below - no local-timezone conversion needed (unlike the launchd plist for
-# the local dev-convenience scheduler, which only understands local time).
-# Confirm this in the dashboard the first time it's connected.
+# Render documents cron schedules as UTC.
+# Daily at 21:00 UTC; weekly on Sundays at 22:00 UTC.
+# GitHub intentionally schedules earlier (19:30 daily / 20:30 Sunday)
+# to compensate for its observed queue delays; keep those workflows unchanged.
+# The one-hour gap is not a dependency: monitor daily completion before tuning.
+# Python 3.13 is selected by the root .python-version, matching both workflows.
+# See data_scripts/RENDER.md for manual options and migration steps.
 #
 # Render Cron Jobs are a paid feature (billed by compute time per run, not
 # included in any always-free tier) - check current Render pricing before
@@ -26,7 +27,7 @@ services:
     name: gacs-daily-ingestion-prediction
     runtime: python
     schedule: "0 21 * * *"
-    buildCommand: "pip install -r data_scripts/requirements.txt"
+    buildCommand: "python -m pip install --upgrade pip && python -m pip install -r data_scripts/requirements.txt"
     startCommand: "bash data_scripts/render_cron.sh"
     envVars:
       - key: DATABASE_URL
@@ -34,4 +35,14 @@ services:
       - key: GRIDSTATUS_API_KEY
         sync: false
       - key: EIA_API_KEY
+        sync: false
+
+  - type: cron
+    name: gacs-weekly-continuous-tune
+    runtime: python
+    schedule: "0 22 * * 0"
+    buildCommand: "python -m pip install --upgrade pip && python -m pip install -r data_scripts/requirements.txt"
+    startCommand: "bash data_scripts/render_weekly_tune.sh"
+    envVars:
+      - key: DATABASE_URL
         sync: false

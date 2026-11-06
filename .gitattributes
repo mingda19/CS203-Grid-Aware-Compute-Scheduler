@@ -1,0 +1,2 @@
+# Render executes these scripts with Linux Bash, including Windows-authored files.
+*.sh text eol=lf

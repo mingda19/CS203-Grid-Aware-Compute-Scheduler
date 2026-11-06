@@ -1,9 +1,9 @@
 """
 predict_lear.py
 
-Thin CLI entrypoint serving the LEAR model (model/lear_model.py) - one of two
-independent, separately-scheduled Render Cron jobs (predict_lstm.py is the
-other). See predict_lstm.py's module docstring for why they're split: a bug
+Thin CLI entrypoint serving the LEAR model (model/lear_model.py), run alongside
+predict_lstm.py by the daily Render wrapper after ingestion.
+See predict_lstm.py's module docstring for why they're split: a bug
 or outage in one model kind must never block the other from serving its own
 predictions. All the actual feature-engineering, prediction and confidence-
 scoring logic lives in predictions.py - this file is only "which model kind,

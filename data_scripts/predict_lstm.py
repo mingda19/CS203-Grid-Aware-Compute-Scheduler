@@ -1,12 +1,9 @@
 """
 predict_lstm.py
 
-Thin CLI entrypoint serving the LSTM model (model/lstm_model.py) - one of two
-independent, separately-scheduled Render Cron jobs (predict_lear.py is the
-other). Split from a single combined run so a bug or outage in one model
-kind never blocks the other from serving its own predictions: render.yaml
-schedules each as its own cron job, and either one failing exits non-zero on
-its own without touching the other's run. All the actual feature-engineering,
+Thin CLI entrypoint serving the LSTM model (model/lstm_model.py). The daily
+Render wrapper runs this and predict_lear.py after ingestion, attempting both
+even if one fails. Each entrypoint reports its own exit status. All the feature-engineering,
 prediction and confidence-scoring logic lives in predictions.py - this file
 is only "which model kind, loaded from where."
 

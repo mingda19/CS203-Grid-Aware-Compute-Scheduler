@@ -27,21 +27,34 @@ set -uo pipefail
 
 cd "$(dirname "$0")" || exit 1
 
-python ingestion.py
+ingestion_args=()
+if [ -n "${ONLY:-}" ]; then
+    ingestion_args+=(--only "$ONLY")
+fi
+prediction_args=()
+if [ -n "${ANCHOR_DATE:-}" ]; then
+    prediction_args+=(--date "$ANCHOR_DATE")
+fi
+if [ -n "${HORIZON:-}" ]; then
+    prediction_args+=(--horizon "$HORIZON")
+fi
+
+python ingestion.py "${ingestion_args[@]}"
 ingestion_status=$?
 
-if [ "$ingestion_status" -eq 1 ]; then
-    echo "ingestion.py hard-failed (exit 1) - skipping predict_lstm.py/predict_lear.py"
-    exit 1
-fi
-# exit 0 (full success) or 2 (one source failed, others ok) both proceed -
-# see run_daily.sh / ingestion.py's module docstring for why.
+case "$ingestion_status" in
+    0) echo "ingestion.py completed successfully" ;;
+    2) echo "WARNING: ingestion.py completed with partial data - proceeding to predictions" ;;
+    *) echo "ingestion.py failed (exit $ingestion_status) - skipping predictions"
+       exit "$ingestion_status" ;;
+esac
 
-python predict_lstm.py
+python predict_lstm.py "${prediction_args[@]}"
 lstm_status=$?
-python predict_lear.py
+python predict_lear.py "${prediction_args[@]}"
 lear_status=$?
 
+echo "Prediction exit codes: LSTM=$lstm_status LEAR=$lear_status"
 if [ "$lstm_status" -ne 0 ] || [ "$lear_status" -ne 0 ]; then
     exit 1
 fi
