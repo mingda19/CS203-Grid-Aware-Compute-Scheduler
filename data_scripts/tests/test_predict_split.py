@@ -148,6 +148,42 @@ class BuildLearFrameTests(unittest.TestCase):
             self.assertIn(col, frame.columns)
         self.assertTrue(frame.loc[anchor:, lear.RAW_PRICE_COL].isna().all())
 
+    def test_anchor_days_own_price_is_included_but_target_days_is_not(self):
+        # Production bug (predict_lear.py, 2026-11-05): the cutoff used to
+        # stop one hour BEFORE the anchor day, so lear_model's own "D-2"/
+        # "D-3" price lag - which for a y0/y1 horizon lands exactly on the
+        # anchor day - was always missing, even though that day's price is
+        # legitimately already known by the time this runs (reproduced via
+        # lear_model.MissingInputError: "missing price history ... price
+        # D-2"). The anchor day's price must be present; the target day's
+        # must still never be (that would be a real leak).
+        rng = np.random.default_rng(2)
+        wind, solar, gas = lear.EXOG_COLS
+        index = pd.date_range("2025-06-01", periods=150 * 24, freq="h")
+        engine = sa.create_engine("sqlite:///:memory:")
+        anchor = index.max().normalize() - pd.Timedelta(days=5)
+        target_day = anchor + pd.Timedelta(days=2)
+        target_times = pd.date_range(target_day, periods=24, freq="h")
+        # Price known through the full anchor day; nothing from the target day on.
+        price_times = pd.date_range(index.min(), anchor + pd.Timedelta(hours=23), freq="h")
+        price = pd.DataFrame({"interval_start_utc": [t.isoformat() for t in price_times], "location": "LZ_NORTH",
+                              "spp_usd_mwh": 20 + rng.normal(0, 2, len(price_times))})
+
+        weather = pd.DataFrame({"location_id": 0, "time": [t.isoformat() for t in index]})
+        wind_df = weather.assign(wind_speed_80m=25.0, wind_speed_120m=30.0, temperature_120m=12.0)
+        solar_df = weather.assign(shortwave_radiation=400.0, temperature_2m=18.0)
+        gas_days = pd.date_range(index.min() - pd.Timedelta(days=10), index.max(), freq="D")
+        gas_df = pd.DataFrame({"period": [d.isoformat() for d in gas_days], "henry_hub_price_usd_mmbtu": 3.0})
+        with engine.begin() as conn:
+            for table, df in [("electrical_price", price), ("wind", wind_df), ("solar", solar_df),
+                              ("fuel_price", gas_df)]:
+                df.to_sql(table, conn, index=False)
+
+        artifact = {"lead_hours": 48, "windows": (28, 56), "exog_cols": list(lear.EXOG_COLS)}
+        frame = pred.build_lear_frame(engine, target_times, "LZ_NORTH", artifact)
+        self.assertFalse(frame.loc[anchor:anchor + pd.Timedelta(hours=23), lear.RAW_PRICE_COL].isna().any())
+        self.assertTrue(frame.loc[target_day:, lear.RAW_PRICE_COL].isna().all())
+
 
 class ReferenceRmseTests(unittest.TestCase):
     def test_none_when_table_is_missing(self):
