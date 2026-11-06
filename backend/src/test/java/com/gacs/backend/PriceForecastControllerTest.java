@@ -18,6 +18,8 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -45,7 +47,7 @@ class PriceForecastControllerTest {
             .generatedAt(LocalDateTime.parse("2026-10-08T12:00:00"))
             .predictedPrice(30.5)
             .build();
-        when(predictions.findLatestForecast(eq("LZ_NORTH"), any(), any())).thenReturn(List.of(row));
+        when(predictions.findLatestForecastForModel(eq("LZ_NORTH"), eq("lstm"), any(), any())).thenReturn(List.of(row));
 
         mockMvc.perform(get("/api/prices/forecast"))
             .andExpect(status().isOk())
@@ -72,7 +74,7 @@ class PriceForecastControllerTest {
             // reapply any ratio-to-score conversion on top of it.
             .confidenceScore(72.5)
             .build();
-        when(predictions.findLatestForecast(eq("LZ_NORTH"), any(), any())).thenReturn(List.of(row));
+        when(predictions.findLatestForecastForModel(eq("LZ_NORTH"), eq("lstm"), any(), any())).thenReturn(List.of(row));
 
         mockMvc.perform(get("/api/prices/forecast"))
             .andExpect(status().isOk())
@@ -83,11 +85,48 @@ class PriceForecastControllerTest {
     @Test
     @WithMockUser
     void returnsEmptyPoints_WhenNoForecastExists() throws Exception {
-        when(predictions.findLatestForecast(any(), any(), any())).thenReturn(List.of());
+        when(predictions.findLatestForecastForModel(any(), any(), any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/api/prices/forecast"))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.data.points.length()").value(0));
+    }
+
+    @Test
+    @WithMockUser
+    void defaultsToLstmModel() throws Exception {
+        when(predictions.findLatestForecastForModel(any(), any(), any(), any())).thenReturn(List.of());
+
+        mockMvc.perform(get("/api/prices/forecast"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.modelKind").value("lstm"));
+        verify(predictions).findLatestForecastForModel(eq("LZ_NORTH"), eq("lstm"), any(), any());
+    }
+
+    @Test
+    @WithMockUser
+    void servesLearModel_WhenRequested() throws Exception {
+        var row = PredictedPrice.builder()
+            .intervalStartUtc(LocalDateTime.parse("2026-10-09T00:00:00"))
+            .location("LZ_NORTH")
+            .modelVersion("lear_y0_2026-10-08")
+            .generatedAt(LocalDateTime.parse("2026-10-08T12:00:00"))
+            .predictedPrice(41.0)
+            .build();
+        when(predictions.findLatestForecastForModel(eq("LZ_NORTH"), eq("lear"), any(), any())).thenReturn(List.of(row));
+
+        mockMvc.perform(get("/api/prices/forecast").param("model", "LEAR"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.modelKind").value("lear"))
+            .andExpect(jsonPath("$.data.points[0].modelVersion").value("lear_y0_2026-10-08"))
+            .andExpect(jsonPath("$.data.points[0].predictedPrice").value(41.0));
+    }
+
+    @Test
+    @WithMockUser
+    void returns400_WhenModelUnknown() throws Exception {
+        mockMvc.perform(get("/api/prices/forecast").param("model", "xgboost")).andExpect(status().isBadRequest());
+        verify(predictions, never()).findLatestForecastForModel(any(), any(), any(), any());
     }
 
     @Test
@@ -106,7 +145,7 @@ class PriceForecastControllerTest {
     @Test
     @WithMockUser
     void returnsError_WhenRepositoryFails() throws Exception {
-        when(predictions.findLatestForecast(any(), any(), any())).thenThrow(new RuntimeException("db down"));
+        when(predictions.findLatestForecastForModel(any(), any(), any(), any())).thenThrow(new RuntimeException("db down"));
 
         mockMvc.perform(get("/api/prices/forecast"))
             .andExpect(status().isInternalServerError())

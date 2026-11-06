@@ -635,10 +635,11 @@ This section details the contractual schemas and interfaces for upcoming sprint 
 ### 6.1 Market Forecasts & Grid Signals
 
 #### `GET /api/prices/forecast`
-Returns the latest stored model prediction for each upcoming interval at a settlement location. This endpoint reads `predicted_price`; it does not generate a new forecast.
+Returns the latest stored prediction from one model kind for each upcoming interval at a settlement location. This endpoint reads `predicted_price`; it does not generate a new forecast.
 * **Query Parameters**:
   * `location` (string, optional, default: `"LZ_NORTH"`)
   * `hours` (integer, optional, default: `48`, range: 1–168)
+  * `model` (string, optional, default: `"lstm"`, one of `lstm`, `lear`, case-insensitive). Selects rows whose `model_version` starts with `<model>_` (`data_scripts/predict_lstm.py` / `predict_lear.py`). "Latest" is resolved within that model only, so a newer run of one model never hides the other.
 * **Success Response (200 OK)**:
   ```json
   {
@@ -646,11 +647,12 @@ Returns the latest stored model prediction for each upcoming interval at a settl
     "message": "Price forecast retrieved",
     "data": {
       "horizonHours": 48,
+      "modelKind": "lstm",
       "points": [
         {
           "intervalStartUtc": "2026-10-10T00:00:00",
           "predictedPrice": 32.5,
-          "modelVersion": "xgboost-baseline",
+          "modelVersion": "lstm_y0_2026-10-05",
           "generatedAt": "2026-10-09T21:00:00"
         }
       ]
@@ -658,7 +660,7 @@ Returns the latest stored model prediction for each upcoming interval at a settl
   }
   ```
 * `confidenceScore` (0-100, higher = more confident) is omitted when unavailable. `data_scripts/predictions.py` computes the final score itself (a normalized recent-error ratio mapped through `100 / (1 + ratio)`) before writing it to `predicted_price.confidence_score`; the API returns that stored value directly, with no further conversion. A backend check runs every minute and detects newly generated low-confidence forecasts without waiting for a page request. It creates unread alerts in the existing data-freshness notification feed and sends one email per recipient, location, and forecast run. Configure the threshold with `FORECAST_CONFIDENCE_THRESHOLD` (0-100 scale, default `40`); SMTP must be configured for email delivery.
-* **Empty window**: `200` with `"points": []`. **Errors**: `400` for blank `location` or `hours` outside 1-168; `403` without a valid token.
+* **Empty window**: `200` with `"points": []`. **Errors**: `400` for blank `location`, `hours` outside 1-168, or an unknown `model`; `403` without a valid token.
 
 #### `GET /api/forecasts/ercot`
 Retrieves forecasted electricity prices and uncertainty intervals for the selected horizon.
@@ -856,7 +858,7 @@ Priority never overrides a job's `deadline` or `isExempt`: an exempt job always 
 | `jobs[].isExempt` | boolean | Yes | `true` = never moved |
 | `jobs[].priority` | string | No | Priority level (`CRITICAL`, `HIGH`, `NORMAL`, `LOW`; default `NORMAL`). See *Objective and tie-break order* above (GRID-155 AC1/AC3). Unknown values are rejected with `400`. |
 | `forecast[]` | array | One of `forecast` / `forecastLocation` | Explicit price per slot (`predictedPrice` in $/MWh). Makes the run fully reproducible. |
-| `forecastLocation`, `horizonHours` | string, integer | One of `forecast` / `forecastLocation` | Server resolves per-slot prices for that location from the forecast service (same data as `GET /api/prices/forecast`), starting at the earliest `originalStartTime`. `horizonHours` defaults to `48`. |
+| `forecastLocation`, `horizonHours` | string, integer | One of `forecast` / `forecastLocation` | Server resolves per-slot prices for that location from the forecast service (same data as `GET /api/prices/forecast?model=<m>`, where `<m>` is `gacs.optimiser.forecast-model` / env `OPTIMISER_FORECAST_MODEL`, default `lstm`), starting at the earliest `originalStartTime`. Only that one model is read, so a newer run of the other model never changes the prices. `horizonHours` defaults to `48`. |
 | `clusterCapacity` | object | No | Capacity applied to every slot. Falls back to the defaults below. |
 | `capacityOverrides[]` | array | No | Per-slot capacity; takes precedence over `clusterCapacity` for that slot |
 

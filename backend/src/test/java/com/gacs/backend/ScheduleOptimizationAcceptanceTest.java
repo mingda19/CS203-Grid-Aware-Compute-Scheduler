@@ -182,7 +182,7 @@ class ScheduleOptimizationAcceptanceTest {
         hourlyPrices.forEach((hour, price) -> predictions.save(PredictedPrice.builder()
             .intervalStartUtc(DAY.plusHours(hour))
             .location(LOCATION)
-            .modelVersion("acceptance-test-model")
+            .modelVersion("lstm_y0_acceptance-test")
             .generatedAt(DAY.minusHours(1))
             .predictedPrice(price)
             .build()));

@@ -16,7 +16,11 @@ import java.util.Map;
 /**
  * Builds the hourly price curve the optimizer runs against.
  *
- * <p>Prefers the latest stored model forecast for the requested location and window.
+ * <p>Prefers the latest stored forecast from one configured model kind
+ * ({@code gacs.optimiser.forecast-model}, default {@code lstm}) for the requested location and
+ * window. Reading a single model matters: LSTM and LEAR run as separate jobs, and taking the
+ * newest row per hour across both would stitch two models into one curve, so the optimizer
+ * would shift jobs on model disagreement rather than price.
  * When no forecast rows cover that window at all, falls back to a 24-hour curve built from
  * stored settlement prices (see {@link #fallbackCurve}) so an optimization run still succeeds
  * instead of failing on absent model output (GRID-124 AC5.2). Partial coverage is not treated
@@ -45,15 +49,22 @@ public class PriceSeriesProvider {
     private final PredictedPriceRepository predictions;
     private final ElectricalPriceRepository history;
     private final double recentWeight;
+    private final String forecastModel;
 
     public PriceSeriesProvider(
         PredictedPriceRepository predictions,
         ElectricalPriceRepository history,
-        @Value("${gacs.optimiser.fallback-recent-weight:0.5}") double recentWeight
+        @Value("${gacs.optimiser.fallback-recent-weight:0.5}") double recentWeight,
+        @Value("${gacs.optimiser.forecast-model:lstm}") String forecastModel
     ) {
+        if (!PredictedPriceRepository.MODEL_KINDS.contains(forecastModel)) {
+            throw new IllegalArgumentException("gacs.optimiser.forecast-model must be one of "
+                + PredictedPriceRepository.MODEL_KINDS + ", got: " + forecastModel);
+        }
         this.predictions = predictions;
         this.history = history;
         this.recentWeight = recentWeight;
+        this.forecastModel = forecastModel;
     }
 
     /**
@@ -61,7 +72,8 @@ public class PriceSeriesProvider {
      */
     public PriceSeries load(String location, LocalDateTime horizonStart, int horizonHours) {
         LocalDateTime horizonEnd = horizonStart.plusHours(horizonHours);
-        List<PredictedPrice> rows = predictions.findLatestForecast(location, horizonStart, horizonEnd);
+        List<PredictedPrice> rows = predictions.findLatestForecastForModel(
+            location, forecastModel, horizonStart, horizonEnd);
 
         Map<LocalDateTime, Double> forecast = new LinkedHashMap<>();
         for (PredictedPrice row : rows) {
@@ -72,9 +84,9 @@ public class PriceSeriesProvider {
                 continue;
             }
             LocalDateTime slot = row.getIntervalStartUtc().truncatedTo(ChronoUnit.HOURS);
-            // findLatestForecast already narrows to the newest generatedAt per interval, but two
-            // model versions can share that timestamp. Keep the first and ignore the duplicate so
-            // the curve stays single-valued and the run stays deterministic.
+            // findLatestForecastForModel already narrows to the newest generatedAt per interval, but
+            // two model versions (e.g. y0 and y1) can share that timestamp. Keep the first and ignore
+            // the duplicate so the curve stays single-valued and the run stays deterministic.
             forecast.putIfAbsent(slot, row.getPredictedPrice());
         }
 

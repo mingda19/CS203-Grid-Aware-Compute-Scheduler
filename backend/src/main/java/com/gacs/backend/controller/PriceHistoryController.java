@@ -17,6 +17,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Locale;
 
 @RestController
 @RequestMapping("/api/prices")
@@ -34,7 +35,8 @@ public class PriceHistoryController {
     @GetMapping("/forecast")
     public ResponseEntity<ApiResponse<PriceForecastResponse>> getForecast(
         @RequestParam(defaultValue = "LZ_NORTH") String location,
-        @RequestParam(defaultValue = "48") int hours
+        @RequestParam(defaultValue = "48") int hours,
+        @RequestParam(defaultValue = "lstm") String model
     ) {
         if (location.isBlank() || location.length() > 100) {
             throw new IllegalArgumentException("location must be a non-empty settlement point name");
@@ -42,14 +44,18 @@ public class PriceHistoryController {
         if (hours < 1 || hours > 168) {
             throw new IllegalArgumentException("hours must be between 1 and 168");
         }
+        String modelKind = model.toLowerCase(Locale.ROOT);
+        if (!PredictedPriceRepository.MODEL_KINDS.contains(modelKind)) {
+            throw new IllegalArgumentException("model must be one of: lstm, lear");
+        }
         LocalDateTime start = LocalDateTime.now(ZoneOffset.UTC);
-        var points = predictions.findLatestForecast(location, start, start.plusHours(hours)).stream()
+        var points = predictions.findLatestForecastForModel(location, modelKind, start, start.plusHours(hours)).stream()
             .map(record -> new PriceForecastResponse.ForecastPoint(record.getIntervalStartUtc(),
                 record.getPredictedPrice(), record.getModelVersion(), record.getGeneratedAt(),
                 record.getConfidenceScore()))
             .toList();
         return ResponseEntity.ok(ApiResponse.ok("Price forecast retrieved",
-            new PriceForecastResponse(points, hours)));
+            new PriceForecastResponse(points, hours, modelKind)));
     }
 
     @GetMapping("/history")

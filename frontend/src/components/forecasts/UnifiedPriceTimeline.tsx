@@ -16,10 +16,15 @@ import { RefreshCw, Sparkles } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { DataStatusBadge } from "@/components/ui/data-status-badge"
-import { priceApi, type PricePoint, type PriceForecastPoint } from "@/lib/api"
+import { priceApi, type ForecastModel, type PricePoint, type PriceForecastPoint } from "@/lib/api"
 import { formatSgtDateTime, formatSgtChartTick } from "@/lib/date-utils"
 
 export type HorizonPreset = "24h" | "48h" | "7d"
+
+const FORECAST_MODELS: { value: ForecastModel; label: string }[] = [
+  { value: "lstm", label: "LSTM" },
+  { value: "lear", label: "LEAR" },
+]
 
 export interface ForecastTelemetry {
   isLoading: boolean
@@ -84,12 +89,13 @@ export function UnifiedPriceTimeline({
   }
 
   const [horizon, setHorizon] = React.useState<HorizonPreset>("24h")
+  const [model, setModel] = React.useState<ForecastModel>("lstm")
   const [historyPoints, setHistoryPoints] = React.useState<PricePoint[]>([])
   const [forecastPoints, setForecastPoints] = React.useState<PriceForecastPoint[]>([])
   const [error, setError] = React.useState<string | null>(null)
   const [refreshTrigger, setRefreshTrigger] = React.useState(0)
   const [loadedQuery, setLoadedQuery] = React.useState<string | null>(null)
-  const queryKey = `${activeHub}:${horizon}:${refreshTrigger}`
+  const queryKey = `${activeHub}:${horizon}:${model}:${refreshTrigger}`
   const isLoading = loadedQuery !== queryKey
   const [nowMs, setNowMs] = React.useState(() => Date.now())
   React.useEffect(() => {
@@ -128,6 +134,7 @@ export function UnifiedPriceTimeline({
     const fetchForecast = priceApi.getForecast({
       location: activeHub,
       hours: forecastHours,
+      model,
     })
 
     Promise.allSettled([fetchHistory, fetchForecast])
@@ -169,7 +176,7 @@ export function UnifiedPriceTimeline({
     return () => {
       cancelled = true
     }
-  }, [activeHub, historyDays, forecastHours, queryKey])
+  }, [activeHub, historyDays, forecastHours, model, queryKey])
 
   // Construct continuous unified dataset
   const { chartData, nowPointKey, summaryStats, telemetry } = React.useMemo(() => {
@@ -435,6 +442,25 @@ export function UnifiedPriceTimeline({
               </button>
             </div>
 
+            {/* Forecast Model Pills */}
+            <div role="group" aria-label="Forecast model" className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5 text-xs">
+              {FORECAST_MODELS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={model === option.value}
+                  onClick={() => setModel(option.value)}
+                  className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                    model === option.value
+                      ? "bg-background text-foreground shadow-xs font-semibold"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
             {/* Hub Selector (if not controlled externally) */}
             {!controlledHub && (
               <select
@@ -472,7 +498,7 @@ export function UnifiedPriceTimeline({
           </div>
           <div className="flex items-center gap-1.5">
             <span className="h-0.5 w-5 border-t-2 border-dashed border-violet-500 inline-block" />
-            <span className="text-violet-600 dark:text-violet-400 font-semibold">Model forecast</span>
+            <span className="text-violet-600 dark:text-violet-400 font-semibold">Model forecast ({model.toUpperCase()})</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />

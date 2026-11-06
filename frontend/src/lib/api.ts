@@ -47,9 +47,12 @@ export interface PriceForecastPoint {
   generatedAt: string
 }
 
+export type ForecastModel = "lstm" | "lear"
+
 export interface PriceForecast {
   points: PriceForecastPoint[]
   horizonHours: number
+  modelKind: ForecastModel
 }
 
 export interface WorkloadSchedule {
@@ -473,10 +476,11 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
 }
 
 export const priceApi = {
-  getForecast(params: { location: string; hours?: number }): Promise<ApiResponse<PriceForecast>> {
+  getForecast(params: { location: string; hours?: number; model?: ForecastModel }): Promise<ApiResponse<PriceForecast>> {
     const query = new URLSearchParams({
       location: params.location,
       hours: String(params.hours ?? 48),
+      model: params.model ?? "lstm",
     })
     return fetchJson<ApiResponse<PriceForecast>>(`/api/prices/forecast?${query.toString()}`, { cache: "no-store" })
   },
