@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { layoutEvents, runLengthHours, splitAcrossDays, type CalendarEvent } from "./GoogleCalendarView"
+import { clampToGrid, layoutEvents, runLengthHours, scheduleToEvent, splitAcrossDays, type CalendarEvent } from "./GoogleCalendarView"
 
 const colorScheme = { bg: "", border: "", text: "", badge: "", dot: "" }
 
@@ -144,5 +144,76 @@ describe("runLengthHours", () => {
 
   it("never goes negative on an inverted run", () => {
     expect(runLengthHours(run("a", "2026-11-05T12:00:00Z", "2026-11-05T09:00:00Z"))).toBe(0)
+  })
+})
+
+describe("clampToGrid (a box never paints past the bottom of the day)", () => {
+  it("sizes an ordinary block from its duration", () => {
+    expect(clampToGrid(9 * 60, 2)).toBe(2 * 60 - 3)
+  })
+
+  it("clips a block that would run past midnight", () => {
+    // 22:00 with 6 hours left to run: 2 hours of grid remain, so 2 hours is what is drawn.
+    expect(clampToGrid(22 * 60, 6)).toBe(2 * 60)
+  })
+
+  it("clips the 52-hour run that overflowed the calendar", () => {
+    // The original defect: 03:00 + 52h drew a box 3120px tall in a 1440px grid.
+    expect(clampToGrid(3 * 60, 52)).toBe(21 * 60)
+    expect(clampToGrid(3 * 60, 52)).toBeLessThanOrEqual(24 * 60)
+  })
+
+  it("keeps a very short block readable rather than collapsing it", () => {
+    expect(clampToGrid(9 * 60, 0.1)).toBe(24)
+    expect(clampToGrid(9 * 60, 0)).toBe(24)
+  })
+
+  it("never returns a negative height for a block starting past the grid", () => {
+    expect(clampToGrid(30 * 60, 2)).toBe(24)
+  })
+})
+
+/**
+ * Built from rows that were actually in workload_schedules when the calendar was reported as
+ * overflowing, driven through the same pipeline the page uses (scheduleToEvent -> splitAcrossDays
+ * -> clampToGrid). The grid is 24 rows of 60px, so no box may end past 1440px; the original defect
+ * drew an 88-hour run as a single 5280px box.
+ */
+describe("real scheduled rows never paint outside the 24-hour grid", () => {
+  const GRID_PX = 24 * 60
+
+  const row = (id: number, title: string, startUtc: string, endUtc: string) => ({
+    id, title, type: "ML Training", cluster: "c", powerKw: 1, savings: null,
+    status: "Scheduled" as const, startUtc, endUtc, notes: null,
+  })
+
+  const REAL_ROWS = [
+    row(112, "meow", "2026-11-06T08:00:00Z", "2026-11-10T00:00:00Z"), // 88h, four market days
+    row(80, "ML long run", "2026-12-20T22:00:00Z", "2026-12-21T16:00:00Z"), // 18h over midnight
+    row(111, "fine", "2026-11-06T04:00:00Z", "2026-11-06T09:00:00Z"), // crosses midnight in CT
+    row(26, "DeepSeek Distill", "2026-11-02T16:00:00Z", "2026-11-02T20:00:00Z"), // ordinary
+  ]
+
+  it.each(REAL_ROWS.map((r) => [r.title, r] as const))("keeps every segment of %s inside the grid", (_t, r) => {
+    for (const seg of splitAcrossDays(scheduleToEvent(r as never))) {
+      const topPx = seg.startHour * 60 + (seg.startMinute / 60) * 60
+      expect(topPx + clampToGrid(topPx, seg.durationHours)).toBeLessThanOrEqual(GRID_PX)
+    }
+  })
+
+  it("splits the 88-hour run across its four market days without losing or duplicating time", () => {
+    const segments = splitAcrossDays(scheduleToEvent(REAL_ROWS[0] as never))
+
+    expect(segments.map((s) => s.dateStr))
+      .toEqual(["2026-11-06", "2026-11-07", "2026-11-08", "2026-11-09"])
+    // The parts add back up to the whole run: nothing dropped at a day boundary.
+    expect(segments.reduce((total, s) => total + s.durationHours, 0)).toBe(88)
+  })
+
+  it("marks the middle days as continuing so they do not read as separate jobs", () => {
+    const segments = splitAcrossDays(scheduleToEvent(REAL_ROWS[0] as never))
+
+    expect(segments.map((s) => `${s.continuesBefore ? "<" : "."}${s.continuesAfter ? ">" : "."}`))
+      .toEqual([".>", "<>", "<>", "<."])
   })
 })

@@ -109,7 +109,7 @@ function toDateStr(d: Date): string {
   return getMarketDateString(d)
 }
 
-function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
+export function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
   const start = new Date(schedule.startUtc.endsWith("Z") ? schedule.startUtc : `${schedule.startUtc}Z`)
   const end = new Date(schedule.endUtc.endsWith("Z") ? schedule.endUtc : `${schedule.endUtc}Z`)
   const type = (Object.keys(TYPE_CONFIG) as WorkloadType[]).includes(schedule.type as WorkloadType)
@@ -151,6 +151,20 @@ function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
  * {@code continuesBefore}/{@code continuesAfter} so the UI can show them as one run rather than
  * several jobs that happen to share a name.
  */
+/** Hours in a nominal calendar grid column. The grid is 24 rows of PX_PER_HOUR regardless of DST. */
+const HOURS_IN_DAY = 24
+const PX_PER_HOUR = 60
+
+/**
+ * Height in px for a block starting at {@code topPx} and lasting {@code durationHours}, never
+ * extending past the bottom of the 24-hour grid, and never smaller than a readable 24px.
+ */
+export function clampToGrid(topPx: number, durationHours: number): number {
+  const remainingPx = Math.max(HOURS_IN_DAY * PX_PER_HOUR - topPx, 0)
+  const wanted = Math.max(durationHours, 0) * PX_PER_HOUR - 3
+  return Math.max(Math.min(wanted, remainingPx), 24)
+}
+
 /** A run's whole length in hours, independent of how it was split across day columns. */
 export function runLengthHours(event: CalendarEvent): number {
   return Math.max((new Date(event.endUtc).getTime() - new Date(event.startUtc).getTime()) / 3_600_000, 0)
@@ -159,7 +173,16 @@ export function runLengthHours(event: CalendarEvent): number {
 export function splitAcrossDays(event: CalendarEvent): CalendarEvent[] {
   const start = new Date(event.startUtc)
   const end = new Date(event.endUtc)
-  if (!(end.getTime() > start.getTime())) return [{ ...event, segmentKey: event.id }]
+  if (!(end.getTime() > start.getTime())) {
+    // Unusable or inverted instants. Returning the run untouched would hand the grid back exactly
+    // the box this function exists to prevent - one longer than the day it is drawn in - so fall
+    // back to its stated start and clip to the end of that day instead.
+    return [{
+      ...event,
+      durationHours: Math.min(Math.max(event.durationHours, 0), HOURS_IN_DAY - event.startHour - event.startMinute / 60),
+      segmentKey: event.id,
+    }]
+  }
 
   const segments: CalendarEvent[] = []
   const lastDate = getMarketDateString(end.getTime() - 1) // -1ms: an end exactly at midnight belongs to the day before
@@ -870,7 +893,11 @@ export function GoogleCalendarView() {
                         {/* Event blocks - side by side within a lane when they share a slot (bug 5) */}
                         {layoutEvents(dayEvents).map(({ event: ev, lane, laneCount }) => {
                           const topPx = ev.startHour * 60 + (ev.startMinute / 60) * 60
-                          const heightPx = Math.max(ev.durationHours * 60 - 3, 24)
+                          // Clamped to what is left of the day. splitAcrossDays should already have
+                          // made every segment fit, so this is a backstop, not the mechanism: a
+                          // single bad duration should shorten one box, never paint over the rest of
+                          // the calendar as a 52-hour job once did.
+                          const heightPx = clampToGrid(topPx, ev.durationHours)
                           const widthPct = 100 / laneCount
 
                           return (
@@ -894,15 +921,17 @@ export function GoogleCalendarView() {
                                   {ev.title}
                                 </span>
                                 <span className="text-[9px] font-mono shrink-0 px-1 rounded bg-background/60 text-foreground font-medium">
-                                  {ev.powerKw > 0 ? `Est. $Est. {ev.powerKw} kW` : "ALERT"}
+                                  {ev.powerKw > 0 ? `Est. ${ev.powerKw} kW` : "ALERT"}
                                 </span>
                               </div>
 
                               <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground font-mono">
                                 <Clock className="h-2.5 w-2.5 shrink-0" />
                                 <span>
+                                  {ev.continuesBefore && "↑ "}
                                   {String(ev.startHour).padStart(2, "0")}:{String(ev.startMinute).padStart(2, "0")} (
-                                  {ev.durationHours}h)
+                                  {Math.round(ev.durationHours * 10) / 10}h{ev.continuesAfter || ev.continuesBefore ? " of " + Math.round(runLengthHours(ev)) + "h" : ""})
+                                  {ev.continuesAfter && " ↓"}
                                 </span>
                               </div>
 
@@ -1074,7 +1103,8 @@ export function GoogleCalendarView() {
                   {layoutEvents(daySegments.filter((e) => e.dateStr === toDateStr(currentDate)))
                     .map(({ event: ev, lane, laneCount }) => {
                       const topPx = ev.startHour * 60 + (ev.startMinute / 60) * 60
-                      const heightPx = Math.max(ev.durationHours * 60 - 4, 36)
+                      // Same backstop as the week grid: never paint past the bottom of the day.
+                      const heightPx = Math.max(clampToGrid(topPx, ev.durationHours), 36)
                       // The original left-4 right-8 margins (16px/32px, 48px total) stay fixed;
                       // only the remaining width is split evenly across lanes.
                       const laneWidth = `(100% - 48px) / ${laneCount}`

@@ -13,13 +13,17 @@ import java.time.Duration;
  * @param enabled   master switch; false short-circuits to the deterministic fallback with
  *                  {@link FallbackReason#DISABLED_BY_CONFIG} without even checking for a client
  * @param modelName the exact Anthropic model id to request
- * @param timeout   hard per-call budget, enforced explicitly - left short deliberately (no
- *                  job-queue infrastructure exists yet, so this runs synchronously inside the
- *                  optimise request); tune empirically, not guessed precisely here
+ * @param timeout   hard per-call budget, enforced explicitly. This runs synchronously inside the
+ *                  optimise request - there is no job queue yet - so it is also dead time the
+ *                  operator waits through. Raised from 8s because a full-horizon plan with many
+ *                  jobs was routinely losing the race and falling back to the deterministic text.
+ *                  The frontend sets no fetch timeout of its own today, so the browser default is
+ *                  the only ceiling above this; if one is ever added, it has to exceed this budget
+ *                  or the request is abandoned client-side while the model is still answering.
  */
 @ConfigurationProperties(prefix = "gacs.optimiser.explanation")
 public record ExplanationProperties(
         @DefaultValue("false") boolean enabled,
         @DefaultValue("claude-haiku-4-5-20251001") String modelName,
-        @DefaultValue("8s") Duration timeout) {
+        @DefaultValue("30s") Duration timeout) {
 }

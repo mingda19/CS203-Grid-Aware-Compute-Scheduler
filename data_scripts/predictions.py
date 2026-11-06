@@ -618,11 +618,19 @@ def build_sequence(engine: sa.Engine, target_times: pd.DatetimeIndex, location: 
 
 
 def build_lear_frame(engine: sa.Engine, target_times: pd.DatetimeIndex, location: str, artifact: dict) -> pd.DataFrame:
-    """Hourly frame for LEAR's predict_day() (model/lear_model.py): price up
-    to the hour before the anchor day (mirrors build_sequence's cutoff - the
-    target day's own price is never queried at all, let alone handed to the
-    model) plus exogenous inputs through the target day, far enough back to
-    cover the artifact's longest calibration window.
+    """Hourly frame for LEAR's predict_day() (model/lear_model.py): price
+    through the end of the anchor day (lear_model's own module docstring -
+    "Information cutoff: price is only ever read before D-(horizon_days-1)
+    00:00" - the newest price day LEAR's build_design actually uses is
+    D-horizon_days, which lands exactly on the anchor day, not one day
+    before it) plus exogenous inputs through the target day, far enough back
+    to cover the artifact's longest calibration window.
+
+    Fetching through the anchor day's last hour (not stopping one hour
+    before the anchor day starts) is still never a leak: build_design
+    discards anything at/after D-(horizon_days-1) 00:00 itself (one day
+    later than this cutoff) before building any feature, so hands it
+    anchor-day data it's explicitly designed to use, never target-day data.
 
     +7 days of extra lookback past the longest window: the same
     price_day_offsets() tail (D-7, the same-weekday lag) lear_model.build_design's
@@ -633,7 +641,7 @@ def build_lear_frame(engine: sa.Engine, target_times: pd.DatetimeIndex, location
     target_day = target_times.min().normalize()
     lead_hours = artifact["lead_hours"]
     anchor = target_day - timedelta(hours=lead_hours)
-    cutoff = anchor - timedelta(hours=1)
+    cutoff = anchor + timedelta(hours=23)
     history_start = anchor - timedelta(days=max(artifact["windows"]) + 7)
 
     frame = load_exogenous(engine, history_start, target_day + timedelta(hours=23))
