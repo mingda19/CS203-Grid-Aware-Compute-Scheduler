@@ -28,6 +28,9 @@ import { formatMarketDateTime, formatMarketChartTick, marketZoneAbbrev, MARKET_T
 export type HorizonPreset = "24h" | "7d"
 
 const HISTORY_DAYS: Record<HorizonPreset, number> = { "24h": 1, "7d": 7 }
+/** The chart always loads the longest window. A horizon change only moves the axes. */
+const MAX_HISTORY_DAYS = HISTORY_DAYS["7d"]
+const AXIS_TWEEN_MS = 450
 const FORECAST_HOURS = 72
 const HOUR_MS = 3_600_000
 const DAY_MS = 24 * HOUR_MS
@@ -88,6 +91,49 @@ function timeTicks(min: number, max: number): number[] {
   const ticks: number[] = []
   for (let t = Math.ceil(min / step) * step; t <= max; t += step) ticks.push(t)
   return ticks
+}
+
+/**
+ * Moves a list of numbers to a new target. A change of `animateKey` plays an ease-out move.
+ * Any other change of `target` (new data, a clock tick) applies at once.
+ */
+function useTweened(target: number[], animateKey: string): number[] {
+  // `anim` holds the in-between value while a move plays. It is null otherwise, and the target shows.
+  const [anim, setAnim] = React.useState<number[] | null>(null)
+  const shownRef = React.useRef(target)
+  const keyRef = React.useRef(animateKey)
+
+  // A layout effect runs before the browser paints, so the first frame shows the old axes and not the new ones.
+  React.useLayoutEffect(() => {
+    const keyChanged = keyRef.current !== animateKey
+    keyRef.current = animateKey
+    if (!keyChanged || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setAnim(null)
+      return
+    }
+    const from = shownRef.current
+    const start = performance.now()
+    let frame = 0
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - start) / AXIS_TWEEN_MS)
+      if (progress >= 1) {
+        setAnim(null)
+        return
+      }
+      const eased = 1 - Math.pow(1 - progress, 3)
+      setAnim(target.map((to, i) => from[i] + (to - from[i]) * eased))
+      frame = requestAnimationFrame(step)
+    }
+    setAnim(from)
+    frame = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(frame)
+  }, [target, animateKey])
+
+  const shown = anim ?? target
+  React.useLayoutEffect(() => {
+    shownRef.current = shown
+  })
+  return shown
 }
 
 /** The typical gap between forecast points. The strip cells use it as their width. */
@@ -164,7 +210,7 @@ export function UnifiedPriceTimeline({
   const [error, setError] = React.useState<string | null>(null)
   const [refreshTrigger, setRefreshTrigger] = React.useState(0)
   const [loadedQuery, setLoadedQuery] = React.useState<string | null>(null)
-  const queryKey = `${activeHub}:${horizon}:${refreshTrigger}`
+  const queryKey = `${activeHub}:${refreshTrigger}`
   const isLoading = loadedQuery !== queryKey
   const [nowMs, setNowMs] = React.useState(() => Date.now())
   React.useEffect(() => {
@@ -180,7 +226,7 @@ export function UnifiedPriceTimeline({
 
     const now = new Date()
     const startDate = new Date(now)
-    startDate.setUTCDate(startDate.getUTCDate() - historyDays)
+    startDate.setUTCDate(startDate.getUTCDate() - MAX_HISTORY_DAYS)
 
     const fetchHistory = priceApi.getHistory({
       location: activeHub,
@@ -232,18 +278,19 @@ export function UnifiedPriceTimeline({
     return () => {
       cancelled = true
     }
-  }, [activeHub, historyDays, queryKey])
+  }, [activeHub, queryKey])
 
   // Construct continuous unified dataset
-  const { chartData, forecastCells, xTicks, yDomain, summaryStats, telemetry } = React.useMemo(() => {
+  const { chartData, forecastCells, axisTarget, summaryStats, telemetry } = React.useMemo(() => {
     const data: TimelineDataPoint[] = []
 
-    // 1. Recorded points inside the selected past window, oldest first. The query reads whole UTC days,
+    // 1. Recorded points inside the longest past window, oldest first. The query reads whole UTC days,
     //    so it can return more than the window. The window is exact.
+    //    The chart holds all of them. The selected horizon only sets the axes, the statistics and the counts.
     const windowStart = nowMs - historyDays * DAY_MS
     const sortedHistory = historyPoints
       .map((p) => ({ p, t: new Date(withZ(p.intervalStartUtc)).getTime() }))
-      .filter(({ t }) => Number.isFinite(t) && t >= windowStart)
+      .filter(({ t }) => Number.isFinite(t) && t >= nowMs - MAX_HISTORY_DAYS * DAY_MS)
       .sort((a, b) => a.t - b.t)
 
     for (const { p, t } of sortedHistory) {
@@ -301,7 +348,8 @@ export function UnifiedPriceTimeline({
     }
 
     // Calculate summary statistics & telemetry
-    const historyPrices = sortedHistory.map(({ p }) => p.sppUsdMwh).filter((v): v is number => v != null)
+    const historyPrices = sortedHistory.filter(({ t }) => t >= windowStart)
+      .map(({ p }) => p.sppUsdMwh).filter((v): v is number => v != null)
     const allPrices = [
       ...historyPrices,
       ...forecastPoints.map((f) => f.predictedPrice).filter((v): v is number => v != null),
@@ -353,7 +401,7 @@ export function UnifiedPriceTimeline({
       estWindShare: null,
       estSolarShare: null,
       maxCleanShare: null,
-      totalIntervals: data.length,
+      totalIntervals: data.filter((d) => d.t >= windowStart).length,
       hubLocation: activeHub,
     }
 
@@ -364,18 +412,24 @@ export function UnifiedPriceTimeline({
       .filter((d) => d.isForecast)
       .map((d) => ({ x1: d.t - step * 0.46, x2: d.t + step * 0.46, band: confidenceBand(d.confidenceScore) }))
 
+    // The axes show the selected window: [x min, x max, y min, y max].
     // The y-axis leaves room under the lowest price for the strip.
-    const shown = data.flatMap((d) => [d.actualPrice, d.forecastPrice]).filter((v): v is number => v != null)
+    const visible = data.filter((d) => d.t >= windowStart)
+    const shown = visible.flatMap((d) => [d.actualPrice, d.forecastPrice]).filter((v): v is number => v != null)
     const lo = shown.length ? Math.min(...shown) : 0
     const hi = shown.length ? Math.max(...shown) : 1
     const range = Math.max(hi - lo, 1)
-    const domain: [number, number] = [lo - range * (cells.length ? 0.22 : 0.08), hi + range * 0.08]
+    const axisTarget = [
+      (visible[0] ?? data[0])?.t ?? 0,
+      data[data.length - 1]?.t ?? 1,
+      lo - range * (cells.length ? 0.22 : 0.08),
+      hi + range * 0.08,
+    ]
 
     return {
       chartData: data,
       forecastCells: cells,
-      xTicks: data.length ? timeTicks(data[0].t, data[data.length - 1].t) : [],
-      yDomain: domain,
+      axisTarget,
       summaryStats: {
         avgLmp: avgLmp ?? 0,
         maxLmp: peakPrice ?? 0,
@@ -386,6 +440,10 @@ export function UnifiedPriceTimeline({
       telemetry: computedTelemetry,
     }
   }, [historyPoints, forecastPoints, activeHub, isLoading, nowMs, historyDays])
+
+  // A horizon change moves both axes together. Everything else sets them at once.
+  const [xMin, xMax, yMin, yMax] = useTweened(axisTarget, horizon)
+  const xTicks = React.useMemo(() => (xMax > xMin ? timeTicks(xMin, xMax) : []), [xMin, xMax])
 
   /**
    * Run-level confidence over the forecast intervals only. Averaged across the intervals that carry
@@ -512,7 +570,8 @@ export function UnifiedPriceTimeline({
                     dataKey="t"
                     type="number"
                     scale="time"
-                    domain={["dataMin", "dataMax"]}
+                    domain={[xMin, xMax]}
+                    allowDataOverflow
                     ticks={xTicks}
                     tickLine={false}
                     axisLine={false}
@@ -523,7 +582,7 @@ export function UnifiedPriceTimeline({
                   />
 
                   <YAxis
-                    domain={yDomain}
+                    domain={[yMin, yMax]}
                     allowDataOverflow
                     tickLine={false}
                     axisLine={false}
@@ -596,6 +655,7 @@ export function UnifiedPriceTimeline({
                     strokeWidth={2}
                     fill={`url(#${chartId}-area)`}
                     connectNulls={false}
+                    isAnimationActive={false}
                     activeDot={{ r: 4, stroke: "var(--primary)", strokeWidth: 2, fill: "var(--card)" }}
                     name="Recorded price"
                   />
@@ -610,6 +670,7 @@ export function UnifiedPriceTimeline({
                     dot={false}
                     activeDot={{ r: 4, stroke: "var(--primary)", strokeWidth: 2, fill: "var(--card)" }}
                     connectNulls={false}
+                    isAnimationActive={false}
                     name="Forecast price"
                   />
                 </ComposedChart>

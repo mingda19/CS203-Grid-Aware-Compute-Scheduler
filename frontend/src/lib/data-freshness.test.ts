@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { DataFreshnessResponse, DatasetFreshness } from "./api"
-import { datasetFreshnessText, freshnessSummary } from "./data-freshness"
+import { datasetAgeText, datasetFreshnessText, freshnessSummary } from "./data-freshness"
 
 const response = (...statuses: DatasetFreshness["status"][]): DataFreshnessResponse => ({
   datasets: statuses.map((status, index) => ({ dataset: String(index), label: `Dataset ${index}`, status, latestRecordTimestamp: null, ageMinutes: null, message: status })),
@@ -40,5 +40,11 @@ describe("datasetFreshnessText", () => {
   })
   it("admits when the update time is unknown", () => {
     expect(datasetFreshnessText(dataset({ latestRecordTimestamp: null }), now)).toBe("Daily ERCOT price: update time unknown")
+  })
+  it("gives the age alone for a table column", () => {
+    expect(datasetAgeText(dataset({}), now)).toBe("5m ago")
+    expect(datasetAgeText(dataset({ status: "MISSING", latestRecordTimestamp: null }), now)).toBe("no data")
+    expect(datasetAgeText(dataset({ status: "DATABASE_UNAVAILABLE", latestRecordTimestamp: null }), now)).toBe("source unreachable")
+    expect(datasetAgeText(dataset({ latestRecordTimestamp: null }), now)).toBe("update time unknown")
   })
 })
