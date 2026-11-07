@@ -18,12 +18,17 @@ export function datasetStatusType(status: DatasetFreshness["status"]) {
   return "unavailable" as const
 }
 
-/** What is old and by how much, for example "Daily ERCOT price updated 3h ago". Never a bare "Stale". */
+/** How old one dataset is, for example "3h ago". Says why when there is no age. Never a bare "Stale". */
+export function datasetAgeText(dataset: DatasetFreshness, now = Date.now()): string {
+  if (dataset.status === "MISSING") return "no data"
+  if (dataset.status === "DATABASE_UNAVAILABLE") return "source unreachable"
+  if (dataset.latestRecordTimestamp) return formatRelativeAgo(dataset.latestRecordTimestamp, now)
+  return "update time unknown"
+}
+
+/** A full sentence for alerts, for example "Daily ERCOT price updated 3h ago". */
 export function datasetFreshnessText(dataset: DatasetFreshness, now = Date.now()): string {
-  if (dataset.status === "MISSING") return `${dataset.label}: no data`
-  if (dataset.status === "DATABASE_UNAVAILABLE") return `${dataset.label}: source unreachable`
-  if (dataset.latestRecordTimestamp) {
-    return `${dataset.label} updated ${formatRelativeAgo(dataset.latestRecordTimestamp, now)}`
-  }
-  return `${dataset.label}: update time unknown`
+  const age = datasetAgeText(dataset, now)
+  const hasAge = dataset.status !== "MISSING" && dataset.status !== "DATABASE_UNAVAILABLE" && dataset.latestRecordTimestamp
+  return hasAge ? `${dataset.label} updated ${age}` : `${dataset.label}: ${age}`
 }

@@ -3,7 +3,7 @@
 import * as React from "react"
 import type { DataFreshnessResponse } from "@/lib/api"
 import { formatMarketDateTime } from "@/lib/date-utils"
-import { datasetFreshnessText, datasetStatusType } from "@/lib/data-freshness"
+import { datasetAgeText, datasetStatusType } from "@/lib/data-freshness"
 import { DataStatusBadge, type DataStatusType } from "@/components/ui/data-status-badge"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -37,7 +37,7 @@ export function DataStatusPopover({ status, response }: DataStatusPopoverProps) 
           />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" collisionPadding={16} className="w-96 max-w-[calc(100vw-2rem)] p-3">
+      <PopoverContent align="end" collisionPadding={16} className="w-[26rem] max-w-[calc(100vw-2rem)] p-3">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="min-w-0 truncate text-sm font-semibold leading-5">Data status</h2>
           {response && (
@@ -50,15 +50,15 @@ export function DataStatusPopover({ status, response }: DataStatusPopoverProps) 
           <p role="status" className="text-sm leading-5 text-muted-foreground">Could not load data status.</p>
         ) : (
           <ul className="space-y-2">
-            {response.datasets.map((dataset) => {
-              const text = datasetFreshnessText(dataset, now)
-              return (
-                <li key={dataset.dataset} className="flex items-center justify-between gap-3">
-                  <span className="min-w-0 truncate text-sm leading-5" title={text}>{text}</span>
-                  <DataStatusBadge size="sm" status={datasetStatusType(dataset.status)} showTooltip={false} />
-                </li>
-              )
-            })}
+            {response.datasets.map((dataset) => (
+              <li key={dataset.dataset} className="grid grid-cols-[minmax(0,1fr)_6.5rem_auto] items-center gap-3">
+                <span className="truncate text-sm leading-5" title={dataset.label}>{dataset.label}</span>
+                <span className="truncate text-right text-xs leading-4 text-muted-foreground tabular-nums">
+                  {datasetAgeText(dataset, now)}
+                </span>
+                <DataStatusBadge size="sm" status={datasetStatusType(dataset.status)} showTooltip={false} />
+              </li>
+            ))}
           </ul>
         )}
       </PopoverContent>
