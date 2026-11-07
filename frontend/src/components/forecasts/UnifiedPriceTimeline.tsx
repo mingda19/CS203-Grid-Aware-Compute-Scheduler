@@ -9,19 +9,28 @@ import {
   CartesianGrid,
   ResponsiveContainer,
   ComposedChart,
+  ReferenceArea,
   ReferenceLine,
   Tooltip as RechartsTooltip,
 } from "recharts"
-import { RefreshCw, Sparkles } from "lucide-react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
+import { RefreshCw } from "lucide-react"
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Skeleton } from "@/components/ui/skeleton"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { DataStatusBadge } from "@/components/ui/data-status-badge"
-import { cn } from "@/lib/utils"
 import { priceApi, type PricePoint, type PriceForecastPoint } from "@/lib/api"
-import { aggregateConfidence, confidenceBand, confidenceTone, formatConfidence } from "@/lib/forecast-confidence"
-import { formatMarketDateTime, formatMarketChartTick, marketZoneAbbrev, MARKET_TIMEZONE, MARKET_ZONE_LABEL } from "@/lib/date-utils"
+import { aggregateConfidence, confidenceBand, type ConfidenceBand } from "@/lib/forecast-confidence"
+import { formatMarketDateTime, formatMarketChartTick, marketZoneAbbrev, MARKET_TIMEZONE } from "@/lib/date-utils"
 
-export type HorizonPreset = "24h" | "48h" | "7d"
+/** How much recorded history the chart shows. The forecast part always covers the next 72 hours. */
+export type HorizonPreset = "24h" | "7d"
+
+const HISTORY_DAYS: Record<HorizonPreset, number> = { "24h": 1, "7d": 7 }
+const FORECAST_HOURS = 72
+const HOUR_MS = 3_600_000
+const DAY_MS = 24 * HOUR_MS
 
 export interface ForecastTelemetry {
   isLoading: boolean
@@ -54,6 +63,8 @@ export interface UnifiedPriceTimelineProps {
 export interface TimelineDataPoint {
   key: string
   rawUtc: string
+  /** The time in milliseconds. The x-axis is numeric, so one hour has the same width everywhere. */
+  t: number
   timeLabel: string
   fullTimeLocal: string
   actualPrice: number | null
@@ -68,6 +79,65 @@ export interface TimelineDataPoint {
   modelVersion?: string
 }
 
+const withZ = (utc: string) => (utc.endsWith("Z") ? utc : `${utc}Z`)
+
+/** Tick positions on whole hours, with a step that gives at most 7 labels. */
+function timeTicks(min: number, max: number): number[] {
+  const span = max - min
+  const step = [1, 2, 3, 6, 12, 24, 48].map((h) => h * HOUR_MS).find((s) => span / s <= 7) ?? 48 * HOUR_MS
+  const ticks: number[] = []
+  for (let t = Math.ceil(min / step) * step; t <= max; t += step) ticks.push(t)
+  return ticks
+}
+
+/** The typical gap between forecast points. The strip cells use it as their width. */
+function intervalMs(times: number[]): number {
+  const gaps = times.slice(1).map((t, i) => t - times[i]).filter((g) => g > 0).sort((a, b) => a - b)
+  return gaps.length ? gaps[Math.floor(gaps.length / 2)] : HOUR_MS
+}
+
+const confidenceText = (score: number | null | undefined) => {
+  const band = confidenceBand(score)
+  return band === "Not available" ? band : `${band} (${Math.round((score as number) * 100)}%)`
+}
+
+// Each confidence band has its own fill pattern. Colour is never the only cue.
+const BANDS: Array<{ band: ConfidenceBand; label: string; pattern: string }> = [
+  { band: "High", label: "High", pattern: "high" },
+  { band: "Moderate", label: "Moderate", pattern: "moderate" },
+  { band: "Low", label: "Low", pattern: "low" },
+  { band: "Not available", label: "No score", pattern: "none" },
+]
+
+function ConfidencePatterns({ id }: { id: string }) {
+  return (
+    <>
+      <pattern id={`${id}-high`} width="6" height="6" patternUnits="userSpaceOnUse">
+        <rect width="6" height="6" fill="var(--primary)" />
+      </pattern>
+      <pattern id={`${id}-moderate`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+        <line x1="0" y1="0" x2="0" y2="6" stroke="var(--primary)" strokeWidth="3" />
+      </pattern>
+      <pattern id={`${id}-low`} width="6" height="6" patternUnits="userSpaceOnUse">
+        <circle cx="3" cy="3" r="1.2" fill="var(--primary)" />
+      </pattern>
+      <pattern id={`${id}-none`} width="5" height="5" patternUnits="userSpaceOnUse">
+        <path d="M0 0L5 5M5 0L0 5" stroke="var(--muted-foreground)" strokeWidth="0.8" />
+      </pattern>
+    </>
+  )
+}
+
+function ConfidenceSwatch({ pattern }: { pattern: string }) {
+  const id = `sw${React.useId().replace(/:/g, "")}`
+  return (
+    <svg width="16" height="10" aria-hidden="true" className="shrink-0">
+      <defs><ConfidencePatterns id={id} /></defs>
+      <rect width="16" height="10" rx="2" fill={`url(#${id}-${pattern})`} stroke="var(--border)" />
+    </svg>
+  )
+}
+
 export function UnifiedPriceTimeline({
   hubLocation: controlledHub,
   onLocationChange,
@@ -78,6 +148,7 @@ export function UnifiedPriceTimeline({
 }: UnifiedPriceTimelineProps) {
   const [internalHub, setInternalHub] = React.useState("LZ_NORTH")
   const activeHub = controlledHub ?? internalHub
+  const chartId = `tl${React.useId().replace(/:/g, "")}`
 
   const handleHubChange = (newHub: string) => {
     if (onLocationChange) {
@@ -101,18 +172,7 @@ export function UnifiedPriceTimeline({
     return () => window.clearInterval(timer)
   }, [])
 
-  // Determine history days & forecast hours based on preset
-  const { historyDays, forecastHours } = React.useMemo(() => {
-    switch (horizon) {
-      case "48h":
-        return { historyDays: 2, forecastHours: 48, label: "Past 48h Actuals + 48h ML Forecast" }
-      case "7d":
-        return { historyDays: 7, forecastHours: 72, label: "Past 7d Actuals + 72h ML Forecast" }
-      case "24h":
-      default:
-        return { historyDays: 1, forecastHours: 24, label: "Past 24h Actuals + 24h ML Forecast" }
-    }
-  }, [horizon])
+  const historyDays = HISTORY_DAYS[horizon]
 
   // Fetch both historical settlement actuals and ML forecast
   React.useEffect(() => {
@@ -126,12 +186,11 @@ export function UnifiedPriceTimeline({
       location: activeHub,
       startDate: startDate.toISOString().slice(0, 10),
       endDate: now.toISOString().slice(0, 10),
-      limit: historyDays * 288 + 10,
     })
 
     const fetchForecast = priceApi.getForecast({
       location: activeHub,
-      hours: forecastHours,
+      hours: FORECAST_HOURS,
     })
 
     Promise.allSettled([fetchHistory, fetchForecast])
@@ -173,31 +232,30 @@ export function UnifiedPriceTimeline({
     return () => {
       cancelled = true
     }
-  }, [activeHub, historyDays, forecastHours, queryKey])
+  }, [activeHub, historyDays, queryKey])
 
   // Construct continuous unified dataset
-  const { chartData, nowPointKey, summaryStats, telemetry } = React.useMemo(() => {
+  const { chartData, forecastCells, xTicks, yDomain, summaryStats, telemetry } = React.useMemo(() => {
     const data: TimelineDataPoint[] = []
 
-    // 1. Sort historical points chronologically
-    const sortedHistory = [...historyPoints].sort((a, b) => {
-      const tA = new Date(a.intervalStartUtc.endsWith("Z") ? a.intervalStartUtc : `${a.intervalStartUtc}Z`).getTime()
-      const tB = new Date(b.intervalStartUtc.endsWith("Z") ? b.intervalStartUtc : `${b.intervalStartUtc}Z`).getTime()
-      return tA - tB
-    })
+    // 1. Recorded points inside the selected past window, oldest first. The query reads whole UTC days,
+    //    so it can return more than the window. The window is exact.
+    const windowStart = nowMs - historyDays * DAY_MS
+    const sortedHistory = historyPoints
+      .map((p) => ({ p, t: new Date(withZ(p.intervalStartUtc)).getTime() }))
+      .filter(({ t }) => Number.isFinite(t) && t >= windowStart)
+      .sort((a, b) => a.t - b.t)
 
-    // Map historical points
-    for (const p of sortedHistory) {
+    for (const { p, t } of sortedHistory) {
       if (p.sppUsdMwh == null) continue
-      const rawUtc = p.intervalStartUtc.endsWith("Z") ? p.intervalStartUtc : `${p.intervalStartUtc}Z`
-      const price = Number(p.sppUsdMwh)
-
+      const rawUtc = withZ(p.intervalStartUtc)
       data.push({
         key: rawUtc,
         rawUtc,
+        t,
         timeLabel: formatMarketChartTick(rawUtc, true),
         fullTimeLocal: formatMarketDateTime(rawUtc),
-        actualPrice: price,
+        actualPrice: Number(p.sppUsdMwh),
         forecastPrice: null,
         forecastUpper: null,
         forecastLower: null,
@@ -207,22 +265,14 @@ export function UnifiedPriceTimeline({
       })
     }
 
-    // 2. Filter forecast points to only include strictly future intervals (> latestHistoryTime)
-    const latestHistoryTime = data.length > 0 ? new Date(data[data.length - 1].rawUtc).getTime() : 0
-    // and sort them chronologically
+    // 2. Forecast points strictly after the last recorded point, oldest first
+    const latestHistoryTime = data.length > 0 ? data[data.length - 1].t : 0
     const futureForecasts = forecastPoints
-      .filter((f) => {
-        if (f.predictedPrice == null) return false
-        const fUtc = f.intervalStartUtc.endsWith("Z") ? f.intervalStartUtc : `${f.intervalStartUtc}Z`
-        return new Date(fUtc).getTime() > latestHistoryTime
-      })
-      .sort((a, b) => {
-        const tA = new Date(a.intervalStartUtc.endsWith("Z") ? a.intervalStartUtc : `${a.intervalStartUtc}Z`).getTime()
-        const tB = new Date(b.intervalStartUtc.endsWith("Z") ? b.intervalStartUtc : `${b.intervalStartUtc}Z`).getTime()
-        return tA - tB
-      })
+      .map((f) => ({ f, t: new Date(withZ(f.intervalStartUtc)).getTime() }))
+      .filter(({ f, t }) => f.predictedPrice != null && Number.isFinite(t) && t > latestHistoryTime)
+      .sort((a, b) => a.t - b.t)
 
-    // Display-only anchor: start the purple line at the last published price.
+    // Display-only anchor: the forecast line starts at the last published price.
     // The point stays a settlement point; source forecasts and summary values are unchanged.
     if (data.length > 0 && futureForecasts.length > 0) {
       const lastPublished = data[data.length - 1]
@@ -231,17 +281,16 @@ export function UnifiedPriceTimeline({
     }
 
     // 3. Map future forecast points
-    for (const f of futureForecasts) {
-      const rawUtc = f.intervalStartUtc.endsWith("Z") ? f.intervalStartUtc : `${f.intervalStartUtc}Z`
-      const price = Number(f.predictedPrice)
-
+    for (const { f, t } of futureForecasts) {
+      const rawUtc = withZ(f.intervalStartUtc)
       data.push({
         key: rawUtc,
         rawUtc,
+        t,
         timeLabel: formatMarketChartTick(rawUtc, true),
         fullTimeLocal: formatMarketDateTime(rawUtc),
         actualPrice: null,
-        forecastPrice: price,
+        forecastPrice: Number(f.predictedPrice),
         forecastUpper: null,
         forecastLower: null,
         isForecast: true,
@@ -252,88 +301,42 @@ export function UnifiedPriceTimeline({
     }
 
     // Calculate summary statistics & telemetry
+    const historyPrices = sortedHistory.map(({ p }) => p.sppUsdMwh).filter((v): v is number => v != null)
     const allPrices = [
-      ...historyPoints.map((p) => p.sppUsdMwh).filter((v): v is number => v != null),
+      ...historyPrices,
       ...forecastPoints.map((f) => f.predictedPrice).filter((v): v is number => v != null),
     ]
 
-    const historyPrices = historyPoints.map((p) => p.sppUsdMwh).filter((v): v is number => v != null)
     const rollingHistoryAvg = historyPrices.length > 0
       ? historyPrices.reduce((a, b) => a + b, 0) / historyPrices.length
       : null
 
-    const currentLmp = sortedHistory.length > 0 && sortedHistory[sortedHistory.length - 1].sppUsdMwh != null
-      ? sortedHistory[sortedHistory.length - 1].sppUsdMwh
-      : null
+    const lastRecorded = sortedHistory.length > 0 ? sortedHistory[sortedHistory.length - 1].p.sppUsdMwh : null
+    const currentLmp = lastRecorded != null ? lastRecorded : null
 
     const avgLmp = allPrices.length > 0 ? allPrices.reduce((a, b) => a + b, 0) / allPrices.length : null
 
     // Evaluate future actionable intervals (at or after current time), including settled actuals and forecasts
-    const futureTimelinePoints = data.filter((d) => {
-      const ptMs = new Date(d.rawUtc).getTime()
-      return ptMs >= nowMs && !d.isTransition
-    })
+    const futureTimelinePoints = data.filter((d) => d.t >= nowMs && !d.isTransition)
     // Fallback if nowMs is beyond the data window (e.g. historical archive view)
     const actionableSource = futureTimelinePoints.length > 0
       ? futureTimelinePoints
       : data.filter((d) => d.isForecast && !d.isTransition)
 
-    // Impending Peak Spike
+    // Impending Peak Spike and Lowest Opportunity Price (lowest upcoming price)
     let peakPrice: number | null = null
     let peakUtc: string | null = null
-
-    for (const pt of actionableSource) {
-      const val = pt.actualPrice ?? pt.forecastPrice
-      if (val != null && (peakPrice == null || val > peakPrice)) {
-        peakPrice = val
-        peakUtc = pt.rawUtc
-      }
-    }
-
-    // Lowest Opportunity Price (lowest upcoming price, prioritizing settled actuals if present, otherwise forecast)
     let lowestPrice: number | null = null
     let lowestUtc: string | null = null
-
     for (const pt of actionableSource) {
       const val = pt.actualPrice ?? pt.forecastPrice
-      if (val != null && (lowestPrice == null || val < lowestPrice)) {
-        lowestPrice = val
-        lowestUtc = pt.rawUtc
-      }
+      if (val == null) continue
+      if (peakPrice == null || val > peakPrice) { peakPrice = val; peakUtc = pt.rawUtc }
+      if (lowestPrice == null || val < lowestPrice) { lowestPrice = val; lowestUtc = pt.rawUtc }
     }
 
     const peakWindow = peakUtc ? `${formatMarketChartTick(peakUtc, true)} ${marketZoneAbbrev(peakUtc)}` : "—"
     const lowestWindow = lowestUtc ? `${formatMarketChartTick(lowestUtc, true)} ${marketZoneAbbrev(lowestUtc)}` : "—"
-
-    const avgCleanShare = null
-    const maxCleanShare = null
-    const estWindShare = null
-    const estSolarShare = null
-
-    // Determine the boundary "Now" timestamp key using actual current time (Date.now())
-    let resolvedNowKey = ""
-
-    // Find the interval currently active (start <= now < nextStart)
-    for (let i = 0; i < data.length; i++) {
-      const ptMs = new Date(data[i].rawUtc).getTime()
-      const nextMs = i < data.length - 1 ? new Date(data[i + 1].rawUtc).getTime() : Infinity
-      if (ptMs <= nowMs && nowMs < nextMs) {
-        resolvedNowKey = data[i].rawUtc
-        break
-      }
-    }
-
-    // Fallback if now is outside or between gaps: snap to the nearest available data point
-    if (!resolvedNowKey && data.length > 0) {
-      let minDiff = Infinity
-      for (const pt of data) {
-        const diff = Math.abs(new Date(pt.rawUtc).getTime() - nowMs)
-        if (diff < minDiff) {
-          minDiff = diff
-          resolvedNowKey = pt.rawUtc
-        }
-      }
-    }
 
     const computedTelemetry: ForecastTelemetry = {
       isLoading,
@@ -346,17 +349,33 @@ export function UnifiedPriceTimeline({
       lowestOpportunityPrice: lowestPrice,
       lowestOpportunityTime: lowestUtc,
       lowestOpportunityWindow: lowestWindow,
-      avgCleanShare,
-      estWindShare,
-      estSolarShare,
-      maxCleanShare,
+      avgCleanShare: null,
+      estWindShare: null,
+      estSolarShare: null,
+      maxCleanShare: null,
       totalIntervals: data.length,
       hubLocation: activeHub,
     }
 
+    // The confidence strip: one cell for each forecast interval, centred on its x position.
+    const forecastTimes = data.filter((d) => d.isForecast).map((d) => d.t)
+    const step = intervalMs(forecastTimes)
+    const cells = data
+      .filter((d) => d.isForecast)
+      .map((d) => ({ x1: d.t - step * 0.46, x2: d.t + step * 0.46, band: confidenceBand(d.confidenceScore) }))
+
+    // The y-axis leaves room under the lowest price for the strip.
+    const shown = data.flatMap((d) => [d.actualPrice, d.forecastPrice]).filter((v): v is number => v != null)
+    const lo = shown.length ? Math.min(...shown) : 0
+    const hi = shown.length ? Math.max(...shown) : 1
+    const range = Math.max(hi - lo, 1)
+    const domain: [number, number] = [lo - range * (cells.length ? 0.22 : 0.08), hi + range * 0.08]
+
     return {
       chartData: data,
-      nowPointKey: resolvedNowKey,
+      forecastCells: cells,
+      xTicks: data.length ? timeTicks(data[0].t, data[data.length - 1].t) : [],
+      yDomain: domain,
       summaryStats: {
         avgLmp: avgLmp ?? 0,
         maxLmp: peakPrice ?? 0,
@@ -366,7 +385,7 @@ export function UnifiedPriceTimeline({
       },
       telemetry: computedTelemetry,
     }
-  }, [historyPoints, forecastPoints, activeHub, isLoading, nowMs])
+  }, [historyPoints, forecastPoints, activeHub, isLoading, nowMs, historyDays])
 
   /**
    * Run-level confidence over the forecast intervals only. Averaged across the intervals that carry
@@ -388,68 +407,30 @@ export function UnifiedPriceTimeline({
   }, [telemetry])
 
   const chartHeight = height ?? (variant === "compact" ? 220 : 380)
+  const hasForecast = forecastCells.length > 0
+  const lastRecordedUtc = historyPoints[historyPoints.length - 1]?.intervalStartUtc
 
   return (
-    <Card className={`overflow-hidden border border-border shadow-xs ${className}`}>
-      {/* Header Controls */}
-      <CardHeader className="p-4 sm:p-5 pb-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <CardTitle className="text-base sm:text-lg font-bold flex items-center gap-2 text-foreground">
-                <Sparkles className="h-4 w-4 text-emerald-500" />
-                <span>Continuous Price Timeline · {activeHub}</span>
-              </CardTitle>
-              <DataStatusBadge
-                size="sm"
-                status={isLoading ? "cached" : error ? "unavailable" : historyPoints.length > 0 || forecastPoints.length > 0 ? "live" : "unavailable"}
-                source={`ERCOT settlements and stored model predictions (${activeHub})`}
-                updatedAt={historyPoints[historyPoints.length - 1]?.intervalStartUtc ? `${historyPoints[historyPoints.length - 1].intervalStartUtc}Z` : null}
-              />
-            </div>
-            <CardDescription className="text-xs text-muted-foreground mt-0.5">
-              Recorded settlements (emerald) and model forecasts (violet). All times are shown in ERCOT market local time.
-            </CardDescription>
+    <Card className={`min-w-0 overflow-hidden ${className}`}>
+      <CardHeader className="space-y-0 p-4 pb-2 sm:p-5 sm:pb-2">
+        {/* The title block shrinks and truncates. The controls never wrap one by one: below sm they move under the title as one group. */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <CardTitle className="min-w-0 truncate text-sm font-semibold leading-5" title={`${activeHub} Price`}>
+              {activeHub} Price
+            </CardTitle>
           </div>
 
-          {/* Preset Buttons & Controls */}
-          <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
-            {/* Horizon Pills */}
-            <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => setHorizon("24h")}
-                className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
-                  horizon === "24h"
-                    ? "bg-background text-foreground shadow-xs font-semibold"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                24h + 24h
-              </button>
-              <button
-                type="button"
-                onClick={() => setHorizon("48h")}
-                className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
-                  horizon === "48h"
-                    ? "bg-background text-foreground shadow-xs font-semibold"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                48h + 48h
-              </button>
-              <button
-                type="button"
-                onClick={() => setHorizon("7d")}
-                className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
-                  horizon === "7d"
-                    ? "bg-background text-foreground shadow-xs font-semibold"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                7d + 72h
-              </button>
-            </div>
+          <div className="flex shrink-0 flex-nowrap items-center gap-2 self-start sm:self-auto">
+            {/* The status badge sits in the control group, left of the 24h/7d toggle */}
+            {!isLoading && (
+              <DataStatusBadge
+                size="sm"
+                status={error ? "unavailable" : historyPoints.length > 0 || forecastPoints.length > 0 ? "live" : "unavailable"}
+                source={`ERCOT settlements and stored model predictions (${activeHub})`}
+                updatedAt={lastRecordedUtc ? withZ(lastRecordedUtc) : null}
+              />
+            )}
 
             {/* Hub Selector (if not controlled externally) */}
             {!controlledHub && (
@@ -457,7 +438,7 @@ export function UnifiedPriceTimeline({
                 aria-label="Settlement Hub Location"
                 value={activeHub}
                 onChange={(e) => handleHubChange(e.target.value)}
-                className="h-8 rounded-md border border-input bg-background px-2.5 text-xs font-semibold text-foreground"
+                className="h-8 shrink-0 rounded-md border border-input bg-background px-2.5 text-xs font-semibold text-foreground"
               >
                 <option value="LZ_NORTH">LZ_NORTH</option>
                 <option value="LZ_HOUSTON">LZ_HOUSTON</option>
@@ -466,212 +447,230 @@ export function UnifiedPriceTimeline({
               </select>
             )}
 
-            {/* Refresh Button */}
-            <Button
+            <ToggleGroup
+              type="single"
               variant="outline"
               size="sm"
-              onClick={() => setRefreshTrigger((k) => k + 1)}
-              disabled={isLoading}
-              className="h-8 w-8 p-0"
-              title="Refresh timeline data"
+              value={horizon}
+              onValueChange={(value) => { if (value) setHorizon(value as HorizonPreset) }}
+              aria-label="Past window"
+              className="shrink-0 gap-0"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
-            </Button>
-          </div>
-        </div>
+              <ToggleGroupItem value="24h" aria-label="Past 24 hours" className="h-8 rounded-r-none px-2.5 text-xs font-semibold">24h</ToggleGroupItem>
+              <ToggleGroupItem value="7d" aria-label="Past 7 days" className="h-8 rounded-l-none border-l-0 px-2.5 text-xs font-semibold">7d</ToggleGroupItem>
+            </ToggleGroup>
 
-        {/* Legend Ribbon */}
-        <div className="flex items-center gap-4 pt-2 text-[11px] font-mono flex-wrap border-t border-border/40 mt-3">
-          <div className="flex items-center gap-1.5">
-            <span className="h-2 w-5 rounded bg-emerald-500 inline-block" />
-            <span className="text-foreground font-semibold">Historical Actual ($/MWh)</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="h-0.5 w-5 border-t-2 border-dashed border-violet-500 inline-block" />
-            <span className="text-violet-600 dark:text-violet-400 font-semibold">Model forecast</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
-            <span className="text-cyan-600 dark:text-cyan-400 font-semibold">Now ({MARKET_ZONE_LABEL})</span>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0"
+                    aria-label="Refresh price data"
+                    onClick={() => setRefreshTrigger((k) => k + 1)}
+                    disabled={isLoading}
+                  >
+                    <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} aria-hidden="true" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" collisionPadding={8}>Refresh</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </div>
         </div>
       </CardHeader>
 
       {/* Main Chart Canvas */}
-      <CardContent className="p-2 sm:p-4 pt-0">
+      <CardContent className="min-w-0 p-2 pt-0 sm:p-4 sm:pt-0">
         {isLoading && chartData.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 text-muted-foreground text-xs gap-2">
-            <RefreshCw className="h-5 w-5 animate-spin text-emerald-500" />
-            <span>Loading continuous price curve…</span>
-          </div>
+          <Skeleton className="w-full" style={{ height: chartHeight }} role="status" aria-label="Loading price chart" />
         ) : error && chartData.length === 0 ? (
-          <div className="py-16 text-center text-xs text-destructive">
-            <p>Could not load price timeline: {error}</p>
+          <div className="py-16 text-center text-sm leading-5 text-destructive-foreground">
+            <p>Could not load the price timeline. Use refresh to try again.</p>
           </div>
         ) : chartData.length === 0 ? (
-          <div className="py-16 text-center text-xs text-muted-foreground">
-            <p>No price records found for {activeHub} within selected horizon.</p>
+          <div className="py-16 text-center text-sm leading-5 text-muted-foreground">
+            <p>No price records found for {activeHub} in this window.</p>
           </div>
         ) : (
-          <div style={{ width: "100%", height: chartHeight }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart
-                data={chartData}
-                margin={{ top: 12, right: 18, left: -4, bottom: 4 }}
-              >
-                <defs>
-                  {/* Emerald gradient for historical settlement prices */}
-                  <linearGradient id="emeraldTimelineGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.25} />
-                    <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
-                  </linearGradient>
+          <>
+            <div className="min-w-0" style={{ width: "100%", height: chartHeight }}>
+              <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                <ComposedChart data={chartData} margin={{ top: 12, right: 24, left: -4, bottom: 4 }}>
+                  <defs>
+                    <linearGradient id={`${chartId}-area`} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" style={{ stopColor: "var(--primary)", stopOpacity: 0.25 }} />
+                      <stop offset="95%" style={{ stopColor: "var(--primary)", stopOpacity: 0 }} />
+                    </linearGradient>
+                    <ConfidencePatterns id={chartId} />
+                  </defs>
 
-                </defs>
+                  <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
 
-                <CartesianGrid strokeDasharray="3 3" opacity={0.12} vertical={false} />
+                  <XAxis
+                    dataKey="t"
+                    type="number"
+                    scale="time"
+                    domain={["dataMin", "dataMax"]}
+                    ticks={xTicks}
+                    tickLine={false}
+                    axisLine={false}
+                    tickMargin={8}
+                    minTickGap={24}
+                    tickFormatter={(t: number) => formatMarketChartTick(new Date(t).toISOString(), true)}
+                    tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
+                  />
 
-                <XAxis
-                  dataKey="rawUtc"
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={8}
-                  minTickGap={40}
-                  tickFormatter={(val: string) => formatMarketChartTick(val, true)}
-                  style={{ fontSize: "11px", fill: "currentColor", opacity: 0.7 }}
-                />
+                  <YAxis
+                    domain={yDomain}
+                    allowDataOverflow
+                    tickLine={false}
+                    axisLine={false}
+                    tickMargin={6}
+                    tickCount={5}
+                    tickFormatter={(val: number) => `$${Math.round(val)}`}
+                    tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
+                  />
+                  {/* Hidden axis: it places the confidence strip in a band at the bottom of the plot. */}
+                  <YAxis yAxisId="strip" hide domain={[0, 1]} />
 
-                <YAxis
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={6}
-                  tickFormatter={(val) => `$${val}`}
-                  style={{ fontSize: "11px", fill: "currentColor", opacity: 0.7 }}
-                />
+                  <RechartsTooltip
+                    cursor={{ stroke: "var(--muted-foreground)", strokeWidth: 1, strokeDasharray: "3 3" }}
+                    isAnimationActive={false}
+                    content={({ active, payload }) => {
+                      if (!active || !payload || !payload.length) return null
+                      const pt = payload.find((item) => item?.payload != null)?.payload as TimelineDataPoint | undefined
+                      if (!pt) return null
+                      const isFc = pt.isForecast && !pt.isTransition
+                      const price = isFc ? pt.forecastPrice : pt.actualPrice
 
-                <RechartsTooltip
-                  cursor={{ stroke: "rgba(56, 189, 248, 0.45)", strokeWidth: 1.5, strokeDasharray: "3 3" }}
-                  isAnimationActive={false}
-                  content={({ active, payload }) => {
-                    if (!active || !payload || !payload.length) return null
-                    const pt = payload.find((item) => item?.payload != null)?.payload as TimelineDataPoint | undefined
-                    if (!pt) return null
-                    const isFc = pt.isForecast && !pt.isTransition
-                    const price = isFc ? pt.forecastPrice : pt.actualPrice
-
-                    return (
-                      <div className="rounded-xl border border-border bg-card/95 backdrop-blur-md p-3 shadow-xl text-xs space-y-1.5 min-w-[200px]">
-                        <div className="flex items-center justify-between border-b border-border/50 pb-1.5">
-                          <span className="font-semibold text-foreground">
-                            {pt.timeLabel}
-                          </span>
-                          <span
-                            className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold ${
-                              isFc
-                                ? "bg-violet-500/15 text-violet-600 dark:text-violet-400"
-                                : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                            }`}
-                          >
-                            {isFc ? "ML Forecast" : "Settlement Actual"}
-                          </span>
-                        </div>
-
-                        <div className="flex items-baseline justify-between pt-0.5">
-                          <span className="text-muted-foreground">LMP Price:</span>
-                          <span className="font-mono font-bold text-sm text-foreground">
-                            ${price?.toFixed(2)} <span className="text-[10px] font-normal text-muted-foreground">/ MWh</span>
-                          </span>
-                        </div>
-
-                        {isFc && (
-                          <div className="flex items-baseline justify-between pt-0.5">
-                            <span className="text-muted-foreground">Confidence:</span>
-                            {pt.confidenceScore == null ? (
-                              <span className="font-mono text-[11px] text-muted-foreground">Not available</span>
-                            ) : (
-                              <span className={cn("font-mono font-semibold text-[11px]", confidenceTone(pt.confidenceScore))}>
-                                {Math.round(pt.confidenceScore * 100)}% · {confidenceBand(pt.confidenceScore)}
-                              </span>
-                            )}
+                      return (
+                        <div className="w-max max-w-[calc(100vw-2rem)] space-y-1 rounded-lg border border-border bg-popover p-3 text-xs leading-4 text-popover-foreground shadow-lg">
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="font-semibold">{pt.timeLabel}</span>
+                            <span className="text-muted-foreground">{isFc ? "Forecast" : "Recorded"}</span>
                           </div>
-                        )}
-
-                        <div className="text-[10px] text-muted-foreground/75 font-mono pt-0.5">
-                          {pt.fullTimeLocal}
+                          <div className="flex items-baseline justify-between gap-4">
+                            <span className="text-muted-foreground">Price</span>
+                            <span className="font-semibold tabular-nums">
+                              ${price?.toFixed(2)} <span className="font-normal text-muted-foreground">/MWh</span>
+                            </span>
+                          </div>
+                          {isFc && (
+                            <div className="flex items-baseline justify-between gap-4">
+                              <span className="text-muted-foreground">Confidence</span>
+                              <span className="font-semibold">{confidenceText(pt.confidenceScore)}</span>
+                            </div>
+                          )}
+                          <div className="text-muted-foreground">{pt.fullTimeLocal}</div>
                         </div>
-                      </div>
-                    )
-                  }}
-                />
-
-                {/* Transition Divider Reference Line ("Now") */}
-                {nowPointKey && (
-                  <ReferenceLine
-                    x={nowPointKey}
-                    stroke="#38bdf8"
-                    strokeDasharray="3 3"
-                    strokeWidth={1.8}
-                    label={{
-                      value: `● Now (${MARKET_ZONE_LABEL})`,
-                      position: "insideTopRight",
-                      fill: "#38bdf8",
-                      fontSize: 10,
-                      fontWeight: 600,
+                      )
                     }}
                   />
-                )}
 
-                {/* Historical Actual Settlement Price Area Fill */}
-                <Area
-                  type="monotone"
-                  dataKey="actualPrice"
-                  stroke="#10b981"
-                  strokeWidth={2.5}
-                  fill="url(#emeraldTimelineGrad)"
-                  connectNulls={false}
-                  activeDot={{ r: 5, stroke: "#10b981", strokeWidth: 2, fill: "#ffffff" }}
-                  name="Settlement Price"
-                />
+                  {/* Confidence strip: one cell per forecast interval, same x positions as the forecast line */}
+                  {forecastCells.map((cell) => (
+                    <ReferenceArea
+                      key={cell.x1}
+                      yAxisId="strip"
+                      x1={cell.x1}
+                      x2={cell.x2}
+                      y1={0}
+                      y2={0.07}
+                      ifOverflow="hidden"
+                      fill={`url(#${chartId}-${BANDS.find((b) => b.band === cell.band)?.pattern ?? "none"})`}
+                      fillOpacity={1}
+                      stroke="none"
+                    />
+                  ))}
 
-                {/* Upcoming ML Price Forecast Line */}
-                <Line
-                  type="monotone"
-                  dataKey="forecastPrice"
-                  stroke="#8b5cf6"
-                  strokeWidth={2.5}
-                  strokeDasharray="5 5"
-                  dot={false}
-                  activeDot={{ r: 5, stroke: "#8b5cf6", strokeWidth: 2, fill: "#ffffff" }}
-                  connectNulls={false}
-                  name="Forecast Price"
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
+                  {/* The current time: a dotted line with no label */}
+                  <ReferenceLine x={nowMs} stroke="var(--foreground)" strokeDasharray="3 3" strokeWidth={1.5} />
+
+                  {/* Recorded: solid line with a soft fill */}
+                  <Area
+                    type="monotone"
+                    dataKey="actualPrice"
+                    stroke="var(--primary)"
+                    strokeWidth={2}
+                    fill={`url(#${chartId}-area)`}
+                    connectNulls={false}
+                    activeDot={{ r: 4, stroke: "var(--primary)", strokeWidth: 2, fill: "var(--card)" }}
+                    name="Recorded price"
+                  />
+
+                  {/* Forecast: dashed line in the same colour */}
+                  <Line
+                    type="monotone"
+                    dataKey="forecastPrice"
+                    stroke="var(--primary)"
+                    strokeWidth={2}
+                    strokeDasharray="6 4"
+                    dot={false}
+                    activeDot={{ r: 4, stroke: "var(--primary)", strokeWidth: 2, fill: "var(--card)" }}
+                    connectNulls={false}
+                    name="Forecast price"
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Two legends: the lines on the left, the confidence strip in the right corner. Each wraps by whole item. */}
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-x-6 gap-y-1 px-2 text-xs leading-4 text-muted-foreground">
+              <ul className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <li className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                  <span className="h-0.5 w-5 shrink-0 bg-primary" aria-hidden="true" />Recorded
+                </li>
+                <li className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                  <svg width="20" height="2" aria-hidden="true" className="shrink-0"><line x1="0" y1="1" x2="20" y2="1" stroke="var(--primary)" strokeWidth="2" strokeDasharray="5 3" /></svg>Forecast
+                </li>
+              </ul>
+              {hasForecast && (
+                <ul className="ml-auto flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
+                  <li className="whitespace-nowrap">Confidence</li>
+                  {BANDS.map(({ band, label, pattern }) => (
+                    <li key={band} className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                      <ConfidenceSwatch pattern={pattern} />{label}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </>
         )}
       </CardContent>
 
       {/* Full Variant: Footer Metric Strip */}
       {variant === "full" && (
-        <CardFooter className="bg-muted/15 border-t border-border/50 p-3 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-4 flex-wrap font-mono">
-            <div>
-              <span className="text-muted-foreground">Rolling Mean: </span>
-              <strong className="text-foreground">${summaryStats.avgLmp.toFixed(2)}/MWh</strong>
+        <CardFooter className="flex flex-col items-start gap-x-6 gap-y-2 border-t border-border p-3 text-xs leading-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:px-5">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
+            <div className="whitespace-nowrap">
+              <span className="text-muted-foreground">Rolling Mean </span>
+              <span className="font-semibold tabular-nums">${summaryStats.avgLmp.toFixed(2)}/MWh</span>
             </div>
             <div>
-              <span className="text-muted-foreground">Peak Spike: </span>
-              <strong className="text-amber-500">${summaryStats.maxLmp.toFixed(2)}</strong>
-              <span className="text-[10px] text-muted-foreground ml-1">({summaryStats.maxTime})</span>
+              <span className="text-muted-foreground">Peak Spike </span>
+              <span className="font-semibold tabular-nums">${summaryStats.maxLmp.toFixed(2)}</span>
+              <span className="ml-1 text-muted-foreground">({summaryStats.maxTime})</span>
             </div>
             <div>
-              <span className="text-muted-foreground">Lowest Valley: </span>
-              <strong className="text-emerald-500">${summaryStats.minLmp.toFixed(2)}</strong>
-              <span className="text-[10px] text-muted-foreground ml-1">({summaryStats.minTime})</span>
+              <span className="text-muted-foreground">Lowest Valley </span>
+              <span className="font-semibold tabular-nums">${summaryStats.minLmp.toFixed(2)}</span>
+              <span className="ml-1 text-muted-foreground">({summaryStats.minTime})</span>
             </div>
           </div>
 
-          <div className="text-[11px] text-muted-foreground">
-            Displaying {chartData.length} intervals in <strong>{MARKET_TIMEZONE}</strong>{forecastConfidence.mean != null && <> · Model confidence <strong className={confidenceTone(forecastConfidence.mean)}>{formatConfidence(forecastConfidence.mean)}</strong>{forecastConfidence.missing > 0 && <> ({forecastConfidence.missing} interval(s) unscored)</>}</>}{forecastConfidence.mean == null && forecastConfidence.missing > 0 && <> · Model confidence <strong className="text-muted-foreground">not available</strong></>}
+          <div className="min-w-0 text-muted-foreground">
+            {chartData.length} intervals in <span className="font-semibold text-foreground">{MARKET_TIMEZONE}</span>.{" "}
+            {forecastConfidence.mean != null ? (
+              <>
+                Model confidence <span className="font-semibold text-foreground">{confidenceText(forecastConfidence.mean)}</span>
+                {forecastConfidence.missing > 0 && <> with {forecastConfidence.missing} unscored</>}.
+              </>
+            ) : forecastConfidence.missing > 0 ? (
+              <>Model confidence <span className="font-semibold text-foreground">not available</span>.</>
+            ) : null}
           </div>
         </CardFooter>
       )}

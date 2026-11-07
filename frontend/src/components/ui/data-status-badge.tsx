@@ -1,10 +1,13 @@
 "use client"
 
 import * as React from "react"
-import { Radio, Database, AlertCircle } from "lucide-react"
+import { CheckCircle2, Clock, AlertCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Badge } from "@/components/ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { formatMarketDateTime, formatRelativeAgo } from "@/lib/date-utils"
 
+/** `cached` means the data is old (delayed). Do not pass it while data loads: show a skeleton or nothing. */
 export type DataStatusType = "live" | "cached" | "unavailable"
 
 export interface DataStatusBadgeProps {
@@ -16,40 +19,35 @@ export interface DataStatusBadgeProps {
   showTooltip?: boolean
 }
 
+// Each state has an icon and a text label, so colour never carries the meaning alone.
 const statusConfig: Record<
   DataStatusType,
   {
     label: string
-    dotClass: string
     badgeClass: string
     icon: React.ComponentType<{ className?: string }>
     defaultSource: string
   }
 > = {
   live: {
-    label: "Live",
-    dotClass: "bg-emerald-500 animate-pulse",
-    badgeClass: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
-    icon: Radio,
+    label: "Up to date",
+    badgeClass: "border-success-foreground/30 bg-success/10 text-success-foreground",
+    icon: CheckCircle2,
     defaultSource: "Real-time ERCOT telemetry endpoint",
   },
   cached: {
-    label: "Cached",
-    dotClass: "bg-sky-500",
-    badgeClass: "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/20",
-    icon: Database,
+    label: "Delayed",
+    badgeClass: "border-warning-foreground/30 bg-warning/10 text-warning-foreground",
+    icon: Clock,
     defaultSource: "PostgreSQL query cache",
   },
   unavailable: {
     label: "Unavailable",
-    dotClass: "bg-rose-500",
-    badgeClass: "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20",
+    badgeClass: "border-destructive-foreground/30 bg-destructive/10 text-destructive-foreground",
     icon: AlertCircle,
     defaultSource: "Telemetry feed unreachable or offline",
   },
 }
-
-import { formatMarketDateTime, formatRelativeAgo } from "@/lib/date-utils"
 
 export function DataStatusBadge({
   status,
@@ -70,24 +68,21 @@ export function DataStatusBadge({
   const effectiveSource = source || config.defaultSource
   const Icon = config.icon
 
+  // A badge never wraps: whitespace-nowrap and shrink-0. Its neighbour truncates instead.
   const badgeNode = (
-    <span
+    <Badge
+      variant="outline"
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border font-mono font-medium tracking-tight select-none transition-colors",
-        size === "sm" ? "px-2 py-0.5 text-[10px]" : "px-2.5 py-1 text-xs",
+        "shrink-0 gap-1.5 whitespace-nowrap select-none",
+        size === "sm" ? "px-2 py-0.5" : "px-2.5 py-1",
         config.badgeClass,
         className
       )}
     >
-      <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", config.dotClass)} />
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <span>{config.label}</span>
-      {relativeText && (
-        <>
-          <span className="opacity-40">·</span>
-          <span className="font-sans text-[11px] font-normal opacity-85">{relativeText}</span>
-        </>
-      )}
-    </span>
+      {relativeText && <span className="ml-1 font-normal">{relativeText}</span>}
+    </Badge>
   )
 
   if (!showTooltip) {
@@ -108,18 +103,17 @@ export function DataStatusBadge({
         <TooltipTrigger asChild>{badgeNode}</TooltipTrigger>
         <TooltipContent
           side="top"
-          className="max-w-xs space-y-1 p-2.5 text-xs bg-popover/95 backdrop-blur-sm border-border shadow-lg"
+          collisionPadding={8}
+          className="max-w-xs space-y-1 p-2.5 text-xs leading-4 bg-popover border-border shadow-lg"
         >
           <div className="flex items-center gap-1.5 font-semibold text-foreground">
-            <Icon className="h-3.5 w-3.5 text-muted-foreground" />
-            <span>Data Provenance: {config.label}</span>
+            <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span>{config.label}</span>
           </div>
-          <p className="text-muted-foreground text-[11px] leading-snug">
-            {effectiveSource}
-          </p>
-          <div className="text-[10px] text-muted-foreground/90 font-mono pt-1 border-t border-border/50 space-y-0.5">
-            <div>Local: <span className="text-foreground font-semibold">{marketDisplay}</span></div>
-            <div className="text-[9px] opacity-70">UTC ISO: {rawUtcIso}</div>
+          <p className="text-muted-foreground">{effectiveSource}</p>
+          <div className="space-y-0.5 border-t border-border pt-1 text-muted-foreground">
+            <div>Local: <span className="font-semibold text-foreground">{marketDisplay}</span></div>
+            <div className="break-all">UTC: {rawUtcIso}</div>
           </div>
         </TooltipContent>
       </Tooltip>

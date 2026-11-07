@@ -20,11 +20,14 @@ public class SchedulePlanQueryService {
     }
 
     @Transactional(readOnly = true)
-    public Page<PlanSummary> list(String email, int page, int size) {
+    public Page<PlanSummary> list(String email, int page, int size, ReviewState state) {
         if (page < 0 || size < 1 || size > 100)
             throw new IllegalArgumentException("page must be nonnegative and size must be between 1 and 100");
         var owner = AuthenticatedOperators.resolve(users, email);
-        return plans.findByOwnerIdOrderByCreatedAtDescRunIdDesc(owner.getId(), PageRequest.of(page, size))
+        var paging = PageRequest.of(page, size);
+        return (state == null
+                ? plans.findByOwnerIdOrderByCreatedAtDescRunIdDesc(owner.getId(), paging)
+                : plans.findByOwnerIdAndReviewStateOrderByCreatedAtDescRunIdDesc(owner.getId(), state, paging))
             .map(plan -> new PlanSummary(plan.getRunId(), plan.getCreatedAt(), plan.getReviewState()));
     }
 

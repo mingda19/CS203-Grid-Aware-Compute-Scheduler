@@ -119,7 +119,7 @@ export function marketWallTimeToUtc(
 /**
  * Formats date and time in market time: "04 Nov 2026, 09:30 CST"
  */
-export function formatMarketDateTime(date: Date | string | number): string {
+export function formatMarketDateTime(date: Date | string | number, includeZone = true): string {
   try {
     const d = parseIsoDate(date)
     if (isNaN(d.getTime())) return "—"
@@ -132,7 +132,7 @@ export function formatMarketDateTime(date: Date | string | number): string {
       minute: "2-digit",
       hour12: false,
     })
-    return `${formatter.format(d)} ${marketZoneAbbrev(d)}`
+    return includeZone ? `${formatter.format(d)} ${marketZoneAbbrev(d)}` : formatter.format(d)
   } catch {
     return "—"
   }

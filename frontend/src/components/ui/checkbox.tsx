@@ -40,7 +40,7 @@ const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
           }}
           className={cn(
             "h-4 w-4 shrink-0 rounded border border-input shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 peer-focus-visible:ring-2 peer-focus-visible:ring-emerald-500 peer-focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer flex items-center justify-center bg-background",
-            checked && "bg-emerald-600 border-emerald-600 text-white dark:bg-emerald-600 dark:border-emerald-600",
+            checked && "bg-primary border-primary text-primary-foreground",
             !checked && "hover:border-emerald-500/50",
             className
           )}

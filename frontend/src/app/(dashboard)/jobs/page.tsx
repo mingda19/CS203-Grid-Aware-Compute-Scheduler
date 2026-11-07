@@ -518,7 +518,7 @@ export default function JobsPage() {
             <RefreshCw className="mr-2 h-4 w-4" />
             Refresh
           </Button>
-          <Button onClick={openCreate} className="bg-emerald-600 text-white hover:bg-emerald-700">
+          <Button onClick={openCreate}>
             <Plus className="mr-2 h-4 w-4" />
             New job
           </Button>
@@ -696,7 +696,7 @@ export default function JobsPage() {
                   type="submit"
                   size="sm"
                   disabled={facilityLoading || facilitySaving}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5 font-medium cursor-pointer"
+                  className="gap-1.5 font-medium cursor-pointer"
                 >
                   <Check className="h-3.5 w-3.5" />
                   {facilityLoading ? "Loading…" : facilitySaving ? "Saving to DB…" : "Save Facility Envelope"}
@@ -749,7 +749,7 @@ export default function JobsPage() {
               <p className="mt-1 text-sm text-muted-foreground">
                 Create a compute job with CPU/GPU requirements and deadlines to start optimizing.
               </p>
-              <Button onClick={openCreate} className="mt-4 bg-emerald-600 text-white hover:bg-emerald-700">
+              <Button onClick={openCreate} className="mt-4">
                 <Plus className="mr-2 h-4 w-4" />
                 Create your first job
               </Button>
@@ -1066,7 +1066,7 @@ export default function JobsPage() {
           <DialogFooter className="flex flex-col sm:flex-row gap-2 justify-between">
             {optimizationPlan && (
               <div className="space-y-2">
-                <Button type="button" asChild className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700">
+                <Button type="button" asChild className="gap-1.5">
                   <Link href={`/approvals?runId=${encodeURIComponent(optimizationPlan.runId)}`}>
                     Review and approve <ArrowRight className="h-3.5 w-3.5" />
                   </Link>
@@ -1261,7 +1261,7 @@ export default function JobsPage() {
               <Button type="button" variant="outline" onClick={() => setFormOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={saving || parseReviewPending} className="bg-emerald-600 text-white hover:bg-emerald-700">
+              <Button type="submit" disabled={saving || parseReviewPending}>
                 {saving ? "Saving…" : editing ? "Save changes" : "Create job"}
               </Button>
             </DialogFooter>
