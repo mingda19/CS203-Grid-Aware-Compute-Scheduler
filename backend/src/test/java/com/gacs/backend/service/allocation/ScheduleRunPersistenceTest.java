@@ -69,54 +69,21 @@ class ScheduleRunPersistenceTest {
         assertThat(explanations.findByScheduleRunId(persisted.run().getId())).isEmpty();
     }
 
-    @Test
-    @DisplayName("finalizeExplanation(), called as a separate step, re-fetches fresh entities and overwrites with LLM text")
-    void finalizeExplanationAsASeparateStepAppliesLlmTextToFreshEntities() {
-        OptimizerJob job = job(41L);
-        JobOutcome outcome = new JobOutcome(job, singleSlotPlan(job, T0), PerJobStatus.OPTIMISED, null);
-        OptimizeResponseDto response = response(List.of(outcome), List.of(dtoItem(outcome)));
-        ScheduleRunPersistence.Persisted persisted = persistence.persist(
-                new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER);
-
-        LlmExplanationResponse llmResponse = new LlmExplanationResponse("LLM headline", "LLM narrative",
-                List.of(new LlmExplanationResponse.JobExplanation(41L, "LLM: separate-step explanation")),
-                List.of(new LlmExplanationResponse.ConstraintExplanation(41L, "DEADLINE", List.of(), "LLM: deadline"),
-                        new LlmExplanationResponse.ConstraintExplanation(41L, "FLEXIBILITY_WINDOW", List.of(),
-                                "LLM: flex")));
-        ExplanationOutcome explanation = ExplanationOutcome.success(llmResponse, "model-x", "{raw}");
-
-        // persisted.items()/.impacts() are deliberately never passed in here - only the run id,
-        // exactly as ScheduleRunRecorder calls it, to prove finalizeExplanation looks the rows up
-        // itself rather than needing the caller to hand back live references.
-        persistence.finalizeExplanation(persisted.run().getId(), explanation, response, ignored -> { });
-
-        var savedItem = items.findByScheduleRunIdOrderByIdAsc(persisted.run().getId()).get(0);
-        assertThat(savedItem.getWhyThisPlacement()).isEqualTo("LLM: separate-step explanation");
-        var savedImpacts = constraintImpacts.findByScheduleItemIdOrderByIdAsc(savedItem.getId());
-        assertThat(savedImpacts).extracting(ConstraintImpact::getNarrativeFragment)
-                .containsExactlyInAnyOrder("LLM: deadline", "LLM: flex");
-        var savedExplanation = explanations.findByScheduleRunId(persisted.run().getId()).orElseThrow();
-        assertThat(savedExplanation.getSource()).isEqualTo("LLM");
-        assertThat(savedExplanation.getModelName()).isEqualTo("model-x");
-    }
 
     @Test
-    @DisplayName("finalizeExplanation() on fallback leaves persist()'s deterministic text untouched")
-    void finalizeExplanationOnFallbackLeavesDeterministicTextUntouched() {
+    @DisplayName("finalizeExplanation() stores the run's deterministic summary and leaves item text alone")
+    void finalizeExplanationStoresDeterministicSummary() {
         OptimizerJob job = job(42L);
         JobOutcome outcome = new JobOutcome(job, singleSlotPlan(job, T0), PerJobStatus.OPTIMISED, null);
         OptimizeResponseDto response = response(List.of(outcome), List.of(dtoItem(outcome)));
         ScheduleRunPersistence.Persisted persisted = persistence.persist(
                 new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER);
 
-        persistence.finalizeExplanation(persisted.run().getId(),
-                ExplanationOutcome.fallback(FallbackReason.TIMEOUT), response, ignored -> { });
+        persistence.finalizeExplanation(persisted.run().getId(), response, ignored -> { });
 
         var savedItem = items.findByScheduleRunIdOrderByIdAsc(persisted.run().getId()).get(0);
         assertThat(savedItem.getWhyThisPlacement()).isEqualTo("Placed on its cheapest feasible plan.");
         var savedExplanation = explanations.findByScheduleRunId(persisted.run().getId()).orElseThrow();
-        assertThat(savedExplanation.getSource()).isEqualTo("DETERMINISTIC_FALLBACK");
-        assertThat(savedExplanation.getFallbackReason()).isEqualTo("TIMEOUT");
         assertThat(savedExplanation.getNarrative()).isEqualTo(response.plainEnglishExplanation());
     }
 
