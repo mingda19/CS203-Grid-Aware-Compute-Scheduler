@@ -181,7 +181,8 @@ class ScheduleOptimizationServiceTest {
         // Totals cover only the exempt job: 256 CPU-hours = 12.8 kWh at $10/MWh.
         assertThat(response.baselineCostUsd()).isEqualTo(0.128);
         assertThat(response.optimizedCostUsd()).isEqualTo(0.128);
-        assertThat(response.plainEnglishExplanation()).contains("1 job(s) could not be placed");
+        assertThat(response.plainEnglishExplanation())
+                .contains("- 1 job could not be scheduled: other jobs hold the capacity they need");
     }
 
     @Test
@@ -196,7 +197,8 @@ class ScheduleOptimizationServiceTest {
         assertThat(response.optimizedCostUsd()).isEqualTo(0.55);
         assertThat(response.projectedSavingsUsd()).isEqualTo(-0.15);
         assertThat(response.projectedSavingsPercent()).isEqualTo(-37.5);
-        assertThat(response.plainEnglishExplanation()).contains("more than the $0.4000 baseline");
+        assertThat(response.plainEnglishExplanation())
+                .contains("- Projected energy cost is $0.5500 against $0.4000 at the original times, $0.1500 more");
     }
 
     @Test
@@ -224,7 +226,7 @@ class ScheduleOptimizationServiceTest {
                 List.of(job(1, 20.0, 0.0, 0, 2, 5, false)), null, "LZ_NORTH", null, null, null), OWNER, (ignored, snapshot) -> { });
 
         assertThat(response.usedSeededFallbackPrices()).isTrue();
-        assertThat(response.plainEnglishExplanation()).contains("seeded fallback");
+        assertThat(response.plainEnglishExplanation()).contains("history-based fallback price curve");
     }
 
     @Test

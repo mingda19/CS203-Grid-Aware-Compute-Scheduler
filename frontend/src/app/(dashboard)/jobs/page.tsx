@@ -39,6 +39,7 @@ import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, forecastEndMs, 
 import { elapsedJobLabel, elapsedJobsConfirmation, elapsedStartJobs } from "@/lib/elapsed-jobs"
 import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
+import { ExplanationSummary } from "@/components/ui/explanation-summary"
 
 type FormState = {
   name: string
@@ -985,14 +986,7 @@ export default function JobsPage() {
                   <Clock className="h-3.5 w-3.5 text-teal-500" />
                   Solver Rationale & Summary
                 </span>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  {optimizationPlan.plainEnglishExplanation}
-                </p>
-                {optimizationPlan.usedSeededFallbackPrices && (
-                  <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-2">
-                    Note: Stored forecast prices were unavailable for parts of the horizon; historical fallback curve was utilized.
-                  </p>
-                )}
+                <ExplanationSummary text={optimizationPlan.plainEnglishExplanation} />
               </div>
 
               {/* Schedule Items Table */}
