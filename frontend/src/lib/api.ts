@@ -46,8 +46,8 @@ export interface PriceForecastPoint {
   modelVersion: string
   generatedAt: string
   /**
-   * How much to trust this interval's prediction, 0-1, normalised from the model's stored forecast
-   * error ratio. Omitted by the API while unavailable (no RMSE reference yet for the model version),
+   * How much to trust this interval's prediction, 0-1 (`priceApi.getForecast` converts the backend's
+   * 0-100 percentage), derived from the model's stored forecast error. Omitted by the API while unavailable (no RMSE reference yet for the model version),
    * so null means "not known", never "no confidence". Contract FR-10.
    */
   confidenceScore: number | null
@@ -159,6 +159,24 @@ export interface FacilityConfig {
   maxGpuHours: number
   location: string
   updatedAt?: string
+}
+
+/** Scheduled use of one resource in the current hour, against the facility limit per hourly slot. */
+export interface ResourceUtilization {
+  /** Null when no live approved plan exists. */
+  used: number | null
+  limit: number
+  /** Not clamped, so it can exceed 100. Null when `used` is null or the limit is 0. */
+  percent: number | null
+}
+
+/** Scheduled (not measured) use, summed over all live approved plans. */
+export interface FacilityUtilization {
+  state: "LIVE" | "NO_APPROVED_PLAN"
+  runIds: string[]
+  hourStartUtc: string
+  cpu: ResourceUtilization
+  gpu: ResourceUtilization
 }
 
 export interface OptimizeJobInput {
@@ -277,6 +295,8 @@ export interface CreateWorkloadSchedule {
 
 export interface DatasetFreshness {
   dataset: string
+  /** Readable name, for example "Daily ERCOT price". `dataset` is the machine name. */
+  label: string
   latestRecordTimestamp: string | null
   status: "HEALTHY" | "STALE" | "MISSING" | "DATABASE_UNAVAILABLE"
   ageMinutes: number | null
@@ -560,12 +580,24 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
 }
 
 export const priceApi = {
-  getForecast(params: { location: string; hours?: number }): Promise<ApiResponse<PriceForecast>> {
+  async getForecast(params: { location: string; hours?: number }): Promise<ApiResponse<PriceForecast>> {
     const query = new URLSearchParams({
       location: params.location,
       hours: String(params.hours ?? 48),
     })
-    return fetchJson<ApiResponse<PriceForecast>>(`/api/prices/forecast?${query.toString()}`, { cache: "no-store" })
+    const response = await fetchJson<ApiResponse<PriceForecast>>(`/api/prices/forecast?${query.toString()}`, { cache: "no-store" })
+    // The backend forwards predicted_price.confidence_score as stored: a percentage from 0 to 100.
+    // The rest of the UI uses 0-1 (lib/forecast-confidence.ts), so convert once, here.
+    if (response.data?.points) {
+      response.data = {
+        ...response.data,
+        points: response.data.points.map((point) => ({
+          ...point,
+          confidenceScore: point.confidenceScore == null ? null : point.confidenceScore / 100,
+        })),
+      }
+    }
+    return response
   },
 
   getHistory(params: { location: string; startDate: string; endDate: string; limit?: number; offset?: number }): Promise<ApiResponse<PriceHistory>> {
@@ -671,8 +703,9 @@ export const scheduleReviewApi = {
   apply(runId: string): Promise<ApiResponse<WorkloadSchedule[]>> {
     return fetchJson(`/api/schedules/${encodeURIComponent(runId)}/apply`, { method: "POST" })
   },
-  list(page = 0): Promise<ApiResponse<Page<SchedulePlanSummary>>> {
-    return fetchJson(`/api/schedules?page=${page}&size=20`, { cache: "no-store" })
+  list(page = 0, state?: PlanReviewState): Promise<ApiResponse<Page<SchedulePlanSummary>>> {
+    const filter = state ? `&state=${state}` : ""
+    return fetchJson(`/api/schedules?page=${page}&size=20${filter}`, { cache: "no-store" })
   },
   detail(runId: string): Promise<ApiResponse<SchedulePlanDetail>> {
     return fetchJson(`/api/schedules/${encodeURIComponent(runId)}`, { cache: "no-store" })
@@ -701,6 +734,10 @@ export const optimizerApi = {
 export const facilityApi = {
   get(): Promise<ApiResponse<FacilityConfig>> {
     return fetchJson<ApiResponse<FacilityConfig>>("/api/facilities/me", { cache: "no-store" })
+  },
+  /** Runs the server's plan validity check, so it can change stored plan states. */
+  utilization(): Promise<ApiResponse<FacilityUtilization>> {
+    return fetchJson<ApiResponse<FacilityUtilization>>("/api/facilities/me/utilization", { cache: "no-store" })
   },
   update(payload: FacilityConfig): Promise<ApiResponse<FacilityConfig>> {
     return fetchJson<ApiResponse<FacilityConfig>>("/api/facilities/me", {

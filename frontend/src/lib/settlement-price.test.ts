@@ -16,6 +16,15 @@ describe("current settlement price", () => {
     expect(result.stale).toBe(false)
   })
 
+  it("averages only the last 24 hours of hourly prices", () => {
+    const result = currentSettlementMetrics([
+      { intervalStartUtc: "2026-11-01T09:00:00Z", sppUsdMwh: 1000 }, // 25.5 h before now: outside the window
+      { intervalStartUtc: "2026-11-01T11:00:00Z", sppUsdMwh: 10 },   // 23.5 h before now: inside
+      { intervalStartUtc: "2026-11-02T10:00:00Z", sppUsdMwh: 30 },
+    ], now)
+    expect(result.rollingAvgFormatted).toBe("$20.00")
+  })
+
   it("switches to the next hourly price as time advances without needing different records", () => {
     const points = [
       { intervalStartUtc: "2026-11-02T10:00:00Z", sppUsdMwh: 30 },

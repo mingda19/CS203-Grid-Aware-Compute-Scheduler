@@ -18,6 +18,9 @@ public interface OptimizationPlanRepository extends JpaRepository<OptimizationPl
     Page<OptimizationPlan> findByOwnerIdOrderByCreatedAtDescRunIdDesc(
         Long ownerId, Pageable pageable);
 
+    Page<OptimizationPlan> findByOwnerIdAndReviewStateOrderByCreatedAtDescRunIdDesc(
+        Long ownerId, ReviewState state, Pageable pageable);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from OptimizationPlan p where p.runId = :runId and p.owner.id = :ownerId")
     Optional<OptimizationPlan> findOwnedForUpdate(@Param("runId") String runId, @Param("ownerId") Long ownerId);

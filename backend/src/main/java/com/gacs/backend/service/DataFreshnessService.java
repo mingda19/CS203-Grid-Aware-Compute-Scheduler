@@ -81,7 +81,7 @@ public class DataFreshnessService {
                 statuses.add(recordStatus(definition, latest, now));
             } catch (RuntimeException exception) {
                 statuses.add(new DataFreshnessResponse.DatasetFreshness(
-                        definition.name(), null, "DATABASE_UNAVAILABLE", null,
+                        definition.name(), definition.label(), null, "DATABASE_UNAVAILABLE", null,
                         "Database connectivity check failed: " + safeMessage(exception)));
             }
         }
@@ -134,7 +134,7 @@ public class DataFreshnessService {
         if (latest == null) {
             updateTransition(definition, true, "No records have been stored for this dataset.");
             return new DataFreshnessResponse.DatasetFreshness(
-                    definition.name(), null, "MISSING", null, "No records have been stored for this dataset.");
+                    definition.name(), definition.label(), null, "MISSING", null, "No records have been stored for this dataset.");
         }
 
         long ageMinutes = Math.max(0, Duration.between(latest, now).toMinutes());
@@ -145,7 +145,7 @@ public class DataFreshnessService {
                 : definition.label() + " is receiving data.";
         updateTransition(definition, stale, message);
         return new DataFreshnessResponse.DatasetFreshness(
-                definition.name(), latest.toInstant(ZoneOffset.UTC), status, ageMinutes, message);
+                definition.name(), definition.label(), latest.toInstant(ZoneOffset.UTC), status, ageMinutes, message);
     }
 
     private void updateTransition(DatasetDefinition definition, boolean stale, String message) {

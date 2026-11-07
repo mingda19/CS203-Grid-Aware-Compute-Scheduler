@@ -14,6 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DataStatusBadge } from "@/components/ui/data-status-badge"
+import { Skeleton } from "@/components/ui/skeleton"
 import { priceApi, type PricePoint } from "@/lib/api"
 import {
   ChartContainer,
@@ -110,11 +111,15 @@ export default function ForecastsPage() {
             <h1 className="text-2xl font-bold tracking-tight text-foreground">
               Electricity Price & LMP Forecast
             </h1>
-            <DataStatusBadge
-              size="sm"
-              status={telemetry?.isLoading ? "cached" : telemetry?.avgLmp != null ? "live" : "unavailable"}
-              source={`ERCOT settlements and stored model predictions (${hubLocation})`}
-            />
+            {telemetry?.isLoading ? (
+              <Skeleton className="h-6 w-24 rounded-full" />
+            ) : (
+              <DataStatusBadge
+                size="sm"
+                status={telemetry?.avgLmp != null ? "live" : "unavailable"}
+                source={`ERCOT settlements and stored model predictions (${hubLocation})`}
+              />
+            )}
           </div>
           <p className="text-sm text-muted-foreground mt-1">
             Continuous LMP timeline bridging historical settlement actuals and upcoming ML forecasts in <strong>ERCOT market local time (Central)</strong>.
@@ -147,11 +152,15 @@ export default function ForecastsPage() {
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Average Interval LMP
             </CardTitle>
-            <DataStatusBadge
-              size="sm"
-              status={telemetry?.isLoading ? "cached" : telemetry?.avgLmp != null ? "live" : "unavailable"}
-              source={`ERCOT SPP (${hubLocation})`}
-            />
+            {telemetry?.isLoading ? (
+              <Skeleton className="h-6 w-24 rounded-full" />
+            ) : (
+              <DataStatusBadge
+                size="sm"
+                status={telemetry?.avgLmp != null ? "live" : "unavailable"}
+                source={`ERCOT SPP (${hubLocation})`}
+              />
+            )}
           </CardHeader>
           <CardContent>
             {telemetry?.isLoading && telemetry.avgLmp == null ? (

@@ -10,6 +10,7 @@ public record DataFreshnessResponse(
 ) {
     public record DatasetFreshness(
             String dataset,
+            String label,
             Instant latestRecordTimestamp,
             String status,
             Long ageMinutes,

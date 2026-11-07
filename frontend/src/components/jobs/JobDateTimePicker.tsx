@@ -304,7 +304,7 @@ export function JobDateTimePicker({
                     disabledDay && "cursor-not-allowed opacity-25 text-muted-foreground",
                     !disabledDay && !isSelected && "hover:bg-muted hover:text-foreground",
                     isToday && !isSelected && "border border-emerald-500/60 font-semibold text-emerald-600 dark:text-emerald-400",
-                    isSelected && "bg-emerald-600 text-white font-bold shadow-xs"
+                    isSelected && "bg-primary text-primary-foreground font-bold shadow-xs"
                   )}
                 >
                   {day}

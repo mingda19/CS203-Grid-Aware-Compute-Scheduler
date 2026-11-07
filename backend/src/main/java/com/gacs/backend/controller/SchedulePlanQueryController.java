@@ -1,6 +1,7 @@
 package com.gacs.backend.controller;
 
 import com.gacs.backend.dto.ApiResponse;
+import com.gacs.backend.model.ReviewState;
 import com.gacs.backend.service.SchedulePlanQueryService;
 import io.swagger.v3.oas.annotations.Operation;
 import org.springframework.data.domain.Page;
@@ -16,10 +17,11 @@ public class SchedulePlanQueryController {
 
     @GetMapping
     @Operation(summary = "List the authenticated operator's plans, newest first",
-        description = "Paged stored review states. Read a plan's detail before deciding to check its current validity.")
+        description = "Paged stored review states. Read a plan's detail before deciding to check its current validity."
+            + " The optional state parameter keeps only plans in that review state.")
     public ApiResponse<Page<SchedulePlanQueryService.PlanSummary>> list(
         @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size,
-        Principal principal) {
-        return ApiResponse.ok("Schedule plans retrieved", service.list(principal.getName(), page, size));
+        @RequestParam(required = false) ReviewState state, Principal principal) {
+        return ApiResponse.ok("Schedule plans retrieved", service.list(principal.getName(), page, size, state));
     }
 }
