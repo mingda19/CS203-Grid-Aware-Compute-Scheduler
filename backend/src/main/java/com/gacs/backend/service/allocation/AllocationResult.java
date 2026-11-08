@@ -101,12 +101,32 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
 
     /**
      * Why a job got no plan. Request validation already ensured it could finish alone on the cluster, so
-     * the cause is always capacity taken by other jobs within the hours it was allowed to use.
+     * the cause is either hours without a forecast price (a job cannot start in or run across one) or
+     * capacity taken by other jobs within the hours it was allowed to use.
      */
     private static String noRoomReason(OptimizerJob job, OptimizationProblem problem,
                                        Map<OptimizerJob, JobPlan> scheduled) {
         JobWindow window = new JobWindow(job, problem.prices());
         LocalDateTime lastEnd = window.lastSlot().plusHours(1);
+        int needed = problem.baselineOf(job).slotCount();
+        boolean runFits = window.startSlots().stream().anyMatch(start -> window.runFrom(start).size() >= needed);
+        if (!runFits) {
+            // Scan inwards from both ends of the window: each scan stops at the first unpriced hour, so the
+            // cost follows the number of priced hours, not the distance to the deadline.
+            LocalDateTime first = job.originalStartTime();
+            while (first.isBefore(lastEnd) && problem.prices().priceAt(first).isPresent()) {
+                first = first.plusHours(1);
+            }
+            LocalDateTime last = window.lastSlot();
+            while (last.isAfter(first) && problem.prices().priceAt(last).isPresent()) {
+                last = last.minusHours(1);
+            }
+            if (first.isBefore(lastEnd)) {
+                return "No forecast price between " + first.format(HOUR) + " and " + last.plusHours(1).format(HOUR)
+                        + " UTC: this job needs " + needed + " consecutive priced hour(s) from a start in its window "
+                        + "to finish by its deadline, and the forecast does not cover them.";
+            }
+        }
         // The job that took the slot: the first (by tie-break order) of those running inside this job's window.
         List<OptimizerJob> blockers = scheduled.entrySet().stream()
                 .filter(e -> e.getValue().allocations().stream().anyMatch(a ->

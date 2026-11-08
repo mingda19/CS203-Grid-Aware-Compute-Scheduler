@@ -41,7 +41,6 @@ public class OptimizationProblemFactory {
 
     static final int MIN_HORIZON_HOURS = 1;
     static final int MAX_HORIZON_HOURS = 168;
-    static final int DEFAULT_HORIZON_HOURS = 48;
     static final int MAX_NAME_LENGTH = 255;
     static final int MAX_LOCATION_LENGTH = 100;
 
@@ -195,12 +194,20 @@ public class OptimizationProblemFactory {
         if (location.length() > MAX_LOCATION_LENGTH) {
             throw invalid("forecastLocation must be at most " + MAX_LOCATION_LENGTH + " characters");
         }
-        int horizon = request.horizonHours() == null ? DEFAULT_HORIZON_HOURS : request.horizonHours();
-        if (horizon < MIN_HORIZON_HOURS || horizon > MAX_HORIZON_HOURS) {
-            throw invalid("horizonHours must be between " + MIN_HORIZON_HOURS + " and " + MAX_HORIZON_HOURS);
-        }
         LocalDateTime earliest = jobs.stream().map(OptimizerJob::originalStartTime).min(LocalDateTime::compareTo)
                 .orElseThrow();
+        int horizon;
+        if (request.horizonHours() == null) {
+            // Omitted: price every hour up to the latest deadline, so a job pushed past 48 hours still has prices.
+            LocalDateTime latest = jobs.stream().map(OptimizerJob::deadline).max(LocalDateTime::compareTo).orElseThrow();
+            long hours = (ChronoUnit.MINUTES.between(earliest, latest) + 59) / 60;
+            horizon = (int) Math.max(MIN_HORIZON_HOURS, Math.min(MAX_HORIZON_HOURS, hours));
+        } else {
+            horizon = request.horizonHours();
+            if (horizon < MIN_HORIZON_HOURS || horizon > MAX_HORIZON_HOURS) {
+                throw invalid("horizonHours must be between " + MIN_HORIZON_HOURS + " and " + MAX_HORIZON_HOURS);
+            }
+        }
         return priceSeriesProvider.load(location.trim(), earliest, horizon);
     }
 

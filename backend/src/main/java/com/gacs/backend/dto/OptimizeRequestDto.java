@@ -26,8 +26,8 @@ public record OptimizeRequestDto(
         example = "LZ_NORTH")
     String forecastLocation,
 
-    @Schema(description = "Hours of forecast to load from the earliest originalStartTime, 1-168, default 48; "
-        + "ignored when forecast[] is sent", example = "48")
+    @Schema(description = "Hours of forecast to load from the earliest originalStartTime, 1-168. When omitted, "
+        + "covers the latest deadline (capped at 168); ignored when forecast[] is sent", example = "48")
     Integer horizonHours,
 
     @Schema(description = "Explicit price per hourly slot. When sent it wins over forecastLocation and "

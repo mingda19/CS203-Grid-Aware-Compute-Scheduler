@@ -122,6 +122,17 @@ class ExactAllocationSolverTest {
     }
 
     @Test
+    @DisplayName("A job whose window has no priced hours left says there is no forecast price, not that the cluster is full")
+    void unpricedWindowIsNamedInReason() {
+        // The forecast ends at hour 2; the job may only start at hours 2-3 and must finish by hour 4.
+        AllocationResult result = solve(problem(List.of(job(1, 100.0, 0.0, 2, 1, 4)), prices(10, 20), cpuCapacity(256.0)));
+
+        JobOutcome outcome = outcome(result, 1);
+        assertThat(outcome.status()).isEqualTo(PerJobStatus.NO_FEASIBLE_SLOT);
+        assertThat(outcome.reason()).startsWith("No forecast price between 2026-10-20 12:00 and 2026-10-20 14:00 UTC");
+    }
+
+    @Test
     @DisplayName("A run cannot skip an expensive hour in the middle; it keeps that hour's share tiny")
     void runsHaveNoGaps() {
         AllocationResult result = solve(problem(List.of(job(1, 400.0, 0.0, 0, 2, 3)),

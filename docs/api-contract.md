@@ -858,7 +858,7 @@ Priority never overrides a job's `deadline` or `isExempt`: an exempt job always 
 | `jobs[].isExempt` | boolean | Yes | `true` = never moved |
 | `jobs[].priority` | string | No | Priority level (`CRITICAL`, `HIGH`, `NORMAL`, `LOW`; default `NORMAL`). See *Objective and tie-break order* above (GRID-155 AC1/AC3). Unknown values are rejected with `400`. |
 | `forecast[]` | array | One of `forecast` / `forecastLocation` | Explicit price per slot (`predictedPrice` in $/MWh). Makes the run fully reproducible. |
-| `forecastLocation`, `horizonHours` | string, integer | One of `forecast` / `forecastLocation` | Server resolves per-slot prices for that location from the forecast service (same data as `GET /api/prices/forecast?model=<m>`, where `<m>` is `gacs.optimiser.forecast-model` / env `OPTIMISER_FORECAST_MODEL`, default `lstm`), starting at the earliest `originalStartTime`. Only that one model is read, so a newer run of the other model never changes the prices. `horizonHours` defaults to `48`. |
+| `forecastLocation`, `horizonHours` | string, integer | One of `forecast` / `forecastLocation` | Server resolves per-slot prices for that location from the forecast service (same data as `GET /api/prices/forecast?model=<m>`, where `<m>` is `gacs.optimiser.forecast-model` / env `OPTIMISER_FORECAST_MODEL`, default `lstm`), starting at the earliest `originalStartTime`. Only that one model is read, so a newer run of the other model never changes the prices. `horizonHours` (1-168) is optional. When omitted it covers every hour up to the latest job `deadline`, capped at `168`; when sent it is used as given. Hours with no stored forecast stay unpriced, and a job that cannot be placed because of them gets a `NO_FEASIBLE_SLOT` reason that names the unpriced hours. |
 | `clusterCapacity` | object | No | Capacity applied to every slot. Falls back to the defaults below. |
 | `capacityOverrides[]` | array | No | Per-slot capacity; takes precedence over `clusterCapacity` for that slot |
 
@@ -999,6 +999,7 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 | 2026-11-01 | §6.4: added *Objective and tie-break order*, documenting the rule `priority` had been reserved for but did not yet affect - the optimiser now orders competing jobs by `priority`, breaks remaining ties by `deadline`, then total resource-hours, then the original `originalStartTime`/`id` fallback (GRID-155). | - |
 | 2026-11-01 | §6.4: added run `status` `INFEASIBLE` (nothing placeable; never approvable or exportable) and `503` with `runId` when the solver fails, recorded as a `FAILED` run with no plan (GRID-142 AC1.3). | - |
 | 2026-11-01 | Added §6.8: automatic material-input invalidation, shared backend execution gating, approved-run application, and plan detail (GRID-11 AC2.3). | - |
+| 2026-11-08 | §6.4: `horizonHours`, when omitted, now covers every hour up to the latest job `deadline` (capped at 168) instead of 48. A job left out because of hours with no stored forecast price gets a `NO_FEASIBLE_SLOT` reason that names those hours, instead of "Cluster full". | - |
 
 ### 6.5 Operator decisions (GRID-11 AC2 / AC2.2)
 

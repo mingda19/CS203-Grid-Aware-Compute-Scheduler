@@ -13,6 +13,7 @@ import static com.gacs.backend.service.allocation.Fixtures.job;
 import static com.gacs.backend.service.allocation.Fixtures.prices;
 import static com.gacs.backend.service.allocation.Fixtures.problem;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /** Routing between the exact solver and the heuristic. */
 class HybridAllocationSolverTest {
@@ -57,5 +58,14 @@ class HybridAllocationSolverTest {
     @DisplayName("Size counts each flexible job's hours from its start to its deadline")
     void sizeCountsFlexibleHours() {
         assertThat(HybridAllocationSolver.size(SMALL)).isEqualTo(4 + 4); // the exempt job does not count
+    }
+
+    @Test
+    @DisplayName("Size ignores hours without a price, so a far deadline does not push a small run past the threshold")
+    void sizeCountsOnlyPricedHours() {
+        // A deadline about 11,000 years out: counting must follow the 3 priced hours, not the distance.
+        OptimizationProblem problem = problem(List.of(job(1, 100.0, 0.0, 0, 500, 100_000_000)), prices(10, 20, 30), cpuCapacity(256.0));
+
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> assertThat(HybridAllocationSolver.size(problem)).isEqualTo(3));
     }
 }

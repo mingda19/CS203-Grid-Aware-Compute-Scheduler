@@ -216,7 +216,7 @@ class ScheduleOptimizationServiceTest {
         for (int h = 0; h < 48; h++) {
             curve.put(at(h), 20.0 + h);
         }
-        when(provider.load("LZ_NORTH", T0, 48)).thenReturn(new PriceSeries(curve, true));
+        when(provider.load("LZ_NORTH", T0, 5)).thenReturn(new PriceSeries(curve, true)); // horizon = latest deadline (hour 5)
         OptimizeResponseDto response = service.optimize(new OptimizeRequestDto(
                 List.of(job(1, 20.0, 0.0, 0, 2, 5, false)), null, "LZ_NORTH", null, null, null), OWNER, (ignored, snapshot) -> { });
 
