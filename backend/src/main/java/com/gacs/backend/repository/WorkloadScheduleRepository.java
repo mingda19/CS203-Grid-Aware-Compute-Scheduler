@@ -19,5 +19,8 @@ public interface WorkloadScheduleRepository extends JpaRepository<WorkloadSchedu
      * when a newly approved run is applied, any entry an earlier applied run wrote for the same
      * job is superseded rather than left to accumulate alongside the new one.
      */
+    /** Removes every calendar entry for a deleted job. */
+    void deleteByJobId(Long jobId);
+
     void deleteByOwnerEmailAndJobIdInAndRunIdNot(String ownerEmail, Collection<Long> jobIds, String runId);
 }

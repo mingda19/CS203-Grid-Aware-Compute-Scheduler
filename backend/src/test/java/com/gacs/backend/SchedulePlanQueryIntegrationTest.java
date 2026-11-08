@@ -25,6 +25,7 @@ class SchedulePlanQueryIntegrationTest {
     @Autowired UserRepository users;
     @Autowired OptimizerRunRepository runs;
     @Autowired OptimizationPlanRepository plans;
+    @Autowired com.gacs.backend.service.AppSettingsService settings;
 
     private User owner() {
         return users.save(new User(UUID.randomUUID() + "@test.io", "password", "Operator", "ROLE_USER"));
@@ -38,21 +39,25 @@ class SchedulePlanQueryIntegrationTest {
         return plans.saveAndFlush(plan).getRunId();
     }
 
-    @Test void listsOnlyOwnersPlansNewestFirstWithPagination() throws Exception {
+    @Test void listsEveryOwnersPlansNewestFirstWithPagination() throws Exception {
         var owner = owner();
         var other = owner();
         String older = plan(owner, Instant.parse("2026-10-30T10:00:00Z"), null);
         String newer = plan(owner, Instant.parse("2026-10-31T10:00:00Z"), AuditActionType.REJECT);
-        plan(other, Instant.parse("2026-11-01T10:00:00Z"), null);
+        String othersPlan = plan(other, Instant.parse("2026-11-01T10:00:00Z"), null);
         mvc.perform(get("/api/schedules?page=0&size=1").with(user(owner.getEmail())))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.totalElements").value(2))
-            .andExpect(jsonPath("$.data.totalPages").value(2))
+            .andExpect(jsonPath("$.data.totalElements").value(3))
+            .andExpect(jsonPath("$.data.totalPages").value(3))
             .andExpect(jsonPath("$.data.content.length()").value(1))
+            .andExpect(jsonPath("$.data.content[0].runId").value(othersPlan))
+            .andExpect(jsonPath("$.data.content[0].ownerName").value("Operator"))
+            .andExpect(jsonPath("$.data.content[0].canApprove").value(true));
+        mvc.perform(get("/api/schedules?page=1&size=1").with(user(owner.getEmail())))
             .andExpect(jsonPath("$.data.content[0].runId").value(newer))
-            .andExpect(jsonPath("$.data.content[0].reviewState").value("REJECTED"));
-        mvc.perform(get("/api/schedules?page=1&size=1").with(user(owner.getEmail()).roles("ADMIN")))
-            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.content[0].reviewState").value("REJECTED"))
+            .andExpect(jsonPath("$.data.content[0].canApprove").value(false));
+        mvc.perform(get("/api/schedules?page=2&size=1").with(user(owner.getEmail()).roles("ADMIN")))
             .andExpect(jsonPath("$.data.content[0].runId").value(older));
     }
 
@@ -62,17 +67,38 @@ class SchedulePlanQueryIntegrationTest {
         String oldPending = plan(owner, Instant.parse("2026-10-30T10:00:00Z"), null);
         plan(owner, Instant.parse("2026-10-31T10:00:00Z"), AuditActionType.REJECT);
         String newPending = plan(owner, Instant.parse("2026-11-01T10:00:00Z"), null);
-        plan(other, Instant.parse("2026-11-02T10:00:00Z"), null);
+        String othersPending = plan(other, Instant.parse("2026-11-02T10:00:00Z"), null);
         mvc.perform(get("/api/schedules?state=PENDING").with(user(owner.getEmail())))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.totalElements").value(2))
-            .andExpect(jsonPath("$.data.content.length()").value(2))
-            .andExpect(jsonPath("$.data.content[0].runId").value(newPending))
-            .andExpect(jsonPath("$.data.content[1].runId").value(oldPending))
-            .andExpect(jsonPath("$.data.content[0].reviewState").value("PENDING"))
-            .andExpect(jsonPath("$.data.content[1].reviewState").value("PENDING"));
-        // No filter: all three of the owner's plans, as before.
+            .andExpect(jsonPath("$.data.totalElements").value(3))
+            .andExpect(jsonPath("$.data.content.length()").value(3))
+            .andExpect(jsonPath("$.data.content[0].runId").value(othersPending))
+            .andExpect(jsonPath("$.data.content[1].runId").value(newPending))
+            .andExpect(jsonPath("$.data.content[2].runId").value(oldPending))
+            .andExpect(jsonPath("$.data.content[0].reviewState").value("PENDING"));
+        // No filter: all four plans, whoever owns them.
         mvc.perform(get("/api/schedules").with(user(owner.getEmail())))
+            .andExpect(jsonPath("$.data.totalElements").value(4));
+    }
+
+    @Test void approvableKeepsOnlyPlansTheCallerMayApprove() throws Exception {
+        var owner = owner();
+        var other = owner();
+        var admin = users.save(new User(UUID.randomUUID() + "@test.io", "password", "Admin", "ROLE_ADMIN"));
+        plan(owner, Instant.parse("2026-10-30T10:00:00Z"), null);
+        String othersPending = plan(other, Instant.parse("2026-11-01T10:00:00Z"), null);
+        settings.update(false);
+        // A submitter cannot approve their own plan, so it is not counted for them.
+        mvc.perform(get("/api/schedules?state=PENDING&approvable=true").with(user(owner.getEmail())))
+            .andExpect(jsonPath("$.data.totalElements").value(1))
+            .andExpect(jsonPath("$.data.content[0].runId").value(othersPending));
+        // An admin may approve their own, so for an admin the filter leaves nothing out.
+        plan(admin, Instant.parse("2026-11-02T10:00:00Z"), null);
+        mvc.perform(get("/api/schedules?state=PENDING&approvable=true").with(user(admin.getEmail())))
+            .andExpect(jsonPath("$.data.totalElements").value(3));
+        // With self-approval allowed, nobody is left out.
+        settings.update(true);
+        mvc.perform(get("/api/schedules?state=PENDING&approvable=true").with(user(owner.getEmail())))
             .andExpect(jsonPath("$.data.totalElements").value(3));
     }
 

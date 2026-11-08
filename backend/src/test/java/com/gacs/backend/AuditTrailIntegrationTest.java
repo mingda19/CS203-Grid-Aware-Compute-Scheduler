@@ -50,6 +50,7 @@ class AuditTrailIntegrationTest {
     private static final DateTimeFormatter UTC = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
 
     @Autowired MockMvc mvc;
+    @Autowired com.gacs.backend.service.AppSettingsService appSettings;
     @Autowired UserRepository users;
     @Autowired JobRepository jobs;
     @Autowired OptimizationPlanRepository plans;
@@ -66,6 +67,7 @@ class AuditTrailIntegrationTest {
 
     @BeforeEach
     void setup() {
+        appSettings.update(true);
         owner = newUser();
     }
 

@@ -16,6 +16,7 @@ import com.gacs.backend.service.allocation.AllocationSolver;
 import com.gacs.backend.service.allocation.OptimizerProperties;
 import com.gacs.backend.util.ScheduleHashUtil;
 import org.springframework.aop.support.AopUtils;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -50,6 +51,7 @@ public class ScheduleReviewService {
     private final Clock clock;
     private final ScheduleInputs inputs;
     private final ScheduleGate gate;
+    private final AppSettingsService settings;
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
 
     private final com.gacs.backend.repository.WorkloadScheduleRepository schedules;
@@ -58,7 +60,9 @@ public class ScheduleReviewService {
                                  OptimizationPlanRecorder planRecorder, AuditEventService audit,
                                  AllocationSolver solver, OptimizerProperties properties,
                                  UserRepository users, Clock clock, ScheduleInputs inputs, ScheduleGate gate,
-                                 com.gacs.backend.repository.WorkloadScheduleRepository schedules) {
+                                 com.gacs.backend.repository.WorkloadScheduleRepository schedules,
+                                 AppSettingsService settings) {
+        this.settings = settings;
         this.schedules = schedules;
         this.optimizer = optimizer;
         this.planRecorder = planRecorder;
@@ -147,8 +151,10 @@ public class ScheduleReviewService {
 
     @Transactional(noRollbackFor = com.gacs.backend.exception.ScheduleExportRejectedException.class)
     public ScheduleDecisionDto decide(UUID runId, AuditActionType action, String comment, String email) {
-        OptimizationPlan plan = gate.owned(runId, email);
-        User operator = plan.getOwner();
+        User caller = operator(email);
+        OptimizationPlan plan = gate.reviewable(runId);
+        if (action == AuditActionType.APPROVE && !settings.canApprove(caller, plan))
+            throw new AccessDeniedException("You cannot approve your own plan. Another user has to approve it.");
         if (TERMINAL_DECISIONS.contains(plan.getReviewState())
             && !isRevocationOfApproval(plan.getReviewState(), action))
             throw new com.gacs.backend.exception.ScheduleExportRejectedException(
@@ -163,14 +169,23 @@ public class ScheduleReviewService {
                 com.gacs.backend.exception.ScheduleExportRejectedException.Reason.ALREADY_DECIDED,
                 "Schedule run " + runId + " is " + plan.getReviewState().name().toLowerCase(java.util.Locale.ROOT).replace('_', ' ')
                     + ", not approved, so there is no approval to revoke");
+        ScheduleGate.Checked checked = null;
         if (action == AuditActionType.APPROVE || plan.getReviewState() == com.gacs.backend.model.ReviewState.INVALIDATED
-            || plan.getReviewState() == com.gacs.backend.model.ReviewState.STALE) gate.check(plan, email, false);
+            || plan.getReviewState() == com.gacs.backend.model.ReviewState.STALE) checked = gate.check(plan, false);
         plan.recordDecision(action);
         AuditEventResponseDto event = audit.recordEvent(new AuditEventRequestDto(action,
             runId.toString(), ScheduleHashUtil.computeSha256(plan.getResultJson()), comment));
-        if (action == AuditActionType.APPROVE) gate.supersede(plan);
+        if (action == AuditActionType.APPROVE) {
+            // Jobs the run never placed are not approved. Leaving them in the plan would lock them against
+            // edits while they need fixing, and re-planning one would end the approval of the rest.
+            var placed = (checked.schedule().items() == null ? java.util.List.<com.gacs.backend.dto.OptimizeResponseDto.ScheduleItem>of() : checked.schedule().items()).stream()
+                .filter(item -> item.scheduledStart() != null && item.scheduledEnd() != null)
+                .map(com.gacs.backend.dto.OptimizeResponseDto.ScheduleItem::jobId).collect(java.util.stream.Collectors.toSet());
+            plan.removeJobs(plan.liveJobIds().stream().filter(id -> !placed.contains(id)).toList());
+            gate.supersede(plan);
+        }
         if (action == AuditActionType.REVOKE) discardCalendarEntries(runId);
-        return new ScheduleDecisionDto(event.id(), runId, event.actionType(), operator.getId(),
+        return new ScheduleDecisionDto(event.id(), runId, event.actionType(), caller.getId(),
             event.operatorRationale(), event.timestamp(), plan.getReviewState());
     }
 

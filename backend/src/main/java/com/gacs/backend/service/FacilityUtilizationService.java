@@ -23,7 +23,7 @@ import java.util.List;
  *
  * <p>Plans are read without {@link ScheduleGate#check}: checking another owner's plan needs that owner's
  * lock, and two callers locking owners in opposite orders deadlock. The approved state is kept current
- * elsewhere: a facility change ends every approval, a job delete or edit does so for its own plans, and
+ * elsewhere: a facility change ends every approval, a job delete leaves it out of the plan, and
  * {@link ScheduleExpiryService} runs the gate every minute.
  */
 @Service
@@ -58,7 +58,7 @@ public class FacilityUtilizationService {
             runIds.add(plan.getRunId());
             if (schedule.get().items() == null) continue;
             for (ScheduleItem item : schedule.get().items()) {
-                if (item.allocations() == null) continue;
+                if (item.allocations() == null || plan.getRemovedJobIds().contains(item.jobId())) continue;
                 for (Allocation slot : item.allocations()) {
                     if (hour.equals(slot.intervalStartUtc())) {
                         cpu += slot.cpuHours();

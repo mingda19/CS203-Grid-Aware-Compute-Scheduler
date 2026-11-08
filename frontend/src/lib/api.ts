@@ -99,6 +99,10 @@ export const WORKLOAD_CATEGORY_LABELS: Record<WorkloadCategory, string> = {
 export interface ComputeJob {
   id: number
   ownerEmail?: string
+  /** Set only in the admin listing of every user's jobs. */
+  ownerName?: string
+  /** Run ID of the approved plan the job is in. Such a job cannot be edited, only deleted. */
+  approvedRunId?: string | null
   name: string
   description?: string | null
   cpuHours: number
@@ -320,7 +324,7 @@ export interface DataFreshnessResponse {
   checkedAt: string
 }
 
-export type AuditActionType = "APPROVE" | "REJECT" | "REVISE" | "OVERRIDE" | "DISPATCH"
+export type AuditActionType = "APPROVE" | "REJECT" | "REVISE" | "REVOKE" | "OVERRIDE" | "DISPATCH" | "REMOVE_JOB"
 
 export interface AuditEvent {
   id: number
@@ -661,6 +665,10 @@ export const jobsApi = {
   remove(id: number): Promise<ApiResponse<void>> {
     return fetchJson<ApiResponse<void>>(`/api/jobs/${id}`, { method: "DELETE" })
   },
+  /** Admin only: every user's jobs, each with its owner's name. */
+  listAll(): Promise<ApiResponse<ComputeJob[]>> {
+    return fetchJson<ApiResponse<ComputeJob[]>>("/api/admin/jobs", { cache: "no-store" })
+  },
 }
 
 export type PlanReviewState = "PENDING" | "APPROVED" | "REJECTED" | "REVISION_REQUESTED" | "STALE" | "INVALIDATED"
@@ -670,7 +678,15 @@ export type PlanReviewState = "PENDING" | "APPROVED" | "REJECTED" | "REVISION_RE
  * recommendation, revoking undoes one already made, and only an APPROVED plan accepts it.
  */
 export type ScheduleDecisionAction = "approve" | "reject" | "revise" | "revoke"
-export interface SchedulePlanSummary { runId: string; createdAt: string; reviewState: PlanReviewState }
+export interface SchedulePlanSummary {
+  runId: string
+  createdAt: string
+  reviewState: PlanReviewState
+  /** Whose jobs the plan schedules. */
+  ownerName: string
+  /** Whether the signed-in user may approve it. A submitter may not, unless an admin or the setting allows it. */
+  canApprove: boolean
+}
 export interface SchedulePlanDetail {
   runId: string
   reviewState: PlanReviewState
@@ -684,6 +700,10 @@ export interface SchedulePlanDetail {
    */
   appliedAt: string | null
   recommendation: OptimizeResponse | null
+  ownerName: string
+  canApprove: boolean
+  /** Jobs that left the plan after approval (deleted, or never placed). */
+  removedJobIds: number[]
 }
 /**
  * The action as the backend records it: {@link ScheduleDecisionAction} upper-cased, matching the
@@ -707,8 +727,9 @@ export const scheduleReviewApi = {
   apply(runId: string): Promise<ApiResponse<WorkloadSchedule[]>> {
     return fetchJson(`/api/schedules/${encodeURIComponent(runId)}/apply`, { method: "POST" })
   },
-  list(page = 0, state?: PlanReviewState): Promise<ApiResponse<Page<SchedulePlanSummary>>> {
-    const filter = state ? `&state=${state}` : ""
+  /** Every owner's plans. `approvable` keeps only the ones the signed-in user may approve. */
+  list(page = 0, state?: PlanReviewState, approvable = false): Promise<ApiResponse<Page<SchedulePlanSummary>>> {
+    const filter = (state ? `&state=${state}` : "") + (approvable ? "&approvable=true" : "")
     return fetchJson(`/api/schedules?page=${page}&size=20${filter}`, { cache: "no-store" })
   },
   detail(runId: string): Promise<ApiResponse<SchedulePlanDetail>> {
@@ -956,6 +977,18 @@ export const authApi = {
     } finally {
       removeStoredUser()
     }
+  },
+}
+
+export interface AppSettings { allowSelfApproval: boolean }
+
+export const settingsApi = {
+  /** Admin only. */
+  get(): Promise<ApiResponse<AppSettings>> {
+    return fetchJson<ApiResponse<AppSettings>>("/api/admin/settings", { cache: "no-store" })
+  },
+  update(payload: AppSettings): Promise<ApiResponse<AppSettings>> {
+    return fetchJson<ApiResponse<AppSettings>>("/api/admin/settings", { method: "PUT", body: JSON.stringify(payload) })
   },
 }
 

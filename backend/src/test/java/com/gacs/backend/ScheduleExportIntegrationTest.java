@@ -72,6 +72,7 @@ class ScheduleExportIntegrationTest {
     private static final DateTimeFormatter UTC = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
 
     @Autowired MockMvc mvc;
+    @Autowired com.gacs.backend.service.AppSettingsService appSettings;
     @Autowired UserRepository users;
     @Autowired JobRepository jobs;
     @Autowired OptimizationPlanRepository plans;
@@ -93,6 +94,7 @@ class ScheduleExportIntegrationTest {
 
     @BeforeEach
     void setup() {
+        appSettings.update(true);
         owner = users.save(new User(UUID.randomUUID() + "@test.io", "test-password", "Operator", "ROLE_USER"));
     }
 

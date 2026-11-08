@@ -22,6 +22,7 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
@@ -52,7 +53,7 @@ public class ScheduleGate {
      * consulted), but an execution gate that would read a withdrawn approval as current is the wrong
      * default to leave in place for whichever caller asks next.
      */
-    private static final Set<AuditActionType> DECISIONS = EnumSet.of(AuditActionType.APPROVE,
+    static final Set<AuditActionType> DECISIONS = EnumSet.of(AuditActionType.APPROVE,
             AuditActionType.REJECT, AuditActionType.REVISE, AuditActionType.REVOKE);
     private static final double HOURS_TOLERANCE = 1e-9;
 
@@ -82,9 +83,21 @@ public class ScheduleGate {
             .orElseThrow(() -> new ResourceNotFoundException("Optimization plan not found"));
     }
 
+    /**
+     * Any plan, for a reviewer who is not its owner. Locks the owner's row, as {@link #owned} does, so a
+     * decision and the owner's own changes cannot interleave.
+     */
+    public OptimizationPlan reviewable(UUID runId) {
+        String ownerEmail = plans.findOwnerEmail(runId.toString())
+            .orElseThrow(() -> new ResourceNotFoundException("Optimization plan not found"));
+        return owned(runId, ownerEmail);
+    }
+
     public record Checked(OptimizeResponseDto schedule, AuditEvent approval) {}
 
-    public Checked check(OptimizationPlan plan, String email, boolean approvalRequired) {
+    /** Checks the plan against its owner's jobs and the shared facility, whoever is asking. */
+    public Checked check(OptimizationPlan plan, boolean approvalRequired) {
+        String email = plan.getOwner().getEmail();
         try {
             if (plan.getReviewState() == ReviewState.INVALIDATED)
                 throw new ScheduleExportRejectedException(Reason.INVALIDATED, plan.getInvalidationReason());
@@ -93,8 +106,8 @@ public class ScheduleGate {
             if (approvalRequired) requireApproved(plan);
             AuditEvent approval = approvalRequired || plan.getReviewState() == ReviewState.APPROVED
                 ? requireMatchingApproval(plan) : null;
-            OptimizeResponseDto schedule = reader.read(plan.getResultJson())
-                .orElseThrow(() -> invalidated(plan.getRunId(), "its stored schedule cannot be read"));
+            OptimizeResponseDto schedule = withoutRemoved(plan, reader.read(plan.getResultJson())
+                .orElseThrow(() -> invalidated(plan.getRunId(), "its stored schedule cannot be read")));
             if (OptimizeResponseDto.STATUS_INFEASIBLE.equals(schedule.status()))
                 throw new ScheduleExportRejectedException(Reason.NOT_APPROVED,
                     "Schedule run " + plan.getRunId() + " is INFEASIBLE: no job could be placed");
@@ -112,11 +125,20 @@ public class ScheduleGate {
         }
     }
 
+    /** The schedule without the jobs that left the plan after approval. Apply, export and every job check use this. */
+    private static OptimizeResponseDto withoutRemoved(OptimizationPlan plan, OptimizeResponseDto schedule) {
+        if (plan.getRemovedJobIds().isEmpty() || schedule.items() == null) return schedule;
+        return new OptimizeResponseDto(schedule.runId(), schedule.status(), schedule.provenOptimal(),
+            schedule.baselineCostUsd(), schedule.optimizedCostUsd(), schedule.projectedSavingsUsd(),
+            schedule.projectedSavingsPercent(), schedule.plainEnglishExplanation(), schedule.usedSeededFallbackPrices(),
+            schedule.items().stream().filter(item -> !plan.getRemovedJobIds().contains(item.jobId())).toList());
+    }
+
     /** A new approval permanently supersedes older overlapping approvals. */
     public void supersede(OptimizationPlan approved) {
         for (var other : plans.findByOwnerIdAndReviewState(approved.getOwner().getId(), ReviewState.APPROVED))
             if (!other.getRunId().equals(approved.getRunId()) &&
-                !java.util.Collections.disjoint(other.getJobIds(), approved.getJobIds()))
+                !java.util.Collections.disjoint(other.liveJobIds(), approved.liveJobIds()))
                 other.invalidate(ReviewState.STALE, "Superseded by approved run " + approved.getRunId(), clock.instant());
     }
 
@@ -164,7 +186,7 @@ public class ScheduleGate {
             AuditEvent decision = auditEvents.findFirstByRunIdAndActionTypeInOrderByIdDesc(newer.getRunId(), DECISIONS).orElse(null);
             if (decision == null || decision.getActionType() != AuditActionType.APPROVE ||
                 (ownDecision != null && decision.getId() <= ownDecision.getId())) continue;
-            Set<Long> shared = new TreeSet<>(newer.getJobIds());
+            Set<Long> shared = new TreeSet<>(newer.liveJobIds());
             shared.retainAll(jobIds);
             if (!shared.isEmpty()) throw stale(runId, "run " + newer.getRunId()
                 + " was approved later and also schedules job(s) " + shared);
@@ -224,7 +246,9 @@ public class ScheduleGate {
     private void requireInputsUnchanged(OptimizationPlan plan, Set<Long> jobIds, User owner) {
         String snapshot = plan.getRun().getInputSnapshot();
         if (snapshot == null) return; // Runs created before GRID-141 have no solver snapshot.
-        String solved = snapshot.lines().findFirst().orElse("");
+        String solved = Arrays.stream(snapshot.lines().findFirst().orElse("").split(";"))
+            .filter(entry -> !plan.getRemovedJobIds().contains(entryId(entry)))
+            .collect(Collectors.joining(";"));
         String current = jobs.findByOwnerEmailAndIdIn(owner.getEmail(), List.copyOf(jobIds)).stream()
             .sorted(Comparator.comparing(Job::getId))
             .map(job -> OptimizationProblem.jobEntry(job.getId(), job.getCpuHours(), job.getGpuHours(),
@@ -233,6 +257,13 @@ public class ScheduleGate {
             .collect(Collectors.joining(";"));
         if (!solved.equals(current))
             throw invalidated(plan.getRunId(), "its jobs have changed since the schedule was generated");
+    }
+
+    /** Each solved entry starts with the job's id and a comma. A blank entry has no id. */
+    private static Long entryId(String entry) {
+        int comma = entry.indexOf(',');
+        try { return comma < 0 ? null : Long.valueOf(entry.substring(0, comma).trim()); }
+        catch (NumberFormatException ex) { return null; }
     }
 
     private static List<ScheduleItem> items(OptimizeResponseDto schedule) {

@@ -24,6 +24,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -38,12 +39,19 @@ class JobServiceTest {
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-10-20T09:00:00Z"), ZoneOffset.UTC);
 
     private final String owner = "operator@datacenter.io";
+    private final com.gacs.backend.model.User owningUser = new com.gacs.backend.model.User(owner, "x", "Operator", null);
     private final LocalDateTime start = LocalDateTime.of(2026, 10, 20, 10, 0);
     private final LocalDateTime deadline = LocalDateTime.of(2026, 10, 21, 18, 0);
 
     @BeforeEach
     void setUp() {
-        jobService = new JobService(jobRepository, org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class), CLOCK);
+        var inputs = org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class);
+        lenient().when(inputs.lock(anyString())).thenReturn(owningUser);
+        jobService = new JobService(jobRepository, inputs, CLOCK,
+                org.mockito.Mockito.mock(com.gacs.backend.repository.OptimizationPlanRepository.class),
+                org.mockito.Mockito.mock(com.gacs.backend.repository.WorkloadScheduleRepository.class),
+                org.mockito.Mockito.mock(com.gacs.backend.service.AuditEventService.class),
+                org.mockito.Mockito.mock(com.gacs.backend.repository.UserRepository.class));
     }
 
     @Test
@@ -482,7 +490,7 @@ class JobServiceTest {
         Job existing = Job.builder().id(303L).ownerEmail(owner).build();
         when(jobRepository.findByIdAndOwnerEmail(303L, owner)).thenReturn(Optional.of(existing));
 
-        jobService.deleteJob(303L, owner);
+        jobService.deleteJob(303L, owner, false);
 
         verify(jobRepository).delete(existing);
     }
@@ -492,7 +500,7 @@ class JobServiceTest {
     void deleteJob_NotFound_ThrowsException() {
         when(jobRepository.findByIdAndOwnerEmail(404L, owner)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> jobService.deleteJob(404L, owner))
+        assertThatThrownBy(() -> jobService.deleteJob(404L, owner, false))
                 .isInstanceOf(ResourceNotFoundException.class)
                 .hasMessageContaining("Job not found with id: 404");
 

@@ -59,6 +59,7 @@ class FacilityUtilizationIntegrationTest {
     private static final DateTimeFormatter UTC = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
 
     @Autowired MockMvc mvc;
+    @Autowired com.gacs.backend.service.AppSettingsService appSettings;
     @Autowired UserRepository users;
     @Autowired JobRepository jobs;
     @Autowired FacilityRepository facilities;
@@ -80,6 +81,7 @@ class FacilityUtilizationIntegrationTest {
 
     @BeforeEach
     void setup() {
+        appSettings.update(true);
         owner = users.save(new User(UUID.randomUUID() + "@test.io", "test-password", "Operator", "ROLE_USER"));
         saveFacility(256.0, 64.0);
     }
@@ -295,5 +297,21 @@ class FacilityUtilizationIntegrationTest {
                 .andExpect(jsonPath("$.data.gpu.used").value(0.0))
                 .andExpect(jsonPath("$.data.gpu.limit").value(0.0))
                 .andExpect(jsonPath("$.data.gpu.percent").value(nullValue()));
+    }
+
+    @Test
+    @DisplayName("A job deleted from an approved plan is no longer counted, the other jobs still are")
+    void aDeletedJobLeavesTheCount() throws Exception {
+        Job keep = flexibleJob(4.0, 0.0);
+        Job drop = flexibleJob(6.0, 0.0);
+        approvedPlan(keep, drop);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/jobs/" + drop.getId())
+                .with(user(owner.getEmail()))).andExpect(status().isOk());
+        createdJobs.remove(drop.getId());
+        clockAt(usedHour.plusMinutes(10));
+
+        utilization().andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.state").value("LIVE"))
+                .andExpect(jsonPath("$.data.cpu.used").value(4.0));
     }
 }

@@ -38,6 +38,7 @@ class ScheduleDecisionIntegrationTest {
         """;
 
     @Autowired MockMvc mvc;
+    @Autowired com.gacs.backend.service.AppSettingsService appSettings;
     @Autowired JobRepository jobs;
     private Job currentJob;
     private String request;
@@ -57,6 +58,7 @@ class ScheduleDecisionIntegrationTest {
 
     @BeforeEach
     void setup() {
+        appSettings.update(true);
         owner = users.save(new User(UUID.randomUUID() + "@test.io", "test-password", "Operator", "ROLE_USER"));
         var start = java.time.LocalDateTime.now(java.time.ZoneOffset.UTC).plusDays(2).truncatedTo(java.time.temporal.ChronoUnit.HOURS);
         currentJob = jobs.save(Job.builder().ownerEmail(owner.getEmail()).name("test").cpuHours(1.0).gpuHours(0.0)
@@ -207,16 +209,9 @@ class ScheduleDecisionIntegrationTest {
             .andExpect(status().isForbidden());
         mvc.perform(post(route).with(user("missing@test.io")).contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
             .andExpect(status().isUnauthorized());
-        User other = users.save(new User(UUID.randomUUID() + "@test.io", "password", "Other", "ROLE_ADMIN"));
-        try {
-            String hidden = mvc.perform(post(route).with(user(other.getEmail()).roles("ADMIN"))
-                    .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
-                .andExpect(status().isNotFound()).andReturn().getResponse().getContentAsString();
-            String missing = mvc.perform(post("/api/schedules/" + UUID.randomUUID() + "/approve")
-                    .with(user(other.getEmail()).roles("ADMIN")).contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
-                .andExpect(status().isNotFound()).andReturn().getResponse().getContentAsString();
-            assertThat(hidden).isEqualTo(missing);
-        } finally { users.deleteById(other.getId()); }
+        mvc.perform(post("/api/schedules/" + UUID.randomUUID() + "/approve")
+                .with(user(owner.getEmail())).contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
+            .andExpect(status().isNotFound());
         assertThat(history(runId)).isEmpty();
         assertThat(plans.findById(runId.toString()).orElseThrow().getReviewState()).isEqualTo(ReviewState.PENDING);
     }

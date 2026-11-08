@@ -9,6 +9,8 @@ import {
   priceApi,
   optimizerApi,
   facilityApi,
+  authApi,
+  type User,
   type JobExplanation,
   type ComputeJob,
   type ComputeJobPayload,
@@ -106,6 +108,15 @@ function OpenCreateOnParam({ onOpen }: { onOpen: () => void }) {
 
 export default function JobsPage() {
   const [jobs, setJobs] = React.useState<ComputeJob[]>([])
+  // An admin can list every user's jobs. Everyone else sees their own.
+  const [scope, setScope] = React.useState<"mine" | "all">("mine")
+  const [me, setMe] = React.useState<User | null>(null)
+  React.useEffect(() => {
+    let active = true
+    authApi.getMe().then((r) => { if (active && r.data) setMe(r.data) }).catch(() => {}) // no admin switch if unknown
+    return () => { active = false }
+  }, [])
+  const isAdmin = me?.role === "ROLE_ADMIN"
   const [loading, setLoading] = React.useState(true)
   const [saving, setSaving] = React.useState(false)
   const [updatingExemptionId, setUpdatingExemptionId] = React.useState<number | null>(null)
@@ -177,19 +188,18 @@ export default function JobsPage() {
     setLoading(true)
     setError("")
     try {
-      const response = await jobsApi.list()
+      const response = await (scope === "all" ? jobsApi.listAll() : jobsApi.list())
       setJobs(response.data ?? [])
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load jobs")
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [scope])
 
   React.useEffect(() => {
     let active = true
-    jobsApi
-      .list()
+    ;(scope === "all" ? jobsApi.listAll() : jobsApi.list())
       .then((response) => {
         if (active) setJobs(response.data ?? [])
       })
@@ -199,7 +209,13 @@ export default function JobsPage() {
       .finally(() => {
         if (active) setLoading(false)
       })
+    return () => {
+      active = false
+    }
+  }, [scope])
 
+  React.useEffect(() => {
+    let active = true
     facilityApi.get().then(response => {
       if (!active) return
       if (!response.success || !response.data) throw new Error(response.message || "Could not load facility settings")
@@ -377,6 +393,9 @@ export default function JobsPage() {
     setDeletingJob(false)
   }
 
+  /** Only the owner edits a job, and not once it is in an approved plan. Delete stays open. */
+  const canEdit = (job: ComputeJob) => !job.approvedRunId && (scope === "mine" || job.ownerEmail?.toLowerCase() === me?.email?.toLowerCase())
+
   const selectedJobs = jobs.filter((job) => selectedIds.has(job.id))
   const allSelected = jobs.length > 0 && selectedJobs.length === jobs.length
   const toggleJob = (id: number, checked: boolean) =>
@@ -387,8 +406,9 @@ export default function JobsPage() {
       return next
     })
 
-  /** The jobs this run would submit: everything not already cancelled, completed or running. */
-  const schedulableJobs = () => jobs.filter(job => !["CANCELLED", "COMPLETED", "RUNNING"].includes(job.status))
+  /** The jobs this run would submit: your jobs not already cancelled, completed, running or approved. */
+  const ownJobs = scope === "all" ? jobs.filter(job => job.ownerEmail?.toLowerCase() === me?.email?.toLowerCase()) : jobs
+  const schedulableJobs = () => ownJobs.filter(job => !["CANCELLED", "COMPLETED", "RUNNING"].includes(job.status) && !job.approvedRunId)
 
   /**
    * Schedule optimisation, with one question in front of it.
@@ -402,7 +422,7 @@ export default function JobsPage() {
    * If nothing has elapsed there is no dialog: the common path keeps exactly one click.
    */
   const runOptimization = async () => {
-    if (jobs.length === 0) {
+    if (ownJobs.length === 0) {
       setError("Add at least one compute job before running schedule optimization.")
       return
     }
@@ -495,11 +515,26 @@ export default function JobsPage() {
               </Button>
             </>
           )}
+          {isAdmin && (
+            <div role="group" aria-label="Jobs to show" className="flex rounded-md border">
+              {(["mine", "all"] as const).map((value) => (
+                <Button
+                  key={value}
+                  size="sm"
+                  variant={scope === value ? "secondary" : "ghost"}
+                  aria-pressed={scope === value}
+                  onClick={() => { if (scope !== value) { setScope(value); setSelectedIds(new Set()); setLoading(true) } }}
+                >
+                  {value === "mine" ? "Mine" : "All"}
+                </Button>
+              ))}
+            </div>
+          )}
           {/* Temporary: Phase 4 replaces this with autorun. */}
           <Button
             variant="outline"
             onClick={runOptimization}
-            disabled={optimizing || loading || facilityLoading || !!facilityError || jobs.length === 0}
+            disabled={optimizing || loading || facilityLoading || !!facilityError || ownJobs.length === 0}
           >
             <Sparkles className="mr-2 h-4 w-4" />
             {optimizing ? "Solving Schedule…" : "Run Optimizer"}
@@ -1052,6 +1087,7 @@ export default function JobsPage() {
             <>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-3 py-3 text-sm">
                 <Detail label="Job ID" value={String(viewing.id)} />
+                {viewing.ownerName && <Detail label="Owner" value={viewing.ownerName} />}
                 {viewing.description && <Detail label="Description" value={viewing.description} />}
                 {usesEstimatedPrices(viewing.deadline, forecastEnd) && <EstimatedPriceBadge />}
                 <Detail label="Status" value={viewing.status} />
@@ -1062,15 +1098,18 @@ export default function JobsPage() {
                 <Detail label="Priority" value={PRIORITY_LABELS[viewing.priority ?? "NORMAL"]} />
                 <Detail label="Job type" value={WORKLOAD_CATEGORY_LABELS[viewing.workloadCategory ?? "ML_TRAINING"]} />
                 <Detail label="Scheduling" value={viewing.isExempt ? "Locked" : "Flexible"} />
+                {viewing.approvedRunId && <Detail label="Plan" value="Approved" />}
               </dl>
-              <label className="flex items-center gap-2 text-sm font-medium">
-                <Checkbox
-                  checked={viewing.isExempt}
-                  disabled={updatingExemptionId === viewing.id}
-                  onCheckedChange={(checked) => void setJobExempt(viewing, checked)}
-                />
-                Lock schedule
-              </label>
+              {canEdit(viewing) && (
+                <label className="flex items-center gap-2 text-sm font-medium">
+                  <Checkbox
+                    checked={viewing.isExempt}
+                    disabled={updatingExemptionId === viewing.id}
+                    onCheckedChange={(checked) => void setJobExempt(viewing, checked)}
+                  />
+                  Lock schedule
+                </label>
+              )}
             </>
           )}
           <DialogFooter className="sm:justify-between sm:space-x-0">
@@ -1084,10 +1123,12 @@ export default function JobsPage() {
             </Button>
             <div className="flex flex-col-reverse gap-2 sm:flex-row">
               <Button variant="outline" onClick={() => setViewOpen(false)}>Close</Button>
-              <Button onClick={() => { if (viewing) { setViewOpen(false); openEdit(viewing) } }}>
-                <Pencil className="mr-2 h-4 w-4" />
-                Edit
-              </Button>
+              {viewing && canEdit(viewing) && (
+                <Button onClick={() => { setViewOpen(false); openEdit(viewing) }}>
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit
+                </Button>
+              )}
             </div>
           </DialogFooter>
         </DialogContent>
@@ -1102,9 +1143,16 @@ export default function JobsPage() {
           </DialogHeader>
           <ul className="max-h-56 space-y-1 overflow-y-auto rounded-md border p-3 text-sm">
             {jobsToDelete.map((job) => (
-              <li key={job.id} className="flex justify-between gap-2">
-                <span className="font-medium">{job.name}</span>
-                <span className="font-mono text-xs text-muted-foreground">#{job.id}</span>
+              <li key={job.id}>
+                <div className="flex justify-between gap-2">
+                  <span className="font-medium">{job.name}</span>
+                  <span className="font-mono text-xs text-muted-foreground">#{job.id}</span>
+                </div>
+                {job.approvedRunId && (
+                  <p className="text-xs text-muted-foreground">
+                    In approved plan {job.approvedRunId.slice(0, 8)}. It leaves the plan and the calendar. The other jobs stay approved.
+                  </p>
+                )}
               </li>
             ))}
           </ul>

@@ -45,6 +45,7 @@ export function decisionUnavailable(plan: SchedulePlanDetail | null, action: Sch
     return plan!.reviewState === "APPROVED"
       ? "This schedule is already approved. Revoke the approval to halt it."
       : `This schedule is already ${reviewLabels[plan!.reviewState].toLowerCase()} and cannot be decided again.`
+  if (action === "approve" && !plan!.canApprove) return "You cannot approve your own plan. Another user has to approve it."
   if (action === "approve" && !plan!.recommendation!.items.some(item => item.scheduledStart && item.scheduledEnd)) return "This recommendation has no scheduled jobs to approve."
   return null
 }

@@ -82,6 +82,11 @@ public class User {
         this.password = password;
     }
 
+    /** The full name, or the email when the account has none. */
+    public String displayName() {
+        return fullName != null && !fullName.isBlank() ? fullName : email;
+    }
+
     public String getFullName() {
         return fullName;
     }

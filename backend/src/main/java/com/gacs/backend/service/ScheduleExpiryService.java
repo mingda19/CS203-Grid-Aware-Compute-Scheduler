@@ -26,7 +26,7 @@ public class ScheduleExpiryService {
         for (var user : users.findAll()) transactions.executeWithoutResult(tx -> {
             gate.lock(user.getEmail());
             for (var plan : plans.findByOwnerIdAndReviewState(user.getId(), ReviewState.APPROVED)) {
-                try { gate.check(plan, user.getEmail(), true); }
+                try { gate.check(plan, true); }
                 catch (ScheduleExportRejectedException ignored) { /* Commit invalidation and continue. */ }
             }
         });

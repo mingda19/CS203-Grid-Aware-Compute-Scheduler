@@ -106,6 +106,7 @@ public class ScheduleInputs {
                 return "Incomplete input provenance";
             if (!s.facility().equals(facility())) return "Facility scheduling inputs changed";
             for (var entry : s.jobs().entrySet()) {
+                if (plan.getRemovedJobIds().contains(entry.getKey())) continue;
                 Job j = jobs.findByIdAndOwnerEmail(entry.getKey(), email).orElse(null);
                 if (j == null) return "job " + entry.getKey() + " is no longer in your jobs";
                 if (j.getSchedulingRevision() != entry.getValue().revision() || !state(j).equals(entry.getValue().state()))

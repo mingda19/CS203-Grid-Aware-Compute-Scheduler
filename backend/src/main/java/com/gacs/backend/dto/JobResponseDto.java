@@ -28,6 +28,12 @@ public class JobResponseDto {
     @Schema(description = "Authenticated operator email who owns the job", example = "operator@datacenter.io")
     private String ownerEmail;
 
+    @Schema(description = "Display name of the owner; set only in the admin listing of all jobs")
+    private String ownerName;
+
+    @Schema(description = "Run ID of the approved plan this job is in; null when it is in none. Such a job cannot be edited, only deleted.")
+    private String approvedRunId;
+
     @Schema(description = "Workload name", example = "LLM Fine-Tuning Run #42")
     private String name;
 

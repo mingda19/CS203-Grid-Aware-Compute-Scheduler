@@ -8,6 +8,12 @@ beforeEach(() => setAccessToken("token-1"))
 afterEach(() => { vi.unstubAllGlobals(); setAccessToken(null) })
 
 describe("schedule review API", () => {
+  it("asks only for the plans the user may approve when told to", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(envelope(200, {}))
+    vi.stubGlobal("fetch", fetchMock)
+    await scheduleReviewApi.list(0, "PENDING", true)
+    expect(fetchMock.mock.calls[0][0]).toBe("http://localhost:8080/api/schedules?page=0&size=20&state=PENDING&approvable=true")
+  })
   it("loads paginated owned plans and persisted details without caching", async () => {
     const fetchMock = vi.fn().mockResolvedValue(envelope(200, {}))
     vi.stubGlobal("fetch", fetchMock)

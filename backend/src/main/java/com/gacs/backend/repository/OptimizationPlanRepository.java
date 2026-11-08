@@ -15,11 +15,19 @@ import java.util.List;
 import java.util.Optional;
 
 public interface OptimizationPlanRepository extends JpaRepository<OptimizationPlan, String> {
-    Page<OptimizationPlan> findByOwnerIdOrderByCreatedAtDescRunIdDesc(
-        Long ownerId, Pageable pageable);
+    // The review queue: every owner's plans, newest first. "Not" leaves out one owner's plans.
+    Page<OptimizationPlan> findAllByOrderByCreatedAtDescRunIdDesc(Pageable pageable);
 
-    Page<OptimizationPlan> findByOwnerIdAndReviewStateOrderByCreatedAtDescRunIdDesc(
+    Page<OptimizationPlan> findByReviewStateOrderByCreatedAtDescRunIdDesc(ReviewState state, Pageable pageable);
+
+    Page<OptimizationPlan> findByOwnerIdNotOrderByCreatedAtDescRunIdDesc(Long ownerId, Pageable pageable);
+
+    Page<OptimizationPlan> findByOwnerIdNotAndReviewStateOrderByCreatedAtDescRunIdDesc(
         Long ownerId, ReviewState state, Pageable pageable);
+
+    /** The owner's email without loading the plan, so a later locked read of it is not served from a stale cache. */
+    @Query("select p.owner.email from OptimizationPlan p where p.runId = :runId")
+    Optional<String> findOwnerEmail(@Param("runId") String runId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from OptimizationPlan p where p.runId = :runId and p.owner.id = :ownerId")

@@ -1,13 +1,15 @@
 import type { AuditActionType, AuditEvent, AuditEventDetail, AuditEventQuery } from "./api"
 
-export const AUDIT_ACTION_TYPES: AuditActionType[] = ["APPROVE", "REJECT", "REVISE", "OVERRIDE", "DISPATCH"]
+export const AUDIT_ACTION_TYPES: AuditActionType[] = ["APPROVE", "REJECT", "REVISE", "REVOKE", "OVERRIDE", "DISPATCH", "REMOVE_JOB"]
 
 export const AUDIT_ACTION_LABELS: Record<AuditActionType, string> = {
   APPROVE: "Approved",
   REJECT: "Rejected",
   REVISE: "Revised",
+  REVOKE: "Revoked",
   OVERRIDE: "Overridden",
   DISPATCH: "Dispatched",
+  REMOVE_JOB: "Job removed",
 }
 
 export interface AuditFilters {
@@ -102,7 +104,7 @@ export type OutcomeTone = "positive" | "negative" | "neutral"
 
 export function outcomeTone(action: AuditActionType): OutcomeTone {
   if (action === "APPROVE" || action === "DISPATCH") return "positive"
-  if (action === "REJECT") return "negative"
+  if (action === "REJECT" || action === "REVOKE") return "negative"
   return "neutral"
 }
 

@@ -54,6 +54,19 @@ class ConstraintParseControllerTest {
     @MockitoBean
     private com.gacs.backend.service.ScheduleInputs scheduleInputs;
 
+    // JobService needs these to be built; the parser never touches them.
+    @MockitoBean
+    private com.gacs.backend.repository.OptimizationPlanRepository planRepository;
+
+    @MockitoBean
+    private com.gacs.backend.repository.WorkloadScheduleRepository workloadScheduleRepository;
+
+    @MockitoBean
+    private com.gacs.backend.service.AuditEventService auditEventService;
+
+    @MockitoBean
+    private com.gacs.backend.repository.UserRepository userRepository;
+
     private final ObjectMapper json = new ObjectMapper();
 
     @Test

@@ -11,7 +11,7 @@ import java.time.Instant;
  * job. Null or blank criteria are ignored.
  *
  * @param onlyActor when set, restricts results to events whose actor equals it exactly, ignoring
- *                  case. This is the ownership scope, not a search term, which is why it is separate
+ *                  case, or that concern a run it owns. This is the ownership scope, not a search term, which is why it is separate
  *                  from {@code actor}: that one matches any substring, so forcing a caller's own
  *                  address into it would also return events belonging to anyone whose address
  *                  contains theirs. Callers must not take this from request parameters - the
@@ -40,7 +40,7 @@ public record AuditEventFilter(
         return new AuditEventFilter(null, null, null, null, null, null, null);
     }
 
-    /** This filter, restricted to {@code email}'s own events. */
+    /** This filter, restricted to {@code email}'s own events and the events on the runs they own. */
     public AuditEventFilter scopedTo(String email) {
         return new AuditEventFilter(from, to, actor, actionType, runId, jobId, email);
     }
