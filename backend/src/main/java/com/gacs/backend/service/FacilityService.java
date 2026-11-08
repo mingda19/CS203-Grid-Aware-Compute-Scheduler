@@ -3,88 +3,69 @@ package com.gacs.backend.service;
 import com.gacs.backend.dto.FacilityRequestDto;
 import com.gacs.backend.dto.FacilityResponseDto;
 import com.gacs.backend.model.Facility;
+import com.gacs.backend.model.ReviewState;
 import com.gacs.backend.repository.FacilityRepository;
+import com.gacs.backend.repository.OptimizationPlanRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
+import java.time.Clock;
 
+/** One facility, shared by every user. Everyone reads it; only an admin changes it. */
 @Service
 public class FacilityService {
 
     private final FacilityRepository facilityRepository;
-    private final ScheduleInputs inputs;
+    private final OptimizationPlanRepository plans;
+    private final Clock clock;
 
-    public FacilityService(FacilityRepository facilityRepository, ScheduleInputs inputs) {
-        this.inputs = inputs;
+    public FacilityService(FacilityRepository facilityRepository, OptimizationPlanRepository plans, Clock clock) {
         this.facilityRepository = facilityRepository;
+        this.plans = plans;
+        this.clock = clock;
     }
 
     /**
-     * Retrieves the operator's facility configuration, automatically creating a default one if none exists.
-     * Safely handles and resolves any duplicate rows from concurrent requests.
+     * The shared facility, created with the defaults on first read. {@code ownerEmail} only records who
+     * triggered the creation. It never selects a facility.
      */
+    // ponytail: two first reads at once can each insert a row; the lowest ID wins, the other is never read.
     @Transactional
     public FacilityResponseDto getOrCreateFacility(String ownerEmail) {
-        inputs.lock(ownerEmail);
-        List<Facility> facilities = new java.util.ArrayList<>(facilityRepository.findAllByOwnerEmail(ownerEmail));
-        facilities.sort(java.util.Comparator.comparing(Facility::getId));
-        if (facilities.isEmpty()) {
-            Facility defaultFacility = Facility.builder()
-                    .ownerEmail(ownerEmail)
-                    .name("Primary Compute Cluster")
-                    .maxCpuHours(256.0)
-                    .maxGpuHours(64.0)
-                    .location("LZ_NORTH")
-                    .build();
-            return FacilityResponseDto.fromEntity(facilityRepository.save(defaultFacility));
-        }
+        return FacilityResponseDto.fromEntity(shared(ownerEmail));
+    }
 
-        Facility primary = facilities.get(0);
-        // Clean up any duplicate records created by simultaneous requests
-        if (facilities.size() > 1) {
-            for (int i = 1; i < facilities.size(); i++) {
-                facilityRepository.delete(facilities.get(i));
-            }
-        }
-        return FacilityResponseDto.fromEntity(primary);
+    private Facility shared(String ownerEmail) {
+        return facilityRepository.findFirstByOrderByIdAsc().orElseGet(() -> facilityRepository.save(
+                Facility.builder().ownerEmail(ownerEmail).build()));
     }
 
     /**
-     * Updates the operator's facility configuration.
+     * Admin change to the shared facility. Locks the facility row only. Taking an owner's row after it
+     * could deadlock with an approval, which locks the owner first. So a change ends the approval of every
+     * approved plan directly here, and does not go through {@link ScheduleInputs#invalidate}.
      */
     @Transactional
-    public FacilityResponseDto updateFacility(FacilityRequestDto request, String ownerEmail) {
+    public FacilityResponseDto updateFacility(FacilityRequestDto request, String adminEmail) {
         if (request.getMaxCpuHours() == 0.0 && request.getMaxGpuHours() == 0.0) {
             throw new IllegalArgumentException("Facility must have maxCpuHours or maxGpuHours greater than 0");
         }
-
-        inputs.lock(ownerEmail);
-        List<Facility> facilities = new java.util.ArrayList<>(facilityRepository.findAllByOwnerEmail(ownerEmail));
-        facilities.sort(java.util.Comparator.comparing(Facility::getId));
-        Facility facility = facilities.isEmpty()
-                ? Facility.builder().ownerEmail(ownerEmail).build()
-                : facilities.get(0);
-
-        if (facilities.size() > 1) {
-            for (int i = 1; i < facilities.size(); i++) {
-                facilityRepository.delete(facilities.get(i));
-            }
-        }
+        shared(adminEmail); // the row must exist before it can be locked
+        Facility facility = facilityRepository.lockShared().orElseThrow();
 
         boolean changed = !java.util.Objects.equals(facility.getMaxCpuHours(), request.getMaxCpuHours())
             || !java.util.Objects.equals(facility.getMaxGpuHours(), request.getMaxGpuHours())
             || !java.util.Objects.equals(facility.getLocation(), request.getLocation().trim());
         if (changed) {
             facility.setSchedulingRevision(facility.getSchedulingRevision() + 1);
-            inputs.invalidate(ownerEmail, null, "Facility scheduling inputs changed");
+            for (var plan : plans.findByReviewState(ReviewState.APPROVED)) {
+                plan.invalidate(ReviewState.INVALIDATED, "Facility scheduling inputs changed", clock.instant());
+            }
         }
         facility.setName(request.getName().trim());
         facility.setMaxCpuHours(request.getMaxCpuHours());
         facility.setMaxGpuHours(request.getMaxGpuHours());
         facility.setLocation(request.getLocation().trim());
-
-        Facility saved = facilityRepository.save(facility);
-        return FacilityResponseDto.fromEntity(saved);
+        return FacilityResponseDto.fromEntity(facilityRepository.save(facility));
     }
 }

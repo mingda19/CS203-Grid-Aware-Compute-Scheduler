@@ -743,8 +743,9 @@ export const facilityApi = {
   utilization(): Promise<ApiResponse<FacilityUtilization>> {
     return fetchJson<ApiResponse<FacilityUtilization>>("/api/facilities/me/utilization", { cache: "no-store" })
   },
+  /** Admin only. A change to capacity or location ends the approval of every approved plan. */
   update(payload: FacilityConfig): Promise<ApiResponse<FacilityConfig>> {
-    return fetchJson<ApiResponse<FacilityConfig>>("/api/facilities/me", {
+    return fetchJson<ApiResponse<FacilityConfig>>("/api/admin/facility", {
       method: "PUT",
       body: JSON.stringify(payload),
     })

@@ -20,7 +20,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -55,8 +54,7 @@ public class ScheduleApplicationService {
         var checked = gate.check(plan, email, true);
         var existing = schedules.findByRunIdOrderByIdAsc(plan.getRunId());
         if (plan.getAppliedAt() != null) return existing.stream().map(ScheduleApplicationService::dto).toList();
-        String cluster = facilities.findAllByOwnerEmail(email).stream().min(Comparator.comparing(Facility::getId))
-            .map(Facility::getName).orElse("Primary Compute Cluster");
+        String cluster = facilities.findFirstByOrderByIdAsc().map(Facility::getName).orElse("Primary Compute Cluster");
         // The job's own chosen category (bug 6) replaces the old GPU-hours guess ("any GPU hours at
         // all" implied ML Training, everything else implied HPC Batch) - a category the operator
         // never actually chose. Jobs deleted between approval and application fall back to the

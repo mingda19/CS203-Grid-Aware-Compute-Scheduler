@@ -93,7 +93,7 @@ class ElapsedJobRescheduleIntegrationTest {
         schedules.deleteAll(schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail()));
         for (String run : created) { plans.deleteById(run); runs.deleteById(run); }
         jobs.deleteAll(jobs.findByOwnerEmailOrderByOriginalStartTimeAsc(owner.getEmail()));
-        facilities.deleteAll(facilities.findAllByOwnerEmail(owner.getEmail()));
+        facilities.deleteAll(); // one shared facility: reset it for the next test class
         users.deleteById(owner.getId());
     }
 

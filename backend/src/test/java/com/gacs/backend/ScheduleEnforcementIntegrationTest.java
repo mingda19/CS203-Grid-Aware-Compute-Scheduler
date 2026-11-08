@@ -57,7 +57,7 @@ class ScheduleEnforcementIntegrationTest {
         schedules.deleteAll(schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail()));
         for (String run : created) { plans.deleteById(run); runs.deleteById(run); }
         jobs.deleteAll(jobs.findByOwnerEmailOrderByOriginalStartTimeAsc(owner.getEmail()));
-        facilities.deleteAll(facilities.findAllByOwnerEmail(owner.getEmail()));
+        facilities.deleteAll(); // one shared facility: reset it for the next test class
         users.deleteById(owner.getId());
     }
     private Map<String,Object> jobBody() {
@@ -200,11 +200,11 @@ class ScheduleEnforcementIntegrationTest {
     void facilityChangesInvalidate(String field) throws Exception {
         String run=optimize(); decide(run,"approve").andExpect(status().isOk());
         Map<String,Object> body=new LinkedHashMap<>(Map.of("name","Renamed", "maxCpuHours",256.0,"maxGpuHours",64.0,"location","LZ_NORTH"));
-        mvc.perform(put("/api/facilities/me").with(user(owner.getEmail())).contentType(APPLICATION_JSON)
+        mvc.perform(put("/api/admin/facility").with(user("admin@test.io").roles("ADMIN")).contentType(APPLICATION_JSON)
             .content(json.writeValueAsString(body))).andExpect(status().isOk());
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
         body.put(field,field.equals("location") ? "LZ_SOUTH" : 128.0);
-        mvc.perform(put("/api/facilities/me").with(user(owner.getEmail())).contentType(APPLICATION_JSON)
+        mvc.perform(put("/api/admin/facility").with(user("admin@test.io").roles("ADMIN")).contentType(APPLICATION_JSON)
             .content(json.writeValueAsString(body))).andExpect(status().isOk());
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
         refused(apply(run),"INVALIDATED");
@@ -384,15 +384,22 @@ class ScheduleEnforcementIntegrationTest {
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
     }
 
-    @Test void anotherOperatorsFacilityDoesNotInvalidateOwnerPlans() throws Exception {
+    @Test void anAdminFacilityChangeInvalidatesEveryOwnersApprovedPlans() throws Exception {
         String run=optimize();decide(run,"approve").andExpect(status().isOk());
-        User other=users.save(new User(UUID.randomUUID()+"@test.io","pw","Other","ROLE_USER"));
-        try {
-            mvc.perform(put("/api/facilities/me").with(user(other.getEmail())).contentType(APPLICATION_JSON)
-                .content("{\"name\":\"Other\",\"maxCpuHours\":128,\"maxGpuHours\":32,\"location\":\"LZ_SOUTH\"}"))
-                .andExpect(status().isOk());
-            apply(run).andExpect(status().isOk());
-        } finally {facilities.deleteAll(facilities.findAllByOwnerEmail(other.getEmail()));users.deleteById(other.getId());}
+        mvc.perform(put("/api/admin/facility").with(user("admin@test.io").roles("ADMIN")).contentType(APPLICATION_JSON)
+            .content("{\"name\":\"Other\",\"maxCpuHours\":128,\"maxGpuHours\":32,\"location\":\"LZ_SOUTH\"}"))
+            .andExpect(status().isOk());
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
+        refused(apply(run),"INVALIDATED");
+    }
+
+    @Test void aNonAdminCannotChangeTheFacility() throws Exception {
+        String run=optimize();decide(run,"approve").andExpect(status().isOk());
+        mvc.perform(put("/api/admin/facility").with(user(owner.getEmail())).contentType(APPLICATION_JSON)
+            .content("{\"name\":\"Mine\",\"maxCpuHours\":128,\"maxGpuHours\":32,\"location\":\"LZ_SOUTH\"}"))
+            .andExpect(status().isForbidden());
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
+        apply(run).andExpect(status().isOk());
     }
 
     @Test void planDetailDetectsApprovalHashTamperingAndExecutionRefusesIt() throws Exception {

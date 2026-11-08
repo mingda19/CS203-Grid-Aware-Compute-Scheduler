@@ -10,6 +10,7 @@ import com.gacs.backend.repository.JobRepository;
 import com.gacs.backend.repository.OptimizationPlanRepository;
 import com.gacs.backend.repository.OptimizerRunRepository;
 import com.gacs.backend.repository.UserRepository;
+import com.gacs.backend.service.ScheduleExpiryService;
 import com.gacs.backend.support.MutableClock;
 import com.gacs.backend.support.MutableClockConfig;
 import org.junit.jupiter.api.AfterEach;
@@ -64,11 +65,13 @@ class FacilityUtilizationIntegrationTest {
     @Autowired OptimizationPlanRepository plans;
     @Autowired OptimizerRunRepository runs;
     @Autowired MutableClock clock;
+    @Autowired ScheduleExpiryService expiry;
 
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
     private final List<String> createdRuns = new ArrayList<>();
     private final List<Long> createdJobs = new ArrayList<>();
     private User owner;
+    private User other;
 
     /** Two days ahead, on the hour, so no plan is stale by time before the clock moves. */
     private final LocalDateTime start = LocalDateTime.now(ZoneOffset.UTC).truncatedTo(ChronoUnit.HOURS).plusDays(2);
@@ -89,12 +92,13 @@ class FacilityUtilizationIntegrationTest {
             runs.deleteById(runId);
         }
         jobs.deleteAllById(createdJobs);
-        facilities.deleteAll(facilities.findAllByOwnerEmail(owner.getEmail()));
+        facilities.deleteAll(); // one shared facility: reset it for the next test class
+        if (other != null) users.deleteById(other.getId());
         users.deleteById(owner.getId());
     }
 
     private void saveFacility(double cpu, double gpu) {
-        facilities.deleteAll(facilities.findAllByOwnerEmail(owner.getEmail()));
+        facilities.deleteAll(); // one shared facility: reset it for the next test class
         facilities.save(Facility.builder().ownerEmail(owner.getEmail()).maxCpuHours(cpu).maxGpuHours(gpu).build());
     }
 
@@ -116,7 +120,7 @@ class FacilityUtilizationIntegrationTest {
 
     /** Optimises against prices that make {@link #usedHour} the cheapest, under the facility's own limits. */
     private String optimize(Job... jobList) throws Exception {
-        Facility facility = facilities.findAllByOwnerEmail(owner.getEmail()).get(0);
+        Facility facility = facilities.findFirstByOrderByIdAsc().orElseThrow();
         List<Map<String, Object>> jobsJson = new ArrayList<>();
         for (Job j : jobList) {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -214,18 +218,36 @@ class FacilityUtilizationIntegrationTest {
     }
 
     @Test
-    @DisplayName("A plan whose job changed after approval is not counted and its state is stored as invalid")
+    @DisplayName("A plan whose job changed after approval is not counted once the expiry check has stored it as invalid")
     void changedJobPlanIsNotCountedAndIsInvalidated() throws Exception {
         Job job = flexibleJob(4.0, 0.0);
         String runId = approvedPlan(job);
         job.setCpuHours(5.0);
         jobs.save(job);
         clockAt(usedHour.plusMinutes(10));
+        expiry.expire(); // utilization reads stored states; this check is what keeps them current
 
         utilization().andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.state").value("NO_APPROVED_PLAN"))
                 .andExpect(jsonPath("$.data.runIds.length()").value(0));
         assertThat(stateOf(runId)).isIn(ReviewState.STALE, ReviewState.INVALIDATED);
+    }
+
+    @Test
+    @DisplayName("Approved plans of different owners are summed against the one shared facility")
+    void otherOwnersApprovedPlansAreCounted() throws Exception {
+        approvedPlan(flexibleJob(4.0, 0.0));
+        User first = owner;
+        other = users.save(new User(UUID.randomUUID() + "@test.io", "test-password", "Other", "ROLE_USER"));
+        owner = other;
+        approvedPlan(flexibleJob(6.0, 0.0));
+        owner = first;
+        clockAt(usedHour.plusMinutes(10));
+
+        utilization().andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.state").value("LIVE"))
+                .andExpect(jsonPath("$.data.runIds.length()").value(2))
+                .andExpect(jsonPath("$.data.cpu.used").value(10.0));
     }
 
     @Test

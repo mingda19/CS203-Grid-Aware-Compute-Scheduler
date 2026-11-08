@@ -49,8 +49,8 @@ public class ScheduleInputs {
             j.getRawConstraints(), j.getConfirmationOutcome());
     }
 
-    private FacilityState facility(String email) {
-        return facilities.findAllByOwnerEmail(email).stream().min(Comparator.comparing(Facility::getId))
+    private FacilityState facility() {
+        return facilities.findFirstByOrderByIdAsc()
             .map(f -> new FacilityState(f.getSchedulingRevision(), f.getMaxCpuHours(), f.getMaxGpuHours(), f.getLocation()))
             .orElse(new FacilityState(0, 256.0, 64.0, "LZ_NORTH"));
     }
@@ -67,7 +67,7 @@ public class ScheduleInputs {
             versions.put(j.getId(), new JobVersion(j.getSchedulingRevision(), state(j)));
             if (!matches(input, j)) refusal = "Submitted scheduling inputs do not match job " + j.getId();
         }
-        FacilityState f = facility(email);
+        FacilityState f = facility();
         if (request.clusterCapacity() == null &&
             (Double.compare(properties.defaultMaxCpuHoursPerSlot(), f.cpu()) != 0 ||
              Double.compare(properties.defaultMaxGpuHoursPerSlot(), f.gpu()) != 0))
@@ -104,7 +104,7 @@ public class ScheduleInputs {
             if (s.request() == null || s.request().jobs() == null || s.jobs() == null || s.facility() == null ||
                 s.jobs().size() != s.request().jobs().size() || !s.jobs().keySet().equals(plan.getJobIds()))
                 return "Incomplete input provenance";
-            if (!s.facility().equals(facility(email))) return "Facility scheduling inputs changed";
+            if (!s.facility().equals(facility())) return "Facility scheduling inputs changed";
             for (var entry : s.jobs().entrySet()) {
                 Job j = jobs.findByIdAndOwnerEmail(entry.getKey(), email).orElse(null);
                 if (j == null) return "job " + entry.getKey() + " is no longer in your jobs";

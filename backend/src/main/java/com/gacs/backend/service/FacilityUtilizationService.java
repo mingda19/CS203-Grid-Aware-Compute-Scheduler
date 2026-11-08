@@ -5,11 +5,9 @@ import com.gacs.backend.dto.FacilityUtilizationDto.State;
 import com.gacs.backend.dto.FacilityUtilizationDto.Usage;
 import com.gacs.backend.dto.OptimizeResponseDto.Allocation;
 import com.gacs.backend.dto.OptimizeResponseDto.ScheduleItem;
-import com.gacs.backend.exception.ScheduleExportRejectedException;
 import com.gacs.backend.model.OptimizationPlan;
 import com.gacs.backend.model.ReviewState;
 import com.gacs.backend.repository.OptimizationPlanRepository;
-import com.gacs.backend.repository.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,35 +19,31 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * How much of the facility the live approved plans schedule in the current hour.
+ * How much of the shared facility the approved plans of every owner schedule in the current hour.
  *
- * <p>Only the server can say which approved plans are still live: {@link ScheduleGate#check} finds ended
- * slots, changed jobs, changed facility inputs and hash mismatches, and records the new state. This method
- * runs that gate, so it can change stored plan states.
+ * <p>Plans are read without {@link ScheduleGate#check}: checking another owner's plan needs that owner's
+ * lock, and two callers locking owners in opposite orders deadlock. The approved state is kept current
+ * elsewhere: a facility change ends every approval, a job delete or edit does so for its own plans, and
+ * {@link ScheduleExpiryService} runs the gate every minute.
  */
 @Service
 public class FacilityUtilizationService {
 
     private final OptimizationPlanRepository plans;
-    private final UserRepository users;
     private final FacilityService facilities;
-    private final ScheduleGate gate;
+    private final StoredScheduleReader reader;
     private final Clock clock;
 
-    public FacilityUtilizationService(OptimizationPlanRepository plans, UserRepository users,
-                                      FacilityService facilities, ScheduleGate gate, Clock clock) {
+    public FacilityUtilizationService(OptimizationPlanRepository plans, FacilityService facilities,
+                                      StoredScheduleReader reader, Clock clock) {
         this.plans = plans;
-        this.users = users;
         this.facilities = facilities;
-        this.gate = gate;
+        this.reader = reader;
         this.clock = clock;
     }
 
-    // Keeps the invalidations the gate records, as ScheduleReviewService.decide does.
-    @Transactional(noRollbackFor = ScheduleExportRejectedException.class)
+    @Transactional
     public FacilityUtilizationDto current(String email) {
-        gate.lock(email);
-        var owner = AuthenticatedOperators.resolve(users, email);
         var facility = facilities.getOrCreateFacility(email);
         double cpuLimit = facility.getMaxCpuHours() == null ? 0.0 : facility.getMaxCpuHours();
         double gpuLimit = facility.getMaxGpuHours() == null ? 0.0 : facility.getMaxGpuHours();
@@ -58,16 +52,12 @@ public class FacilityUtilizationService {
         List<String> runIds = new ArrayList<>();
         double cpu = 0.0;
         double gpu = 0.0;
-        for (OptimizationPlan plan : plans.findByOwnerIdAndReviewState(owner.getId(), ReviewState.APPROVED)) {
-            ScheduleGate.Checked checked;
-            try {
-                checked = gate.check(plan, email, true);
-            } catch (ScheduleExportRejectedException notLive) {
-                continue; // The gate already stored the new state.
-            }
+        for (OptimizationPlan plan : plans.findByReviewState(ReviewState.APPROVED)) {
+            var schedule = reader.read(plan.getResultJson());
+            if (schedule.isEmpty()) continue;
             runIds.add(plan.getRunId());
-            if (checked.schedule().items() == null) continue;
-            for (ScheduleItem item : checked.schedule().items()) {
+            if (schedule.get().items() == null) continue;
+            for (ScheduleItem item : schedule.get().items()) {
                 if (item.allocations() == null) continue;
                 for (Allocation slot : item.allocations()) {
                     if (hour.equals(slot.intervalStartUtc())) {

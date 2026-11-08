@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
-import { BriefcaseBusiness, Pencil, Plus, Trash2, Sparkles, TrendingUp, Clock, Server, Check, ArrowRight, SlidersHorizontal } from "lucide-react"
+import { BriefcaseBusiness, Pencil, Plus, Trash2, Sparkles, TrendingUp, Clock, Server, ArrowRight } from "lucide-react"
 import {
   jobsApi,
   priceApi,
@@ -155,7 +155,7 @@ export default function JobsPage() {
     }
   }
 
-  // Facility & Cluster Envelope state (stored in DB per user)
+  // The shared facility, read only here. An admin changes it on the Admin page.
   const [facility, setFacility] = React.useState<FacilityConfig>({
     name: "Primary Compute Cluster",
     maxCpuHours: 256.0,
@@ -164,44 +164,6 @@ export default function JobsPage() {
   })
   const [facilityLoading, setFacilityLoading] = React.useState(true)
   const [facilityError, setFacilityError] = React.useState<string | null>(null)
-  const [facilityDirty, setFacilityDirty] = React.useState(false)
-  const [facilitySaving, setFacilitySaving] = React.useState(false)
-  const [facilitySavedMsg, setFacilitySavedMsg] = React.useState<string | null>(null)
-  const [facilityExpanded, setFacilityExpanded] = React.useState(false)
-
-  const handleSaveFacility = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault()
-    setFacilitySaving(true)
-    setFacilitySavedMsg(null)
-    try {
-      const response = await facilityApi.update({
-        ...facility,
-        maxCpuHours: Number(facility.maxCpuHours) || 0,
-        maxGpuHours: Number(facility.maxGpuHours) || 0,
-      })
-      if (!response.success || !response.data) throw new Error(response.message || "Could not save facility settings")
-      setFacility(response.data)
-      setFacilityError(null)
-      setFacilityDirty(false)
-      setFacilitySavedMsg("Facility envelope updated & saved to database!")
-      setTimeout(() => setFacilitySavedMsg(null), 3500)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update facility envelope")
-    } finally {
-      setFacilitySaving(false)
-    }
-  }
-
-  const applyPreset = (presetName: string, cpu: number, gpu: number, loc = "LZ_NORTH") => {
-    setFacilityDirty(true)
-    setFacility((prev) => ({
-      ...prev,
-      name: presetName,
-      maxCpuHours: cpu,
-      maxGpuHours: gpu,
-      location: loc,
-    }))
-  }
 
   React.useEffect(() => {
     let active = true
@@ -500,8 +462,30 @@ export default function JobsPage() {
     <div className="space-y-6" id="jobs-root">
       <React.Suspense fallback={null}><OpenCreateOnParam onOpen={openCreate} /></React.Suspense>
       <h1 className="sr-only">Compute Jobs</h1>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+        {/* The shared facility, read only. An admin changes it on the Admin page. */}
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+          <div className="flex items-center gap-2">
+            <Server className="h-4 w-4 text-teal-500" />
+            <div>
+              <span className="block text-[11px] text-muted-foreground">Facility</span>
+              <span className="font-semibold text-foreground">{facility.name}</span>
+            </div>
+          </div>
+          <div>
+            <span className="block text-[11px] text-muted-foreground">Max CPU per hour</span>
+            <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">{facility.maxCpuHours} CPU-h</span>
+          </div>
+          <div>
+            <span className="block text-[11px] text-muted-foreground">Max GPU per hour</span>
+            <span className="font-mono font-semibold text-teal-600 dark:text-teal-400">{facility.maxGpuHours} GPU-h</span>
+          </div>
+          <div>
+            <span className="block text-[11px] text-muted-foreground">ERCOT zone</span>
+            <span className="font-mono font-semibold text-foreground">{facility.location}</span>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
           {selectedJobs.length > 0 && (
             <>
               <span role="status" className="text-sm text-muted-foreground">{selectedJobs.length} selected</span>
@@ -511,13 +495,11 @@ export default function JobsPage() {
               </Button>
             </>
           )}
-        </div>
-        <div className="flex flex-wrap gap-2">
           {/* Temporary: Phase 4 replaces this with autorun. */}
           <Button
             variant="outline"
             onClick={runOptimization}
-            disabled={optimizing || loading || facilityLoading || facilitySaving || facilityDirty || !!facilityError || jobs.length === 0}
+            disabled={optimizing || loading || facilityLoading || !!facilityError || jobs.length === 0}
           >
             <Sparkles className="mr-2 h-4 w-4" />
             {optimizing ? "Solving Schedule…" : "Run Optimizer"}
@@ -529,176 +511,7 @@ export default function JobsPage() {
         </div>
       </div>
 
-      {facilityError && <p role="alert" className="text-sm text-destructive">{facilityError}. Save the facility settings below or reload the page before running optimization.</p>}
-      {facilityDirty && <p role="status" className="text-sm text-muted-foreground">Save your facility settings before running optimization.</p>}
-      {/* Facility & Cluster Hardware Envelope Card */}
-      <Card className="border border-border bg-card shadow-xs overflow-hidden">
-        <div className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/60 bg-muted/20">
-          <div className="flex items-start gap-3">
-            <div className="h-10 w-10 rounded-xl bg-teal-500/15 border border-teal-500/30 text-teal-600 dark:text-teal-400 flex items-center justify-center shrink-0">
-              <Server className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="font-semibold text-base text-foreground tracking-tight">
-                  Facility Hardware & Capacity Envelope
-                </h3>
-                <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-semibold">
-                  {facilityLoading ? "Loading" : facilityError ? "Unavailable" : facilityDirty ? "Unsaved changes" : "Saved"}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setFacilityExpanded(!facilityExpanded)}
-              className="gap-1.5 text-xs font-medium cursor-pointer"
-            >
-              <SlidersHorizontal className="h-3.5 w-3.5 text-teal-500" />
-              {facilityExpanded ? "Hide Settings" : "Configure Facility"}
-            </Button>
-          </div>
-        </div>
-
-        {/* Overview Bar */}
-        <div className="px-5 py-3.5 bg-card flex flex-wrap items-center justify-between gap-4 text-xs">
-          <div className="flex flex-wrap items-center gap-4 sm:gap-6">
-            <div>
-              <span className="text-[11px] text-muted-foreground block">Facility Node</span>
-              <span className="font-semibold text-foreground">{facility.name || "Primary Cluster"}</span>
-            </div>
-            <div className="h-8 w-px bg-border/60 hidden sm:block" />
-            <div>
-              <span className="text-[11px] text-muted-foreground block">Max CPU / Slot</span>
-              <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">
-                {facility.maxCpuHours} CPU-h
-              </span>
-            </div>
-            <div className="h-8 w-px bg-border/60 hidden sm:block" />
-            <div>
-              <span className="text-[11px] text-muted-foreground block">Max GPU / Slot</span>
-              <span className="font-mono font-semibold text-teal-600 dark:text-teal-400">
-                {facility.maxGpuHours} GPU-h
-              </span>
-            </div>
-            <div className="h-8 w-px bg-border/60 hidden sm:block" />
-            <div>
-              <span className="text-[11px] text-muted-foreground block">ERCOT Pricing Zone</span>
-              <span className="font-mono font-semibold text-foreground">
-                {facility.location || "LZ_NORTH"}
-              </span>
-            </div>
-          </div>
-
-          {facilitySavedMsg && (
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 animate-in fade-in">
-              <Check className="h-3.5 w-3.5" />
-              {facilitySavedMsg}
-            </div>
-          )}
-        </div>
-
-        {/* Expanded Configuration Panel */}
-        {facilityExpanded && (
-          <div className="p-5 border-t border-border/60 bg-muted/15 space-y-4 animate-in slide-in-from-top-2 duration-150">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-foreground uppercase tracking-wider">
-                Quick Facility Presets (Evaluation & Stress-Testing)
-              </span>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-[11px] gap-1"
-                  onClick={() => applyPreset("Standard Datacenter", 256.0, 64.0, "LZ_NORTH")}
-                >
-                  Standard (256 CPU, 64 GPU)
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-[11px] gap-1 text-amber-600 dark:text-amber-400 border-amber-500/30"
-                  onClick={() => applyPreset("Constrained Test Lab", 32.0, 8.0, "LZ_NORTH")}
-                >
-                  Constrained Lab (32 CPU, 8 GPU)
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-[11px] gap-1 text-teal-600 dark:text-teal-400 border-teal-500/30"
-                  onClick={() => applyPreset("AI Supercomputing Pod", 512.0, 128.0, "LZ_HOUSTON")}
-                >
-                  AI Pod (512 CPU, 128 GPU)
-                </Button>
-              </div>
-            </div>
-
-            <form onSubmit={handleSaveFacility} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
-              <Field label="Facility / Cluster Name">
-                <Input
-                  value={facility.name}
-                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, name: e.target.value }) }}
-                  placeholder="e.g. Austin Primary Cluster"
-                  required
-                />
-              </Field>
-
-              <Field label="Max Concurrent CPU-Hours / Slot">
-                <Input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={facility.maxCpuHours}
-                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, maxCpuHours: Number(e.target.value) }) }}
-                  required
-                />
-              </Field>
-
-              <Field label="Max Concurrent GPU-Hours / Slot">
-                <Input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={facility.maxGpuHours}
-                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, maxGpuHours: Number(e.target.value) }) }}
-                  required
-                />
-              </Field>
-
-              <Field label="ERCOT Settlement Location">
-                <select
-                  value={facility.location}
-                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, location: e.target.value }) }}
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs font-semibold text-foreground focus:ring-1 focus:ring-primary"
-                >
-                  <option value="LZ_NORTH">LZ_NORTH (North Hub)</option>
-                  <option value="LZ_HOUSTON">LZ_HOUSTON (Houston)</option>
-                  <option value="LZ_SOUTH">LZ_SOUTH (South Hub)</option>
-                  <option value="LZ_WEST">LZ_WEST (West Texas Wind)</option>
-                </select>
-              </Field>
-
-              <div className="sm:col-span-2 lg:col-span-4 flex items-center justify-end gap-2 pt-1">
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={facilityLoading || facilitySaving}
-                  className="gap-1.5 font-medium cursor-pointer"
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  {facilityLoading ? "Loading…" : facilitySaving ? "Saving to DB…" : "Save Facility Envelope"}
-                </Button>
-              </div>
-            </form>
-          </div>
-        )}
-      </Card>
+      {facilityError && <p role="alert" className="text-sm text-destructive">{facilityError}. Reload the page before running optimization.</p>}
 
       {error && (
         <div
@@ -1067,7 +880,7 @@ export default function JobsPage() {
                 />
               </div>
               <div className="grid grid-cols-2 gap-4 sm:col-span-2">
-                <Field label="CPU hours">
+                <Field label={`CPU hours (limit ${facility.maxCpuHours} per hour)`}>
                   <Input
                     type="number"
                     min="0"
@@ -1078,7 +891,7 @@ export default function JobsPage() {
                     onChange={(e) => setForm({ ...form, cpuHours: e.target.value })}
                   />
                 </Field>
-                <Field label="GPU hours">
+                <Field label={`GPU hours (limit ${facility.maxGpuHours} per hour)`}>
                   <Input
                     type="number"
                     min="0"
