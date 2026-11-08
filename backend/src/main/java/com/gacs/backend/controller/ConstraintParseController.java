@@ -9,6 +9,8 @@ import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
+
+import java.security.Principal;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -45,7 +47,11 @@ public class ConstraintParseController {
     })
     @PostMapping("/parse-constraints")
     public ResponseEntity<ApiResponse<ConstraintParseResponseDto>> parse(
-            @Valid @RequestBody ConstraintParseRequestDto request) {
-        return ResponseEntity.ok(ApiResponse.ok("Constraints parsed", service.parse(request)));
+            @Valid @RequestBody ConstraintParseRequestDto request, Principal principal) {
+        // The operator's own name, so a constraint naming another job can only ever resolve to a
+        // job they own. Passing anything wider here would be the audit-log leak again, in a
+        // different place: it would let one operator's text bind to another operator's job.
+        return ResponseEntity.ok(ApiResponse.ok("Constraints parsed",
+                service.parse(request, principal == null ? null : principal.getName())));
     }
 }

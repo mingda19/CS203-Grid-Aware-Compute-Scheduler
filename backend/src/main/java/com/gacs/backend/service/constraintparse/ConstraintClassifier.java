@@ -29,4 +29,19 @@ public interface ConstraintClassifier {
      *         when the text asks for nothing recognisable - which is a valid answer, not an error.
      */
     List<ClassifiedConstraint> classify(String text, Set<ConstraintType> allowed);
+
+    /**
+     * As {@link #classify}, but able to say which other job a pair constraint refers to.
+     *
+     * @param candidates the operator's own jobs, the only things a constraint may be bound to. An
+     *                   implementation must never return a referent outside this list.
+     * @param editingJob the name of the job being described, for context; null while it is still
+     *                   being created
+     * @return proposals as {@link #classify}, with {@code referent} set where a second job was named
+     */
+    default List<ClassifiedConstraint> classify(String text, Set<ConstraintType> allowed,
+                                                List<JobReferenceResolver.Candidate> candidates,
+                                                String editingJob) {
+        return classify(text, allowed);
+    }
 }
