@@ -22,6 +22,14 @@ import java.util.Objects;
  *                   finish before B"); null for a single-job constraint. A name, never an id: the
  *                   classifier sees text, so resolving it to a job is {@link JobReferenceResolver}'s
  *                   job and can fail in ways the classifier cannot know about.
+ *
+ * <p>Direction lives in {@link #type}, not in a separate field: an ordering is
+ * {@link ConstraintType#PRECEDENCE} when this job goes first and
+ * {@link ConstraintType#DEPENDENCY} when the other one does. That keeps the pair always "this job
+ * and the referent", so a reader of one of these never has to work out which end is which - and it
+ * means direction gets the probability banding every other judgement gets, rather than riding
+ * along unchecked on a boolean. {@link JevAnswerReader} folds the direction's own certainty into
+ * {@link #probability}, so an unclear direction is confirmed by the operator instead of guessed.
  */
 public record ClassifiedConstraint(
         ConstraintType type,

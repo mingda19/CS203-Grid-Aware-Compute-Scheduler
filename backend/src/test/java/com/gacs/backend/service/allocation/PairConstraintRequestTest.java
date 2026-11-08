@@ -164,4 +164,59 @@ class PairConstraintRequestTest {
 
         assertThat(problem.constraints()).hasSize(2);
     }
+
+    // ------------------------------------------------------------------ input caps
+
+    @Test
+    @DisplayName("an over-long rule list is rejected before anything is built or walked")
+    void oversizedRuleListIsRejected() {
+        // Validation is linear, but every rule multiplies the solver work downstream:
+        // constraintsFor() filters the whole list per job, inside a search loop bounded at 150,000
+        // job-placements. The cap bounds that multiplier.
+        List<PairConstraintInput> many = new ArrayList<>();
+        for (int i = 0; i < OptimizationProblemFactory.MAX_PAIR_CONSTRAINTS + 1; i++) {
+            many.add(new PairConstraintInput(ConstraintType.MUTUAL_EXCLUSION, 1L, 2L));
+        }
+
+        assertThatThrownBy(() -> factory.build(request(many, 1L, 2L)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at most " + OptimizationProblemFactory.MAX_PAIR_CONSTRAINTS + " rules");
+    }
+
+    @Test
+    @DisplayName("a list exactly at the cap is still accepted")
+    void listAtTheCapIsAccepted() {
+        // Enough distinct jobs that no single one passes the per-job cap.
+        long[] ids = new long[OptimizationProblemFactory.MAX_PAIR_CONSTRAINTS + 1];
+        for (int i = 0; i < ids.length; i++) {
+            ids[i] = i + 1;
+        }
+        List<PairConstraintInput> rules = new ArrayList<>();
+        for (int i = 0; i < OptimizationProblemFactory.MAX_PAIR_CONSTRAINTS; i++) {
+            rules.add(new PairConstraintInput(ConstraintType.PRECEDENCE, ids[i], ids[i + 1]));
+        }
+
+        assertThat(factory.build(request(rules, ids)).constraints())
+                .hasSize(OptimizationProblemFactory.MAX_PAIR_CONSTRAINTS);
+    }
+
+    @Test
+    @DisplayName("piling rules onto one job is rejected, even well under the total cap")
+    void perJobCapIsEnforced() {
+        // Each rule on a job adds a layer to JobWindow's composed predicate, and that chain runs
+        // once per candidate hour - an amplification the total cap alone would not catch.
+        long[] ids = new long[OptimizationProblemFactory.MAX_PAIR_CONSTRAINTS_PER_JOB + 3];
+        for (int i = 0; i < ids.length; i++) {
+            ids[i] = i + 1;
+        }
+        List<PairConstraintInput> allOnJobOne = new ArrayList<>();
+        for (int i = 2; i < ids.length; i++) {
+            allOnJobOne.add(new PairConstraintInput(ConstraintType.MUTUAL_EXCLUSION, 1L, ids[i]));
+        }
+
+        assertThatThrownBy(() -> factory.build(request(allOnJobOne, ids)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("governed by more than "
+                        + OptimizationProblemFactory.MAX_PAIR_CONSTRAINTS_PER_JOB);
+    }
 }

@@ -66,4 +66,53 @@ class JobReferenceResolverTest {
         assertThat(resolve("   ", JOBS)).isInstanceOf(Resolution.NotFound.class);
         assertThat(resolve("anything", List.of())).isInstanceOf(Resolution.NotFound.class);
     }
+
+    // ---------------------------------------------------------------- normalisation
+
+    @Test
+    @DisplayName("the same name in two Unicode encodings matches itself")
+    void composedAndDecomposedFormsMatch() {
+        // "café" with a precomposed é, versus "cafe" + a combining acute. Identical on screen, and
+        // an operator has no way to tell which one their job was created with.
+        List<Candidate> precomposed = List.of(new Candidate(4L, "caf\u00e9-batch"));
+        assertThat(resolve("cafe\u0301-batch", precomposed))
+                .isInstanceOf(Resolution.Resolved.class);
+
+        List<Candidate> decomposed = List.of(new Candidate(5L, "cafe\u0301-batch"));
+        assertThat(resolve("caf\u00e9-batch", decomposed))
+                .isInstanceOf(Resolution.Resolved.class);
+    }
+
+    @Test
+    @DisplayName("invisible characters pasted into a name do not stop it matching")
+    void zeroWidthCharactersAreIgnored() {
+        // A name copied out of a document can carry a zero-width space or joiner. Nobody can type
+        // one deliberately, so treating it as part of the name only produces a baffling NotFound.
+        List<Candidate> withZeroWidth = List.of(new Candidate(6L, "nightly\u200b-etl"));
+        assertThat(resolve("nightly-etl", withZeroWidth)).isInstanceOf(Resolution.Resolved.class);
+        assertThat(resolve("nightly\u200d-etl", JOBS)).isInstanceOf(Resolution.Resolved.class);
+    }
+
+    @Test
+    @DisplayName("names that collide only after normalising are ambiguous, not silently merged")
+    void collisionAfterNormalisingIsAmbiguous() {
+        // Normalising makes more things equal, so it can create ambiguity that was not there
+        // before. That is the safe direction: the operator is asked rather than guessed at.
+        List<Candidate> colliding = List.of(
+                new Candidate(1L, "caf\u00e9"), new Candidate(2L, "cafe\u0301"));
+
+        assertThat(resolve("caf\u00e9", colliding))
+                .isEqualTo(new Resolution.Ambiguous("caf\u00e9", List.of(1L, 2L)));
+    }
+
+    @Test
+    @DisplayName("a legitimate non-ASCII name still resolves rather than being rejected")
+    void nonAsciiNamesAreUsable() {
+        // Normalising, not rejecting: a name is not suspicious for being written in another script.
+        List<Candidate> jobs = List.of(
+                new Candidate(8L, "夜間バッチ"), new Candidate(9L, "ETL-\u00dcberblick"));
+
+        assertThat(resolve("夜間バッチ", jobs)).isEqualTo(new Resolution.Resolved(8L, "夜間バッチ"));
+        assertThat(resolve("etl-\u00fcberblick", jobs)).isInstanceOf(Resolution.Resolved.class);
+    }
 }

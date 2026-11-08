@@ -51,6 +51,28 @@ public class OptimizationProblemFactory {
     static final int MAX_NAME_LENGTH = 255;
     static final int MAX_LOCATION_LENGTH = 100;
 
+    /**
+     * Caps on {@code pairConstraints[]}, for the same reason {@link #MAX_HORIZON_HOURS} exists: a
+     * request should not be able to buy unbounded solver work.
+     *
+     * <p>The expensive part is not validating them. Cycle detection is Kahn's algorithm, linear in
+     * the rules and run once. The cost is downstream: {@link OptimizationProblem#constraintsFor}
+     * filters the whole list per job, and {@link AnnealingAllocationSolver} calls it inside its
+     * search loop, which is bounded at {@code WORK_LIMIT} (150,000) job-placements. Every rule in
+     * the list multiplies that bounded work, so 10,000 rules would turn 150,000 units into 1.5
+     * billion filter operations before a single hour is costed.
+     *
+     * <p>{@link #MAX_PAIR_CONSTRAINTS_PER_JOB} bounds a second amplification: each rule governing a
+     * job adds a layer to {@code JobWindow}'s composed predicate ({@code extra.and(allowed)}), and
+     * that chain is evaluated once per candidate hour per candidate start. Deep chains make each
+     * hour more expensive, which the total cap alone would not prevent if every rule named one job.
+     *
+     * <p>Both are far above anything an operator would author by hand; they exist to bound the
+     * pathological case, not to constrain real use.
+     */
+    static final int MAX_PAIR_CONSTRAINTS = 200;
+    static final int MAX_PAIR_CONSTRAINTS_PER_JOB = 25;
+
     private final PriceSeriesProvider priceSeriesProvider;
     private final OptimizerProperties properties;
     private final Clock clock;
@@ -115,7 +137,14 @@ public class OptimizationProblemFactory {
         if (declared.isEmpty()) {
             return List.of();
         }
+        // Checked before anything is built or walked, so an over-limit list costs one comparison
+        // rather than a full validation pass.
+        if (declared.size() > MAX_PAIR_CONSTRAINTS) {
+            throw invalid("pairConstraints must contain at most " + MAX_PAIR_CONSTRAINTS + " rules, got "
+                    + declared.size());
+        }
         Set<Long> present = jobs.stream().map(OptimizerJob::id).collect(Collectors.toSet());
+        Map<Long, Integer> rulesPerJob = new LinkedHashMap<>();
         List<PlacementConstraint> built = new ArrayList<>();
         for (int index = 0; index < declared.size(); index++) {
             OptimizeRequestDto.PairConstraintInput rule = declared.get(index);
@@ -132,15 +161,32 @@ public class OptimizationProblemFactory {
                 throw invalid(where + " names job " + first + " on both sides; a job cannot be ordered "
                         + "against, or excluded from, itself");
             }
+            countRule(rulesPerJob, first, where);
+            countRule(rulesPerJob, second, where);
             built.add(switch (rule.type()) {
                 case PRECEDENCE -> new PrecedenceConstraint(first, second);
+                // A dependency is a precedence with the two jobs the other way round: "jobId runs
+                // after otherJobId" is "otherJobId finishes before jobId starts". Normalised here,
+                // at the one point that turns the request into solver constraints, so cycle
+                // detection and both solvers only ever see one ordering rule - and so the two
+                // directions cannot drift apart into two implementations of the same thing.
+                case DEPENDENCY -> new PrecedenceConstraint(second, first);
                 case MUTUAL_EXCLUSION -> new MutualExclusionConstraint(first, second);
                 default -> throw invalid(where + ".type " + rule.type() + " is not a pair constraint; "
-                        + "only PRECEDENCE and MUTUAL_EXCLUSION bind two jobs");
+                        + "only PRECEDENCE, DEPENDENCY and MUTUAL_EXCLUSION bind two jobs");
             });
         }
         rejectPrecedenceCycles(built);
         return List.copyOf(built);
+    }
+
+    /** Tallies how many rules govern one job, failing as soon as it passes the per-job cap. */
+    private static void countRule(Map<Long, Integer> rulesPerJob, long jobId, String where) {
+        int count = rulesPerJob.merge(jobId, 1, Integer::sum);
+        if (count > MAX_PAIR_CONSTRAINTS_PER_JOB) {
+            throw invalid(where + ": job " + jobId + " is governed by more than "
+                    + MAX_PAIR_CONSTRAINTS_PER_JOB + " pair constraints");
+        }
     }
 
     private static long requirePresent(Long jobId, String where, Set<Long> present) {

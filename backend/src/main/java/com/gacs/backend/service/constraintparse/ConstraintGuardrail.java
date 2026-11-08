@@ -40,8 +40,8 @@ import java.util.Set;
 public final class ConstraintGuardrail {
 
     /** Constraints that bind two jobs, so they need a resolvable counterpart. */
-    private static final Set<ConstraintType> PAIR_TYPES =
-            EnumSet.of(ConstraintType.PRECEDENCE, ConstraintType.MUTUAL_EXCLUSION);
+    private static final Set<ConstraintType> PAIR_TYPES = EnumSet.of(ConstraintType.PRECEDENCE,
+            ConstraintType.DEPENDENCY, ConstraintType.MUTUAL_EXCLUSION);
 
     private final double applyAbove;
     private final double reviewAbove;

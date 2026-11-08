@@ -1,5 +1,6 @@
 package com.gacs.backend.service.constraintparse;
 
+import java.text.Normalizer;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -53,9 +54,10 @@ public final class JobReferenceResolver {
      * Resolves {@code referent} against {@code candidates}, matching on name, case-insensitively
      * and ignoring surrounding whitespace.
      *
-     * <p>Exact match only. No fuzzy matching, no prefix matching, no "closest" match: this decides
-     * which job a hard scheduling constraint binds to, and a near-miss that silently picks a
-     * neighbour is worse than a rejection the operator can see and correct.
+     * <p>Exact match only, after normalising both sides - see {@link #normalise}. No fuzzy
+     * matching, no prefix matching, no "closest" match: this decides which job a hard scheduling
+     * constraint binds to, and a near-miss that silently picks a neighbour is worse than a
+     * rejection the operator can see and correct.
      */
     public static Resolution resolve(String referent, List<Candidate> candidates) {
         if (referent == null || referent.isBlank()) {
@@ -73,7 +75,34 @@ public final class JobReferenceResolver {
         };
     }
 
+    /**
+     * Canonical form for comparing two job names.
+     *
+     * <p>Unicode NFC first, because the same name can arrive in two encodings that render
+     * identically - "é" as one code point, or as "e" plus a combining accent - and comparing the
+     * raw code units would report NotFound for a name the operator can plainly see on screen.
+     * Formatting characters (zero-width joiners, bidi marks) and other invisibles are then removed,
+     * since a name pasted from a document can carry them and nobody can type them deliberately.
+     *
+     * <p>Normalising rather than rejecting. A name is not hostile for containing a combining
+     * character - that is simply how a great many languages are written, and refusing it would
+     * make the feature unusable for anyone outside ASCII while preventing nothing. The candidates
+     * are the operator's own jobs, so there is no second party to confuse here: the failure this
+     * avoids is a legitimate name not matching itself, not an attack. Where two names do collide
+     * after normalising, {@link Resolution.Ambiguous} already stops the guess and asks.
+     */
     private static String normalise(String name) {
-        return name.strip().toLowerCase(Locale.ROOT);
+        String canonical = Normalizer.normalize(name, Normalizer.Form.NFC);
+        StringBuilder visible = new StringBuilder(canonical.length());
+        canonical.codePoints().forEach(codePoint -> {
+            int type = Character.getType(codePoint);
+            boolean invisible = type == Character.FORMAT || type == Character.CONTROL
+                    || type == Character.SURROGATE || type == Character.UNASSIGNED
+                    || type == Character.PRIVATE_USE;
+            if (!invisible) {
+                visible.appendCodePoint(codePoint);
+            }
+        });
+        return visible.toString().strip().toLowerCase(Locale.ROOT);
     }
 }
