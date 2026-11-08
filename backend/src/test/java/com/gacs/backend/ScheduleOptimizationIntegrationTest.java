@@ -211,7 +211,9 @@ class ScheduleOptimizationIntegrationTest {
         mockMvc.perform(post("/api/schedules/optimize").contentType(APPLICATION_JSON)
                 .content(locationRequest(baseline, baseline.plusHours(3), 1)))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(false)))
+            // Same fixture as the test above: 2 forecast hours, the rest of the horizon filled from the
+            // fallback, so the run is provisional. The costs show the optimizer used LSTM, not LEAR.
+            .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(true)))
             .andExpect(jsonPath("$.data.items[0].scheduledStart", is("2026-10-20T09:00:00Z")))
             .andExpect(jsonPath("$.data.items[0].baselineCostUsd", is(1.792)))
             .andExpect(jsonPath("$.data.items[0].optimizedCostUsd", is(0.512)));
