@@ -1,6 +1,7 @@
 package com.gacs.backend.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.gacs.backend.service.allocation.ConstraintType;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.LocalDateTime;
@@ -46,8 +47,54 @@ public record OptimizeRequestDto(
         + "affected jobs, before sending it. It never weakens the rule that no slot may begin "
         + "before the current hour, and a job whose deadline has also passed stays infeasible.",
         example = "false", defaultValue = "false")
-    Boolean rescheduleElapsedJobs
+    Boolean rescheduleElapsedJobs,
+
+    @Schema(description = "Ordering and exclusion rules between pairs of jobs in this run. Both job "
+        + "ids must appear in jobs[]; a rule naming a job that is not in the run, or naming the same "
+        + "job twice, is rejected rather than ignored. A set of rules that orders a job behind "
+        + "itself, in any mix of PRECEDENCE and DEPENDENCY, is rejected as a cycle. Optional; "
+        + "absent means no pair rules.")
+    List<PairConstraintInput> pairConstraints
 ) {
+
+    /** {@code pairConstraints} with its absent-means-empty default applied. */
+    public List<PairConstraintInput> pairConstraintsOrEmpty() {
+        return pairConstraints == null ? List.of() : pairConstraints;
+    }
+
+    /**
+     * One rule binding two jobs in this run.
+     *
+     * <p>Both ends are job ids, never names. Names are not unique in this system, so a rule stated
+     * by name could bind to a different job than the operator meant, and would break silently when
+     * a job was renamed. Resolving words to an id happens before a request is built - see
+     * {@code JobReferenceResolver}.
+     *
+     * @param type       {@code PRECEDENCE} (jobId must finish before otherJobId starts),
+     *                   {@code DEPENDENCY} (the mirror: otherJobId must finish before jobId
+     *                   starts), or {@code MUTUAL_EXCLUSION} (the two may never share an hour).
+     *                   Order matters for the first two and not for the third.
+     *                   <p>DEPENDENCY exists so a rule can be stated the way the operator stated
+     *                   it - "run this after the ETL job" is a dependency, not a precedence - and
+     *                   so the stored rule and the explanation read the same way round as what they
+     *                   typed. The solver has one ordering constraint, and
+     *                   {@code OptimizationProblemFactory} swaps the two jobs to reach it.
+     * @param jobId      the job this rule is being stated about: for PRECEDENCE the one that
+     *                   finishes first, for DEPENDENCY the one that waits
+     * @param otherJobId the job on the other side: for PRECEDENCE the one that starts after, for
+     *                   DEPENDENCY the one being waited for
+     */
+    @Schema(description = "An ordering or exclusion rule between two jobs in this run")
+    public record PairConstraintInput(
+        @Schema(description = "PRECEDENCE, DEPENDENCY or MUTUAL_EXCLUSION", example = "PRECEDENCE")
+        ConstraintType type,
+        @Schema(description = "For PRECEDENCE the job that must finish first; for DEPENDENCY the "
+            + "job that waits", example = "101")
+        Long jobId,
+        @Schema(description = "For PRECEDENCE the job that must start afterwards; for DEPENDENCY "
+            + "the job being waited for", example = "102")
+        Long otherJobId
+    ) { }
 
     /**
      * Convenience for the default behaviour, and what every caller predating the elapsed-job option
@@ -56,7 +103,15 @@ public record OptimizeRequestDto(
     public OptimizeRequestDto(List<JobInput> jobs, ClusterCapacityInput clusterCapacity, String forecastLocation,
                               Integer horizonHours, List<ForecastPointInput> forecast,
                               List<CapacityOverrideInput> capacityOverrides) {
-        this(jobs, clusterCapacity, forecastLocation, horizonHours, forecast, capacityOverrides, false);
+        this(jobs, clusterCapacity, forecastLocation, horizonHours, forecast, capacityOverrides, false, List.of());
+    }
+
+    /** Convenience for callers predating pair constraints: no ordering or exclusion rules. */
+    public OptimizeRequestDto(List<JobInput> jobs, ClusterCapacityInput clusterCapacity, String forecastLocation,
+                              Integer horizonHours, List<ForecastPointInput> forecast,
+                              List<CapacityOverrideInput> capacityOverrides, Boolean rescheduleElapsedJobs) {
+        this(jobs, clusterCapacity, forecastLocation, horizonHours, forecast, capacityOverrides,
+                rescheduleElapsedJobs, List.of());
     }
 
     /** {@code rescheduleElapsedJobs} with its absent-means-false default applied. */

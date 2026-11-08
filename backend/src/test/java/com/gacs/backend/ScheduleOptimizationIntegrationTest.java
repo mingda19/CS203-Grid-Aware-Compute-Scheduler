@@ -228,7 +228,8 @@ class ScheduleOptimizationIntegrationTest {
                 .content(locationRequest(baseline, baseline.plusHours(3), 2)))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(true)))
-            .andExpect(jsonPath("$.data.plainEnglishExplanation", containsString("seeded fallback")));
+            .andExpect(jsonPath("$.data.plainEnglishExplanation",
+                containsString("history-based fallback price curve")));
     }
 
     @Test
@@ -354,8 +355,11 @@ class ScheduleOptimizationIntegrationTest {
         assertThat(constraintImpacts.findByScheduleItemIdOrderByIdAsc(savedItems.get(0).getId())).hasSize(2);
 
         var explanation = scheduleExplanations.findByScheduleRunId(savedRun.getId()).orElseThrow();
-        assertThat(explanation.getSource()).isEqualTo("DETERMINISTIC_FALLBACK");
-        assertThat(explanation.getFallbackReason()).isEqualTo("NOT_CONFIGURED");
+        // One source of text now, so there is no provenance to assert - what matters is that the
+        // stored narrative is the point-form summary the operator was shown.
+        assertThat(explanation.getNarrative()).startsWith("- Scheduled ");
+        assertThat(explanation.getNarrative())
+                .contains("The above optimisation plan is based on forecasted prices");
     }
 
     @Test

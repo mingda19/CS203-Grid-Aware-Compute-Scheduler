@@ -142,6 +142,8 @@ export interface ConstraintParseRequest {
   timeZone: string
 }
 
+import type { ConstraintTypeName } from "./constraint-confirmation"
+
 export interface ConstraintParseResponse {
   status: "PARSED" | "NEEDS_CLARIFICATION" | "INVALID"
   fields: ConstraintDraft
@@ -152,6 +154,37 @@ export interface ConstraintParseResponse {
   validationError: string | null
   parsedAt: string
   timeZone: string
+  /**
+   * Constraints the classifier found that the form has no field for - a recurring daily window, or
+   * an ordering against another job. Empty when no classifier is configured, which is the default.
+   */
+  suggestions: ConstraintSuggestion[]
+  /**
+   * Where the classifier and the rule-based parser read the text differently. Each is a question,
+   * not a resolution: neither source overrides the other, so the operator picks. A non-empty list
+   * means `status` is NEEDS_CLARIFICATION.
+   */
+  disagreements: ConstraintDisagreement[]
+}
+
+export interface ConstraintSuggestion {
+  type: ConstraintTypeName
+  /** Probability the reading is correct, 0-1. Not the model's confidence - a different quantity. */
+  probability: number
+  phrase: string
+  /** The other job, for an ordering or exclusion rule. Always one the operator owns. */
+  referencedJobId: number | null
+  needsConfirmation: boolean
+}
+
+export interface ConstraintDisagreement {
+  field: keyof ConstraintDraft
+  /** What the rule-based parser read, or null when it read nothing. */
+  parsedValue: string | null
+  /** Null when the classifier never reported this type - not the same as a score of zero. */
+  probability: number | null
+  question: string
+  options: Array<{ id: string; label: string }>
 }
 
 export interface FacilityConfig {

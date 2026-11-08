@@ -7,6 +7,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Button } from "@/components/ui/button"
 import { useScheduleReview } from "@/hooks/use-schedule-review"
 import { reviewLabels, decisionUnavailable, calendarUnavailable, planUnavailable } from "@/lib/schedule-review-utils"
+import { ExplanationSummary } from "@/components/ui/explanation-summary"
 import { formatMarketDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import type { ScheduleDecisionAction, SchedulePlanDetail } from "@/lib/api"
 import { RejectPlanModal } from "./reject-plan-modal"
@@ -87,7 +88,7 @@ export function PlanRecommendation({ plan }: { plan: SchedulePlanDetail }) {
     </div>
     {plan.invalidationReason && <p role="alert" className="text-sm text-destructive">{plan.invalidationReason}</p>}
     {recommendation && <>
-      <p className="whitespace-pre-wrap text-sm">{recommendation.plainEnglishExplanation}</p>
+      <ExplanationSummary text={recommendation.plainEnglishExplanation} />
       <dl className="grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-3">
         <div><dt className="text-muted-foreground">Baseline cost (USD)</dt><dd>{money(recommendation.baselineCostUsd)}</dd></div>
         <div><dt className="text-muted-foreground">Proposed cost (USD)</dt><dd>{money(recommendation.optimizedCostUsd)}</dd></div>
