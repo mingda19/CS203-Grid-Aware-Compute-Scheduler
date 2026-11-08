@@ -20,6 +20,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.stream.Collectors;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -93,8 +96,102 @@ public class OptimizationProblemFactory {
                         + " days of the earliest job's start, or retire it.");
             }
         }
-        return new OptimizationProblem(jobs, prices, capacity, baselinePlans, List.of(), List.of(),
-                earliestStart());
+        return new OptimizationProblem(jobs, prices, capacity, baselinePlans, pairConstraints(request, jobs),
+                List.of(), earliestStart());
+    }
+
+    // ------------------------------------------------------------ pair constraints
+
+    /**
+     * Builds the run's ordering and exclusion rules from {@code pairConstraints[]}.
+     *
+     * <p>Every rule is validated against the jobs actually in this run. A rule naming a job that is
+     * not here cannot be enforced - the solver would have nothing to order against - and silently
+     * dropping it would produce a plan that looks like it honoured a constraint it never saw. So it
+     * is a 400, like any other malformed input.
+     */
+    private static List<PlacementConstraint> pairConstraints(OptimizeRequestDto request, List<OptimizerJob> jobs) {
+        List<OptimizeRequestDto.PairConstraintInput> declared = request.pairConstraintsOrEmpty();
+        if (declared.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> present = jobs.stream().map(OptimizerJob::id).collect(Collectors.toSet());
+        List<PlacementConstraint> built = new ArrayList<>();
+        for (int index = 0; index < declared.size(); index++) {
+            OptimizeRequestDto.PairConstraintInput rule = declared.get(index);
+            String where = "pairConstraints[" + index + "]";
+            if (rule == null) {
+                throw invalid(where + " must not be null");
+            }
+            if (rule.type() == null) {
+                throw invalid(where + ".type is required");
+            }
+            long first = requirePresent(rule.jobId(), where + ".jobId", present);
+            long second = requirePresent(rule.otherJobId(), where + ".otherJobId", present);
+            if (first == second) {
+                throw invalid(where + " names job " + first + " on both sides; a job cannot be ordered "
+                        + "against, or excluded from, itself");
+            }
+            built.add(switch (rule.type()) {
+                case PRECEDENCE -> new PrecedenceConstraint(first, second);
+                case MUTUAL_EXCLUSION -> new MutualExclusionConstraint(first, second);
+                default -> throw invalid(where + ".type " + rule.type() + " is not a pair constraint; "
+                        + "only PRECEDENCE and MUTUAL_EXCLUSION bind two jobs");
+            });
+        }
+        rejectPrecedenceCycles(built);
+        return List.copyOf(built);
+    }
+
+    private static long requirePresent(Long jobId, String where, Set<Long> present) {
+        if (jobId == null) {
+            throw invalid(where + " is required");
+        }
+        if (!present.contains(jobId)) {
+            throw invalid(where + " " + jobId + " is not one of the jobs in this run");
+        }
+        return jobId;
+    }
+
+    /**
+     * Rejects a set of precedence rules that cannot all hold, such as A before B before A.
+     *
+     * <p>{@code OptimizationProblem.flexibleJobsInPlacementOrder} has a defensive fallback for a
+     * cycle, but it is a fallback: it keeps the solver from looping, and then produces an order that
+     * honours none of the rules involved. Caught here instead, the operator is told their rules
+     * contradict each other rather than receiving a plan that quietly ignores some of them.
+     *
+     * <p>Kahn's algorithm: repeatedly remove a job nothing still has to follow. Whatever cannot be
+     * removed is in, or downstream of, a cycle.
+     */
+    private static void rejectPrecedenceCycles(List<PlacementConstraint> constraints) {
+        Map<Long, List<Long>> successors = new LinkedHashMap<>();
+        Map<Long, Integer> incoming = new LinkedHashMap<>();
+        for (PlacementConstraint constraint : constraints) {
+            if (constraint instanceof PrecedenceConstraint edge) {
+                successors.computeIfAbsent(edge.beforeJobId(), key -> new ArrayList<>()).add(edge.afterJobId());
+                incoming.putIfAbsent(edge.beforeJobId(), 0);
+                incoming.merge(edge.afterJobId(), 1, Integer::sum);
+            }
+        }
+        Deque<Long> ready = new ArrayDeque<>(incoming.entrySet().stream()
+                .filter(entry -> entry.getValue() == 0).map(Map.Entry::getKey).toList());
+        int removed = 0;
+        while (!ready.isEmpty()) {
+            long job = ready.removeFirst();
+            removed++;
+            for (long next : successors.getOrDefault(job, List.of())) {
+                if (incoming.merge(next, -1, Integer::sum) == 0) {
+                    ready.addLast(next);
+                }
+            }
+        }
+        if (removed < incoming.size()) {
+            List<Long> inCycle = incoming.entrySet().stream()
+                    .filter(entry -> entry.getValue() > 0).map(Map.Entry::getKey).sorted().toList();
+            throw invalid("pairConstraints contain a precedence cycle involving jobs " + inCycle
+                    + "; these rules cannot all hold at once");
+        }
     }
 
     /**

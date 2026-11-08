@@ -1,6 +1,7 @@
 package com.gacs.backend.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.gacs.backend.service.allocation.ConstraintType;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.LocalDateTime;
@@ -46,8 +47,42 @@ public record OptimizeRequestDto(
         + "affected jobs, before sending it. It never weakens the rule that no slot may begin "
         + "before the current hour, and a job whose deadline has also passed stays infeasible.",
         example = "false", defaultValue = "false")
-    Boolean rescheduleElapsedJobs
+    Boolean rescheduleElapsedJobs,
+
+    @Schema(description = "Ordering and exclusion rules between pairs of jobs in this run. Both job "
+        + "ids must appear in jobs[]; a rule naming a job that is not in the run, or naming the same "
+        + "job twice, is rejected rather than ignored. Optional; absent means no pair rules.")
+    List<PairConstraintInput> pairConstraints
 ) {
+
+    /** {@code pairConstraints} with its absent-means-empty default applied. */
+    public List<PairConstraintInput> pairConstraintsOrEmpty() {
+        return pairConstraints == null ? List.of() : pairConstraints;
+    }
+
+    /**
+     * One rule binding two jobs in this run.
+     *
+     * <p>Both ends are job ids, never names. Names are not unique in this system, so a rule stated
+     * by name could bind to a different job than the operator meant, and would break silently when
+     * a job was renamed. Resolving words to an id happens before a request is built - see
+     * {@code JobReferenceResolver}.
+     *
+     * @param type       {@code PRECEDENCE} (jobId must finish before otherJobId starts) or
+     *                   {@code MUTUAL_EXCLUSION} (the two may never share an hour). Order matters
+     *                   for the first and not for the second.
+     * @param jobId      for PRECEDENCE, the job that must finish first
+     * @param otherJobId for PRECEDENCE, the job that must start after
+     */
+    @Schema(description = "An ordering or exclusion rule between two jobs in this run")
+    public record PairConstraintInput(
+        @Schema(description = "PRECEDENCE or MUTUAL_EXCLUSION", example = "PRECEDENCE")
+        ConstraintType type,
+        @Schema(description = "For PRECEDENCE, the job that must finish first", example = "101")
+        Long jobId,
+        @Schema(description = "For PRECEDENCE, the job that must start afterwards", example = "102")
+        Long otherJobId
+    ) { }
 
     /**
      * Convenience for the default behaviour, and what every caller predating the elapsed-job option
@@ -56,7 +91,15 @@ public record OptimizeRequestDto(
     public OptimizeRequestDto(List<JobInput> jobs, ClusterCapacityInput clusterCapacity, String forecastLocation,
                               Integer horizonHours, List<ForecastPointInput> forecast,
                               List<CapacityOverrideInput> capacityOverrides) {
-        this(jobs, clusterCapacity, forecastLocation, horizonHours, forecast, capacityOverrides, false);
+        this(jobs, clusterCapacity, forecastLocation, horizonHours, forecast, capacityOverrides, false, List.of());
+    }
+
+    /** Convenience for callers predating pair constraints: no ordering or exclusion rules. */
+    public OptimizeRequestDto(List<JobInput> jobs, ClusterCapacityInput clusterCapacity, String forecastLocation,
+                              Integer horizonHours, List<ForecastPointInput> forecast,
+                              List<CapacityOverrideInput> capacityOverrides, Boolean rescheduleElapsedJobs) {
+        this(jobs, clusterCapacity, forecastLocation, horizonHours, forecast, capacityOverrides,
+                rescheduleElapsedJobs, List.of());
     }
 
     /** {@code rescheduleElapsedJobs} with its absent-means-false default applied. */
