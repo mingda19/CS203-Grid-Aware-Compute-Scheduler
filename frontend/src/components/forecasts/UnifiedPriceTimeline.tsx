@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { DataStatusBadge } from "@/components/ui/data-status-badge"
-import { priceApi, type PricePoint, type PriceForecastPoint } from "@/lib/api"
+import { priceApi, type ForecastModel, type PricePoint, type PriceForecastPoint } from "@/lib/api"
 import { aggregateConfidence, confidenceBand, type ConfidenceBand } from "@/lib/forecast-confidence"
 import { formatMarketDateTime, formatMarketChartTick, marketZoneAbbrev, MARKET_TIMEZONE } from "@/lib/date-utils"
 
@@ -34,6 +34,11 @@ const AXIS_TWEEN_MS = 450
 const FORECAST_HOURS = 72
 const HOUR_MS = 3_600_000
 const DAY_MS = 24 * HOUR_MS
+
+const FORECAST_MODELS: { value: ForecastModel; label: string }[] = [
+  { value: "lstm", label: "LSTM" },
+  { value: "lear", label: "LEAR" },
+]
 
 export interface ForecastTelemetry {
   isLoading: boolean
@@ -205,12 +210,14 @@ export function UnifiedPriceTimeline({
   }
 
   const [horizon, setHorizon] = React.useState<HorizonPreset>("24h")
+  const [model, setModel] = React.useState<ForecastModel>("lstm")
   const [historyPoints, setHistoryPoints] = React.useState<PricePoint[]>([])
   const [forecastPoints, setForecastPoints] = React.useState<PriceForecastPoint[]>([])
   const [error, setError] = React.useState<string | null>(null)
   const [refreshTrigger, setRefreshTrigger] = React.useState(0)
   const [loadedQuery, setLoadedQuery] = React.useState<string | null>(null)
-  const queryKey = `${activeHub}:${refreshTrigger}`
+  // The horizon is left out on purpose: the chart loads the longest window and a horizon change only moves the axes.
+  const queryKey = `${activeHub}:${model}:${refreshTrigger}`
   const isLoading = loadedQuery !== queryKey
   const [nowMs, setNowMs] = React.useState(() => Date.now())
   React.useEffect(() => {
@@ -237,6 +244,7 @@ export function UnifiedPriceTimeline({
     const fetchForecast = priceApi.getForecast({
       location: activeHub,
       hours: FORECAST_HOURS,
+      model,
     })
 
     Promise.allSettled([fetchHistory, fetchForecast])
@@ -278,7 +286,7 @@ export function UnifiedPriceTimeline({
     return () => {
       cancelled = true
     }
-  }, [activeHub, queryKey])
+  }, [activeHub, model, queryKey])
 
   // Construct continuous unified dataset
   const { chartData, forecastCells, axisTarget, summaryStats, telemetry } = React.useMemo(() => {
@@ -489,6 +497,25 @@ export function UnifiedPriceTimeline({
                 updatedAt={lastRecordedUtc ? withZ(lastRecordedUtc) : null}
               />
             )}
+
+            {/* Forecast Model Pills */}
+            <div role="group" aria-label="Forecast model" className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5 text-xs">
+              {FORECAST_MODELS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={model === option.value}
+                  onClick={() => setModel(option.value)}
+                  className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                    model === option.value
+                      ? "bg-background text-foreground shadow-xs font-semibold"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
 
             {/* Hub Selector (if not controlled externally) */}
             {!controlledHub && (

@@ -14,6 +14,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /** GRID-126 AC2: forecast rows are mapped to hourly slots, with a seeded fallback when absent. */
@@ -35,9 +38,9 @@ class PriceSeriesProviderTest {
     private ElectricalPriceRepository history;
 
     private PriceSeries load(PredictedPrice... rows) {
-        when(predictions.findLatestForecast(LOCATION, START, START.plusHours(HOURS)))
+        when(predictions.findLatestForecastForModel(LOCATION, "lstm", START, START.plusHours(HOURS)))
             .thenReturn(List.of(rows));
-        return new PriceSeriesProvider(predictions, history, 0.5).load(LOCATION, START, HOURS);
+        return new PriceSeriesProvider(predictions, history, 0.5, "lstm").load(LOCATION, START, HOURS);
     }
 
     private static List<Object[]> hourlyAverages(double... pricesFromHour0) {
@@ -50,7 +53,7 @@ class PriceSeriesProviderTest {
 
     private static PredictedPrice row(LocalDateTime interval, Double price) {
         return PredictedPrice.builder()
-            .intervalStartUtc(interval).location(LOCATION).modelVersion("v1")
+            .intervalStartUtc(interval).location(LOCATION).modelVersion("lstm_y0_v1")
             .generatedAt(START.minusDays(1)).predictedPrice(price).build();
     }
 
@@ -62,6 +65,25 @@ class PriceSeriesProviderTest {
         assertThat(series.isSeeded()).isFalse();
         assertThat(series.priceAt(START)).contains(30.0);
         assertThat(series.priceAt(START.plusHours(1))).contains(40.0);
+    }
+
+    @Test
+    @DisplayName("reads only the configured model's forecast")
+    void readsConfiguredModel() {
+        when(predictions.findLatestForecastForModel(eq(LOCATION), eq("lear"), any(), any()))
+            .thenReturn(List.of(row(START, 61.0)));
+
+        PriceSeries series = new PriceSeriesProvider(predictions, history, 0.5, "lear").load(LOCATION, START, HOURS);
+
+        assertThat(series.priceAt(START)).contains(61.0);
+    }
+
+    @Test
+    @DisplayName("an unknown forecast model is rejected at startup")
+    void unknownModelIsRejected() {
+        assertThatThrownBy(() -> new PriceSeriesProvider(predictions, history, 0.5, "xgboost"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("xgboost");
     }
 
     @Test

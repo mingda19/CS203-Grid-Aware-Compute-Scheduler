@@ -200,6 +200,25 @@ class ScheduleOptimizationIntegrationTest {
 
     @Test
     @WithMockUser
+    void forecastLocationIgnoresANewerRunFromTheOtherModel() throws Exception {
+        LocalDateTime baseline = DAY.plusHours(8);
+        seedPrice(baseline, 70.0, GENERATED_AT);
+        seedPrice(baseline.plusHours(1), 20.0, GENERATED_AT);
+        // LEAR ran later and disagrees; the optimizer prices against LSTM only (gacs.optimiser.forecast-model)
+        seedPrice(baseline, 1.0, GENERATED_AT.plusMinutes(5), "lear_y0_contract-test");
+        seedPrice(baseline.plusHours(1), 90.0, GENERATED_AT.plusMinutes(5), "lear_y0_contract-test");
+
+        mockMvc.perform(post("/api/schedules/optimize").contentType(APPLICATION_JSON)
+                .content(locationRequest(baseline, baseline.plusHours(3), 1)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(false)))
+            .andExpect(jsonPath("$.data.items[0].scheduledStart", is("2026-10-20T09:00:00Z")))
+            .andExpect(jsonPath("$.data.items[0].baselineCostUsd", is(1.792)))
+            .andExpect(jsonPath("$.data.items[0].optimizedCostUsd", is(0.512)));
+    }
+
+    @Test
+    @WithMockUser
     void noStoredForecastUsesTheFallbackCurve() throws Exception {
         LocalDateTime baseline = DAY.plusHours(17);
 
@@ -351,10 +370,14 @@ class ScheduleOptimizationIntegrationTest {
     }
 
     private void seedPrice(LocalDateTime intervalStart, double price, LocalDateTime generatedAt) {
+        seedPrice(intervalStart, price, generatedAt, "lstm_y0_contract-test");
+    }
+
+    private void seedPrice(LocalDateTime intervalStart, double price, LocalDateTime generatedAt, String modelVersion) {
         predictions.save(PredictedPrice.builder()
             .intervalStartUtc(intervalStart)
             .location(LOCATION)
-            .modelVersion("contract-test-model")
+            .modelVersion(modelVersion)
             .generatedAt(generatedAt)
             .predictedPrice(price)
             .build());

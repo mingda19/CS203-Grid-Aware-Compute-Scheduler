@@ -53,9 +53,12 @@ export interface PriceForecastPoint {
   confidenceScore: number | null
 }
 
+export type ForecastModel = "lstm" | "lear"
+
 export interface PriceForecast {
   points: PriceForecastPoint[]
   horizonHours: number
+  modelKind: ForecastModel
 }
 
 export interface WorkloadSchedule {
@@ -580,10 +583,11 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
 }
 
 export const priceApi = {
-  async getForecast(params: { location: string; hours?: number }): Promise<ApiResponse<PriceForecast>> {
+  async getForecast(params: { location: string; hours?: number; model?: ForecastModel }): Promise<ApiResponse<PriceForecast>> {
     const query = new URLSearchParams({
       location: params.location,
       hours: String(params.hours ?? 48),
+      model: params.model ?? "lstm",
     })
     const response = await fetchJson<ApiResponse<PriceForecast>>(`/api/prices/forecast?${query.toString()}`, { cache: "no-store" })
     // The backend forwards predicted_price.confidence_score as stored: a percentage from 0 to 100.
