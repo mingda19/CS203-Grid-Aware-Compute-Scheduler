@@ -319,7 +319,9 @@ export function addMarketDays(dateString: string, days: number): string {
 /** Adds (or subtracts) whole months to a YYYY-MM-DD market date string. */
 export function addMarketMonths(dateString: string, months: number): string {
   const [y, m, d] = dateString.split("-").map(Number)
-  return marketDateStringFromParts(y, m + months, d)
+  // Resolve the target month first, then clamp the day, so Oct 31 + 1 is Nov 30, not Dec 1.
+  const [ty, tm] = marketDateStringFromParts(y, m + months, 1).split("-").map(Number)
+  return marketDateStringFromParts(ty, tm, Math.min(d, marketDaysInMonth(ty, tm)))
 }
 
 /** Day of week (0 = Sunday, ... 6 = Saturday) for a YYYY-MM-DD market date string. */

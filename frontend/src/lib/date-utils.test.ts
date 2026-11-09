@@ -185,6 +185,13 @@ describe("market-date-string calendar arithmetic (bug 5)", () => {
     expect(addMarketMonths("2026-01-04", -1)).toBe("2025-12-04")
   })
 
+  it("clamps the day at month end instead of skipping a month", () => {
+    expect(addMarketMonths("2026-01-31", 1)).toBe("2026-02-28")
+    expect(addMarketMonths("2028-01-31", 1)).toBe("2028-02-29")
+    expect(addMarketMonths("2026-03-31", -1)).toBe("2026-02-28")
+    expect(addMarketMonths("2026-12-31", 2)).toBe("2027-02-28")
+  })
+
   it("reports day of week with no timezone resolution", () => {
     expect(marketDayOfWeek("2026-11-04")).toBe(3) // Wednesday
     expect(marketDayOfWeek("2026-11-08")).toBe(0) // Sunday
