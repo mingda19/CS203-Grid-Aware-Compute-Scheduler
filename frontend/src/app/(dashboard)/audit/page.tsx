@@ -226,7 +226,7 @@ export default function AuditPage() {
             />
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            Searchable, tamper-evident record of your own decisions on optimiser schedules, with the schedule hash each decision was made on. Other operators' decisions are not visible here.
+            Searchable, tamper-evident record of your own decisions on optimiser schedules, with the schedule hash each decision was made on. Other operators&apos; decisions are not visible here.
           </p>
         </div>
 

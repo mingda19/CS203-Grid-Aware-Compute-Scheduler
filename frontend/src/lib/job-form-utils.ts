@@ -40,10 +40,18 @@ export const toApiUtcDate = (value: string, onTheHour = false) => {
   return marketWallTimeToUtc(year, month, day, hour, finalMinute, 0).toISOString().slice(0, 19)
 }
 
-// Wall-clock hours between two datetime-local strings ("YYYY-MM-DDTHH:mm").
-// ponytail: ignores the 1h DST jump; the backend re-validates, so the error is at most one hour.
+// The instant (ms) of a market wall-clock string ("YYYY-MM-DDTHH:mm"), so the clock change is counted.
+const marketMs = (value: string) => {
+  const [date, time] = value.split("T")
+  const [year, month, day] = date.split("-").map(Number)
+  const [hour, minute] = time.split(":").map(Number)
+  return marketWallTimeToUtc(year, month, day, hour, minute, 0).getTime()
+}
+
+// Real hours between two datetime-local strings in market time ("YYYY-MM-DDTHH:mm"). A window across
+// the spring clock change is one hour shorter than the wall clock shows, and one longer in the fall.
 export const windowHours = (start: string, end: string) =>
-  start && end ? (Date.parse(`${end}:00Z`) - Date.parse(`${start}:00Z`)) / 36e5 : 0
+  start && end ? (marketMs(end) - marketMs(start)) / 36e5 : 0
 
 // Facility caps are per slot, so a job spread over N hourly slots may need N times the cap.
 // No usable window means no maximum yet (Infinity).

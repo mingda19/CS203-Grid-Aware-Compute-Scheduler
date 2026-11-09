@@ -35,6 +35,9 @@ export function AppShell({ children }: AppShellProps) {
   const [marketZone, setMarketZone] = React.useState<MarketZoneDescriptor>(
     () => ({ abbrev: MARKET_ZONE_LABEL, fullName: "Market local time", utcOffsetLabel: "" }),
   )
+  // Set after mount on purpose: the zone depends on the browser's clock, so computing it during the first
+  // render would differ from the server's HTML and cause a hydration mismatch.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   React.useEffect(() => { setMarketZone(marketZoneDescriptor()) }, [])
   const [theme, setTheme] = React.useState<"light" | "dark">("dark")
   const [mobileOpen, setMobileOpen] = React.useState(false)
