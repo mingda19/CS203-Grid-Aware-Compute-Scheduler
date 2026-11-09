@@ -26,6 +26,18 @@ public class AuthController {
     @Autowired
     private AuthService authService;
 
+    @PostMapping({"/forgot-password", "/api/auth/forgot-password"})
+    public ResponseEntity<com.gacs.backend.dto.ApiResponse<String>> forgotPassword(
+            @Valid @RequestBody ResendOtpRequest request) {
+        return ResponseEntity.ok(authService.forgotPassword(request));
+    }
+
+    @PostMapping({"/reset-password", "/api/auth/reset-password"})
+    public ResponseEntity<com.gacs.backend.dto.ApiResponse<String>> resetPassword(
+            @Valid @RequestBody ResetPasswordRequest request) {
+        return ResponseEntity.ok(authService.resetPassword(request));
+    }
+
     /**
      * User registration endpoint.
      * Encrypts the password, stores unverified user record, and sends 6-digit OTP via email.
@@ -43,7 +55,7 @@ public class AuthController {
             ),
             @ApiResponse(
                     responseCode = "400",
-                    description = "Invalid payload (e.g., malformed email, password < 6 characters, or email already registered)."
+                    description = "Invalid payload (e.g., malformed email, password < 15 characters, or email already registered)."
             )
     })
     @PostMapping({"/register", "/api/auth/register"})

@@ -64,6 +64,54 @@ public class AuthService {
     @Value("${security.jwt.cookie-same-site:Lax}")
     private String cookieSameSite = "Lax";
 
+    /** Recovery tokens are separate from registration OTPs and stored only as hashes. */
+    @Transactional
+    public ApiResponse<String> forgotPassword(ResendOtpRequest request) {
+        String email = request.getEmail().trim().toLowerCase(java.util.Locale.ROOT);
+        User user = userRepository.lockByEmail(email).orElse(null);
+        String message = "If this email has a verified account, a recovery code will be sent.";
+        LocalDateTime now = LocalDateTime.now();
+        if (user == null || !user.isVerified() ||
+                (user.getPasswordResetRequestedAt() != null &&
+                 user.getPasswordResetRequestedAt().isAfter(now.minusSeconds(60)))) {
+            return ApiResponse.ok(message);
+        }
+        byte[] bytes = new byte[32];
+        secureRandom.nextBytes(bytes);
+        String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        // Do not log recovery tokens, including when SMTP delivery fails.
+        try {
+            emailService.sendPasswordResetEmail(email, token);
+            user.setPasswordResetHash(passwordEncoder.encode(token));
+            user.setPasswordResetExpiresAt(now.plusMinutes(10));
+        } catch (RuntimeException ex) {
+            logger.warn("Password recovery email delivery failed: {}",
+                    ex instanceof IllegalStateException ? ex.getMessage() : ex.getClass().getSimpleName());
+        }
+        user.setPasswordResetRequestedAt(now);
+        userRepository.save(user);
+        return ApiResponse.ok(message);
+    }
+
+    @Transactional
+    public ApiResponse<String> resetPassword(ResetPasswordRequest request) {
+        User user = userRepository.lockByEmail(request.email().trim().toLowerCase(java.util.Locale.ROOT))
+                .orElseThrow(() -> new IllegalArgumentException("Invalid or expired recovery code. Request a new code."));
+        if (!user.isVerified() || user.getPasswordResetHash() == null ||
+                user.getPasswordResetExpiresAt() == null ||
+                !user.getPasswordResetExpiresAt().isAfter(LocalDateTime.now()) ||
+                !passwordEncoder.matches(request.token(), user.getPasswordResetHash())) {
+            throw new IllegalArgumentException("Invalid or expired recovery code. Request a new code.");
+        }
+        com.gacs.backend.security.PasswordPolicy.validate(request.password());
+        user.setPassword(passwordEncoder.encode(request.password()));
+        user.setPasswordResetHash(null);
+        user.setPasswordResetExpiresAt(null);
+        userRepository.save(user);
+        refreshTokenService.revokeAllUserTokens(user);
+        return ApiResponse.ok("Password updated. Sign in with your new password.");
+    }
+
     /**
      * Registers a new user or refreshes registration for an unverified account.
      * Encrypts the password using BCrypt before storing in the database.
@@ -71,6 +119,7 @@ public class AuthService {
      */
     @Transactional
     public AuthResponse register(RegisterRequest request) {
+        com.gacs.backend.security.PasswordPolicy.validate(request.getPassword());
         String email = request.getEmail().trim().toLowerCase();
 
         Optional<User> existingUserOpt = userRepository.findByEmail(email);
