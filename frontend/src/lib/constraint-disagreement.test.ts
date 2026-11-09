@@ -70,31 +70,41 @@ describe("disagreement answers block a confirm until given", () => {
 })
 
 describe("answers change what gets applied", () => {
+  // What the form held before the parse. The parser read a different deadline from the text.
+  const formDraft: ConstraintDraft = { ...draft, deadline: "2026-11-03T12:00:00", flexibilityWindowHours: 6 }
+
   it("keeps the parsed value on KEEP", () => {
-    expect(applyDisagreementAnswers(draft, [keepOrDrop], { deadline: "KEEP" }).deadline)
+    expect(applyDisagreementAnswers(draft, [keepOrDrop], { deadline: "KEEP" }, formDraft).deadline)
       .toBe("2026-11-02T10:00:00")
   })
 
-  it("removes it on DROP", () => {
-    // The whole point: without this the selection would be cosmetic and the value would be saved
-    // regardless of what the operator chose.
-    expect(applyDisagreementAnswers(draft, [keepOrDrop], { deadline: "DROP" }).deadline).toBeNull()
+  it("puts the form's own value back on DROP", () => {
+    // The whole point: without this the selection would be cosmetic and the parsed value would be
+    // saved regardless of what the operator chose.
+    expect(applyDisagreementAnswers(draft, [keepOrDrop], { deadline: "DROP" }, formDraft).deadline)
+      .toBe("2026-11-03T12:00:00")
   })
 
-  it("clears the field on ENTER_VALUE, so a guess cannot stand in for what they meant to type", () => {
-    const withFlex = { ...draft, flexibilityWindowHours: 4 }
-    expect(applyDisagreementAnswers(withFlex, [enterOrIgnore], { flexibilityWindowHours: "ENTER_VALUE" })
-      .flexibilityWindowHours).toBeNull()
+  it("leaves the field empty on DROP when the form had no value", () => {
+    expect(applyDisagreementAnswers(draft, [keepOrDrop], { deadline: "DROP" }, { ...formDraft, deadline: null }).deadline)
+      .toBeNull()
   })
 
-  it("clears the field on IGNORE", () => {
+  it("puts the form's own value back on ENTER_VALUE, so a guess cannot stand in for what they meant to type", () => {
     const withFlex = { ...draft, flexibilityWindowHours: 4 }
-    expect(applyDisagreementAnswers(withFlex, [enterOrIgnore], { flexibilityWindowHours: "IGNORE" })
-      .flexibilityWindowHours).toBeNull()
+    expect(applyDisagreementAnswers(withFlex, [enterOrIgnore], { flexibilityWindowHours: "ENTER_VALUE" }, formDraft)
+      .flexibilityWindowHours).toBe(6)
+  })
+
+  it("keeps a value the operator already typed on IGNORE", () => {
+    // The parser read nothing, so the field is the form's own value; clearing it would wipe it.
+    const unchanged = { ...formDraft }
+    expect(applyDisagreementAnswers(unchanged, [enterOrIgnore], { flexibilityWindowHours: "IGNORE" }, formDraft)
+      .flexibilityWindowHours).toBe(6)
   })
 
   it("leaves every other field alone", () => {
-    const applied = applyDisagreementAnswers(draft, [keepOrDrop], { deadline: "DROP" })
+    const applied = applyDisagreementAnswers(draft, [keepOrDrop], { deadline: "DROP" }, formDraft)
     expect(applied.originalStartTime).toBe(draft.originalStartTime)
     expect(applied.priority).toBe("NORMAL")
     expect(applied.isExempt).toBe(false)
@@ -102,11 +112,11 @@ describe("answers change what gets applied", () => {
 
   it("does not mutate the fields it was given", () => {
     const original = { ...draft }
-    applyDisagreementAnswers(draft, [keepOrDrop], { deadline: "DROP" })
+    applyDisagreementAnswers(draft, [keepOrDrop], { deadline: "DROP" }, formDraft)
     expect(draft).toEqual(original)
   })
 
   it("applies nothing for a question left unanswered", () => {
-    expect(applyDisagreementAnswers(draft, [keepOrDrop], {}).deadline).toBe(draft.deadline)
+    expect(applyDisagreementAnswers(draft, [keepOrDrop], {}, formDraft).deadline).toBe(draft.deadline)
   })
 })

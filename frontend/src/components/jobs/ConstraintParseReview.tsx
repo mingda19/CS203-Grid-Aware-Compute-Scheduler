@@ -81,7 +81,7 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
         <Button type="button" disabled={!!blocker} onClick={() => {
           if (constraintReviewBlocker(review.result, review.draft, draft, answers)) return
           const disagreements = review.result.disagreements ?? []
-          onConfirm({ ...review.result, fields: applyDisagreementAnswers(review.result.fields, disagreements, answers) },
+          onConfirm({ ...review.result, fields: applyDisagreementAnswers(review.result.fields, disagreements, answers, review.draft) },
             review.raw)
           onPendingChange(false)
           setReview(null)

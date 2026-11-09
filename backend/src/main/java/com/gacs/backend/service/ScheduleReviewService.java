@@ -121,13 +121,14 @@ public class ScheduleReviewService {
      * ScheduleApplicationService} only ever writes Scheduled, Running, Throttled and Completed), and
      * the decision is to drop the rows rather than invent one: the audit log already records the
      * APPROVE, the DISPATCH and the REVOKE, so what happened stays reconstructable without keeping a
-     * dead row on the calendar.
+     * dead row on the calendar. Completed rows stay, since they record work that already ran and
+     * a revocation cannot undo it.
      *
      * <p>Runs in the same transaction as the decision, so a failure here rolls the revocation back
      * rather than leaving a revoked plan whose work is still on the timetable.
      */
     private void discardCalendarEntries(UUID runId) {
-        schedules.deleteAll(schedules.findByRunIdOrderByIdAsc(runId.toString()));
+        schedules.deleteByRunIdAndStatusNot(runId.toString(), "Completed");
     }
 
     /**

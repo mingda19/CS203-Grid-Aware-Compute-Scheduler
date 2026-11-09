@@ -315,11 +315,15 @@ export default function JobsPage() {
     // than left for the optimiser to report as unschedulable.
     const earliest = currentMarketHourInput()
     const flexibilityWindowHours = effectiveFlexHours(form.scheduleMode, form.flexibilityWindowHours, form.originalStartTime, form.deadline)
-    if (form.originalStartTime < earliest) {
+    // On an edit only a time the operator changed is checked, matching the backend: a started job stays
+    // editable (Lock switch, hours) as long as the edit does not move a time into the past.
+    const startChanged = !editing || form.originalStartTime !== toInputDate(editing.originalStartTime)
+    const deadlineChanged = !editing || form.deadline !== toInputDate(editing.deadline)
+    if (startChanged && form.originalStartTime < earliest) {
       setError(`Start time has passed. Choose ${earliest.replace("T", " ")} ${MARKET_ZONE_LABEL} or later.`)
       return
     }
-    if (form.deadline <= earliest) {
+    if (deadlineChanged && form.deadline <= earliest) {
       setError(`Deadline has passed. Choose a deadline after ${earliest.replace("T", " ")} ${MARKET_ZONE_LABEL}.`)
       return
     }

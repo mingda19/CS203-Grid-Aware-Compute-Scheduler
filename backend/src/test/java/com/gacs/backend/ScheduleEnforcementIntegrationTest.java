@@ -421,6 +421,32 @@ class ScheduleEnforcementIntegrationTest {
     }
 
     @Test
+    @DisplayName("re-approving the same job keeps the Completed entry of the earlier run")
+    void reapprovingKeepsCompletedEntryOfEarlierRun() throws Exception {
+        String run1 = optimize(); decide(run1,"approve").andExpect(status().isOk()); apply(run1).andExpect(status().isOk());
+        long finished = schedules.findByRunIdOrderByIdAsc(run1).getFirst().getId();
+        transition(finished,"Running").andExpect(status().isOk());
+        transition(finished,"Completed").andExpect(status().isOk());
+
+        String run2 = optimize(); decide(run2,"approve").andExpect(status().isOk()); apply(run2).andExpect(status().isOk());
+
+        assertThat(schedules.findByRunIdOrderByIdAsc(run1)).extracting("status").containsExactly("Completed");
+        assertThat(schedules.findByRunIdOrderByIdAsc(run2)).extracting("status").containsExactly("Scheduled");
+    }
+
+    @Test
+    @DisplayName("revoking an approval keeps the Completed entry (applicationIsIdempotentAndRevocationBlocksStarts covers removal of a Running one)")
+    void revokeKeepsCompletedEntry() throws Exception {
+        String run = optimize(); decide(run,"approve").andExpect(status().isOk()); apply(run).andExpect(status().isOk());
+        long finished = schedules.findByRunIdOrderByIdAsc(run).getFirst().getId();
+        transition(finished,"Running").andExpect(status().isOk());
+        transition(finished,"Completed").andExpect(status().isOk());
+        decide(run,"revoke").andExpect(status().isOk());
+
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).extracting("id").containsExactly(finished);
+    }
+
+    @Test
     @DisplayName("bug 6: the applied calendar entry uses the job's own workload category, not a GPU-hours guess")
     void appliedScheduleUsesJobsWorkloadCategoryNotGpuHeuristic() throws Exception {
         var body = jobBody(); body.put("gpuHours", 2.0); body.put("workloadCategory", "CRYPTO_MINING"); update(body);

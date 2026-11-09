@@ -28,8 +28,8 @@ public record AuditEventFilter(
 ) {
     /**
      * An unscoped filter: the search criteria only, with no ownership restriction. The controller
-     * narrows it with {@link #scopedTo} for anyone who is not an administrator, so an unscoped filter
-     * never reaches the query for an ordinary operator.
+     * narrows it with {@link #scopedTo} for every caller, administrators included, so an unscoped
+     * filter never reaches the query from the API.
      */
     public AuditEventFilter(Instant from, Instant to, String actor, AuditActionType actionType,
                             String runId, Long jobId) {

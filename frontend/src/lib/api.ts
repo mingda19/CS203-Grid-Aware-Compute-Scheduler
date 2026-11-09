@@ -567,16 +567,18 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
   // "NetworkError", neither of which means anything to an operator. Normalising it to an
   // ApiRequestError with status 0 means every caller has one error type to handle and one readable
   // message, instead of a raw TypeError reaching the UI as the explanation for a failed decision.
-  let response: Response
-  try {
-    response = await fetch(url, {
-      ...options,
-      headers,
-      credentials: "include", // for HttpOnly refresh-token cookies
-    })
-  } catch {
-    throw new ApiRequestError(apiErrorMessage(0, null), 0)
+  const send = async (): Promise<Response> => {
+    try {
+      return await fetch(url, {
+        ...options,
+        headers,
+        credentials: "include", // for HttpOnly refresh-token cookies
+      })
+    } catch {
+      throw new ApiRequestError(apiErrorMessage(0, null), 0)
+    }
   }
+  const response = await send()
 
   // Automatic token refresh on 401 Unauthorized or 403 Forbidden for authenticated endpoints
   if (
@@ -596,7 +598,7 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
     if (refreshedAccessToken) {
       setAccessToken(refreshedAccessToken)
       headers["Authorization"] = `Bearer ${refreshedAccessToken}`
-      const retryResponse = await fetch(url, { ...options, headers, credentials: "include" })
+      const retryResponse = await send()
       const retryData = await retryResponse.json().catch(() => ({}))
       if (!retryResponse.ok) {
         throw new ApiRequestError(apiErrorMessage(retryResponse.status, retryData),

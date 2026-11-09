@@ -91,8 +91,9 @@ public class ScheduleApplicationService {
         // job's work piled up one workload-schedule row per application instead of replacing it,
         // because ScheduleGate.supersede only marks the OLD OptimizationPlan STALE - it never
         // touches rows already written here by a previous apply() call for a different run.
+        // Completed rows stay: they are the record of work that already ran.
         Set<Long> jobIds = entries.stream().map(WorkloadSchedule::getJobId).collect(Collectors.toSet());
-        schedules.deleteByOwnerEmailAndJobIdInAndRunIdNot(email, jobIds, plan.getRunId());
+        schedules.deleteByOwnerEmailAndJobIdInAndRunIdNotAndStatusNot(email, jobIds, plan.getRunId(), "Completed");
         schedules.saveAllAndFlush(entries);
         audit.recordEvent(new AuditEventRequestDto(AuditActionType.DISPATCH, plan.getRunId(),
             ScheduleHashUtil.computeSha256(plan.getResultJson()), "Applied approved schedule to calendar"));

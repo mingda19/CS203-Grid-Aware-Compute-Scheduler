@@ -37,20 +37,23 @@ export function constraintReviewBlocker(
  * The proposed values with the operator's disagreement answers applied.
  *
  * Without this the selection would be cosmetic: the parser's value sits in `result.fields` whatever
- * the operator chose, so answering "remove it" has to actually remove it here. `ENTER_VALUE` also
- * clears the field - the operator said they would set it in the form themselves, and leaving a
- * value the parser guessed would silently stand in for the one they meant to type.
+ * the operator chose, so answering "remove it" has to actually remove it here. `DROP`, `IGNORE` and
+ * `ENTER_VALUE` put the field back to what the form held before the parse (`draft`): the operator
+ * said the text does not set it, or that they will set it themselves, so a value the parser guessed
+ * must not stand in for it. Clearing the field instead would also wipe a value the operator had
+ * already typed into the form.
  */
 export function applyDisagreementAnswers(
   fields: ConstraintDraft,
   disagreements: ConstraintDisagreement[],
   answers: DisagreementAnswers,
+  draft: ConstraintDraft,
 ): ConstraintDraft {
   let result = { ...fields }
   for (const disagreement of disagreements) {
     const answer = answers[disagreement.field]
     if (answer === "DROP" || answer === "IGNORE" || answer === "ENTER_VALUE") {
-      result = { ...result, [disagreement.field]: null }
+      result = { ...result, [disagreement.field]: draft[disagreement.field] }
     }
   }
   return result

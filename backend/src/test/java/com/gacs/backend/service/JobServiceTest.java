@@ -556,6 +556,20 @@ class JobServiceTest {
     }
 
     @Test
+    @DisplayName("updateJob accepts an edit that leaves an elapsed start unchanged, such as the Lock switch")
+    void updateJob_AcceptsUnchangedElapsedStart() {
+        LocalDateTime elapsedStart = start.minusDays(1);
+        Job existing = Job.builder().id(203L).ownerEmail(owner).name("Started")
+                .cpuHours(10.0).gpuHours(0.0).originalStartTime(elapsedStart).deadline(deadline)
+                .flexibilityWindowHours(2).isExempt(false).status("PENDING").build();
+        when(jobRepository.findByIdAndOwnerEmail(203L, owner)).thenReturn(Optional.of(existing));
+        when(jobRepository.save(any(Job.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        JobRequestDto request = validRequest().name("Started").originalStartTime(elapsedStart).isExempt(true).build();
+
+        assertThat(jobService.updateJob(203L, request, owner).isExempt()).isTrue();
+    }
+
+    @Test
     @DisplayName("updateJob is gated too, so a past start cannot be reintroduced by editing")
     void updateJob_RejectsElapsedStart() {
         JobRequestDto request = validRequest().originalStartTime(start.minusDays(1)).build();
