@@ -70,9 +70,73 @@ class AuthServiceTest {
     void setUp() {
         registerRequest = new RegisterRequest(
                 "elena.vance@datacenter.io",
-                "P@ssw0rd2026!",
+                "river lantern orbit meadow",
                 "Elena Vance"
         );
+    }
+
+    @Test
+    void recoveryCodeIsHashedSingleUseAndRevokesRefreshTokens() {
+        User user = new User("user@example.com", "old", "User", "ROLE_USER");
+        user.setVerified(true);
+        when(userRepository.lockByEmail("user@example.com")).thenReturn(Optional.of(user));
+        authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(" USER@example.com "));
+        ArgumentCaptor<String> code = ArgumentCaptor.forClass(String.class);
+        verify(emailService).sendPasswordResetEmail(eq("user@example.com"), code.capture());
+        assertEquals(43, code.getValue().length());
+        assertNotEquals(code.getValue(), user.getPasswordResetHash());
+        assertTrue(passwordEncoder.matches(code.getValue(), user.getPasswordResetHash()));
+        var request = new com.gacs.backend.dto.ResetPasswordRequest("user@example.com", code.getValue(), "meadow lantern orbit river");
+        authService.resetPassword(request);
+        assertTrue(passwordEncoder.matches("meadow lantern orbit river", user.getPassword()));
+        assertNull(user.getPasswordResetHash());
+        verify(refreshTokenService).revokeAllUserTokens(user);
+        assertThrows(IllegalArgumentException.class, () -> authService.resetPassword(request));
+    }
+
+    @Test
+    void recoveryRejectsExpiredAndWrongCodes() {
+        User user = new User("user@example.com", "old", "User", "ROLE_USER");
+        user.setVerified(true);
+        user.setPasswordResetHash(passwordEncoder.encode("correct"));
+        user.setPasswordResetExpiresAt(LocalDateTime.now().minusMinutes(1));
+        when(userRepository.lockByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        var request = new com.gacs.backend.dto.ResetPasswordRequest(user.getEmail(), "correct", "meadow lantern orbit river");
+        assertThrows(IllegalArgumentException.class, () -> authService.resetPassword(request));
+        user.setPasswordResetExpiresAt(LocalDateTime.now().plusMinutes(10));
+        assertThrows(IllegalArgumentException.class, () -> authService.resetPassword(
+                new com.gacs.backend.dto.ResetPasswordRequest(user.getEmail(), "incorrect", "meadow lantern orbit river")));
+        assertEquals("old", user.getPassword());
+        verifyNoInteractions(refreshTokenService);
+    }
+
+    @Test
+    void recoveryDoesNotSendForUnknownOrUnverifiedAccountsAndThrottlesResends() {
+        when(userRepository.lockByEmail("missing@example.com")).thenReturn(Optional.empty());
+        var missing = authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest("missing@example.com"));
+        User user = new User("user@example.com", "old", "User", "ROLE_USER");
+        when(userRepository.lockByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        var unverified = authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
+        assertEquals(missing.getMessage(), unverified.getMessage());
+        user.setVerified(true);
+        user.setPasswordResetRequestedAt(LocalDateTime.now());
+        authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
+        verifyNoInteractions(emailService);
+    }
+
+    @Test
+    void recoveryResendReplacesOldCodeAndDeliveryFailureDoesNotReplaceIt() {
+        User user = new User("user@example.com", "old", "User", "ROLE_USER");
+        user.setVerified(true);
+        user.setPasswordResetHash("previous");
+        when(userRepository.lockByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        doThrow(new IllegalStateException("SMTP unavailable")).when(emailService).sendPasswordResetEmail(anyString(), anyString());
+        authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
+        assertEquals("previous", user.getPasswordResetHash());
+        user.setPasswordResetRequestedAt(LocalDateTime.now().minusMinutes(2));
+        doNothing().when(emailService).sendPasswordResetEmail(anyString(), anyString());
+        authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
+        assertNotEquals("previous", user.getPasswordResetHash());
     }
 
     // login() sets the thread-global SecurityContextHolder; clear it so later MockMvc tests on this thread start anonymous.
@@ -97,8 +161,8 @@ class AuthServiceTest {
         User savedUser = userCaptor.getValue();
 
         assertNotNull(savedUser);
-        assertNotEquals("P@ssw0rd2026!", savedUser.getPassword());
-        assertTrue(passwordEncoder.matches("P@ssw0rd2026!", savedUser.getPassword()));
+        assertNotEquals("river lantern orbit meadow", savedUser.getPassword());
+        assertTrue(passwordEncoder.matches("river lantern orbit meadow", savedUser.getPassword()));
         assertEquals("ROLE_USER", savedUser.getRole());
         assertFalse(savedUser.isVerified());
 

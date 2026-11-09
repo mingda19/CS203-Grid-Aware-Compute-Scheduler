@@ -542,7 +542,9 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
     endpoint.includes("/refresh") ||
     endpoint.includes("/register") ||
     endpoint.includes("/verify-otp") ||
-    endpoint.includes("/resend-otp")
+    endpoint.includes("/resend-otp") ||
+    endpoint.includes("/forgot-password") ||
+    endpoint.includes("/reset-password")
 
   // If access token is missing on a protected route, attempt restoring it
   if (!getAccessToken() && !isPublicAuthEndpoint && typeof window !== "undefined") {
@@ -583,11 +585,7 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
   // Automatic token refresh on 401 Unauthorized or 403 Forbidden for authenticated endpoints
   if (
     (response.status === 401 || response.status === 403) &&
-    !endpoint.includes("/login") &&
-    !endpoint.includes("/refresh") &&
-    !endpoint.includes("/register") &&
-    !endpoint.includes("/verify-otp") &&
-    !endpoint.includes("/resend-otp")
+    !isPublicAuthEndpoint
   ) {
     let refreshedAccessToken: string | undefined
     try {
@@ -893,6 +891,12 @@ export const scheduleExportApi = {
 }
 
 export const authApi = {
+  async forgotPassword(payload: { email: string }): Promise<ApiResponse<string>> {
+    return fetchJson("/forgot-password", { method: "POST", body: JSON.stringify(payload) })
+  },
+  async resetPassword(payload: { email: string; token: string; password: string }): Promise<ApiResponse<string>> {
+    return fetchJson("/reset-password", { method: "POST", body: JSON.stringify(payload) })
+  },
   async register(payload: {
     email: string
     password: string

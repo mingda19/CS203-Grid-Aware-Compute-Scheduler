@@ -13,9 +13,9 @@ public class RegisterRequest {
     @Email(message = "Invalid email format")
     private String email;
 
-    @Schema(description = "Account password (minimum 6 characters)", example = "SecurePass123!", requiredMode = Schema.RequiredMode.REQUIRED, minLength = 6)
+    @Schema(description = "Account password (minimum 15 characters)", example = "river lantern orbit meadow", requiredMode = Schema.RequiredMode.REQUIRED, minLength = 15)
     @NotBlank(message = "Password is required")
-    @Size(min = 6, message = "Password must be at least 6 characters")
+    @Size(min = 15, max = 72, message = "Password must be between 15 and 72 characters")
     private String password;
 
     @Schema(description = "Full name of the user", example = "Alex Morgan", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
