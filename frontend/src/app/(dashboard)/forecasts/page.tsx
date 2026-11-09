@@ -90,14 +90,11 @@ export default function ForecastsPage() {
   }, [showAdvancedHistory, dateRange, hubLocation, historyQuery])
 
   const chartCustomPricePoints = React.useMemo(() => {
-    return pricePoints.map((point) => {
-      const rawUtc = `${point.intervalStartUtc}Z`
-      return {
-        ...point,
-        price: point.sppUsdMwh,
-        time: formatMarketChartTick(rawUtc, true),
-      }
-    })
+    return pricePoints.map((point) => ({
+      ...point,
+      price: point.sppUsdMwh,
+      time: formatMarketChartTick(point.intervalStartUtc, true),
+    }))
   }, [pricePoints])
 
   const dateRangeInvalid = dateRange.startDate > dateRange.endDate
