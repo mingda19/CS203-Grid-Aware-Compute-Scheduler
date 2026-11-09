@@ -457,7 +457,6 @@ export default function JobsPage() {
       const response = await optimizerApi.optimize({
         jobs: optimizeJobs,
         forecastLocation: facility.location || "LZ_NORTH",
-        horizonHours: 48,
         clusterCapacity: {
           maxConcurrentCpuHours: Number(facility.maxCpuHours),
           maxConcurrentGpuHours: Number(facility.maxGpuHours),

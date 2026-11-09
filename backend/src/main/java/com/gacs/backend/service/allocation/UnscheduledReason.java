@@ -27,6 +27,9 @@ public enum UnscheduledReason {
     /** The window is ahead of where the price forecast reaches, so there is no priced hour to use. */
     BEYOND_FORECAST("Beyond the price forecast", "no published price forecast covers their window yet"),
 
+    /** Free capacity exists, but only in hours the forecast does not reach, so the job cannot be moved there. */
+    UNPRICED_HOURS("No forecast price", "the only free hours they could use have no price forecast yet"),
+
     /** Hours remain, but too few for the work to finish by the deadline. */
     NOT_ENOUGH_TIME("Not enough time left", "too little time remains before their deadline"),
 
