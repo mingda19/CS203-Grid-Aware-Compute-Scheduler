@@ -44,6 +44,12 @@ describe("detecting jobs whose start time has passed", () => {
     expect(elapsedStartJobs([job({ id: 1, originalStartTime: "2026-11-04T18:00:00" })], NOW)).toEqual([])
   })
 
+  it("is not off by an hour in the repeated hour when Central Time falls back", () => {
+    // 2026-11-01 01:30 CST (07:30Z) is the second 01:xx hour; the current hour began at 07:00Z.
+    expect(currentMarketHourStart("2026-11-01T07:30:00Z").toISOString()).toBe("2026-11-01T07:00:00.000Z")
+    expect(currentMarketHourStart("2026-11-01T06:30:00Z").toISOString()).toBe("2026-11-01T06:00:00.000Z")
+  })
+
   it("gets the offset right in summer too, when Central Time is UTC-5", () => {
     // A fixed offset would be wrong for half the year; date-utils resolves it per instant.
     const summer = "2026-07-04T18:30:00Z"
