@@ -34,10 +34,10 @@ export function confidenceTone(score: number | null | undefined): string {
   }
 }
 
-/** "82% · High", or "Not available" when the model has no error reference for the interval. */
+/** "82%, High", or "Not available" when the model has no error reference for the interval. */
 export function formatConfidence(score: number | null | undefined): string {
   const band = confidenceBand(score)
-  return band === "Not available" ? band : `${Math.round((score as number) * 100)}% · ${band}`
+  return band === "Not available" ? band : `${Math.round((score as number) * 100)}%, ${band}`
 }
 
 /**

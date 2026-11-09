@@ -9,17 +9,22 @@ import com.gacs.backend.dto.OptimizeResponseDto;
 import com.gacs.backend.dto.ScheduleDecisionDto;
 import com.gacs.backend.exception.OptimizationFailedException;
 import com.gacs.backend.model.AuditActionType;
+import com.gacs.backend.model.Job;
 import com.gacs.backend.model.OptimizationPlan;
+import com.gacs.backend.repository.JobRepository;
 import com.gacs.backend.model.User;
 import com.gacs.backend.repository.UserRepository;
 import com.gacs.backend.service.allocation.AllocationSolver;
 import com.gacs.backend.service.allocation.OptimizerProperties;
 import com.gacs.backend.util.ScheduleHashUtil;
 import org.springframework.aop.support.AopUtils;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -50,6 +55,10 @@ public class ScheduleReviewService {
     private final Clock clock;
     private final ScheduleInputs inputs;
     private final ScheduleGate gate;
+    private final AppSettingsService settings;
+    private final CapacityLedger ledger;
+    private final ScheduleApplicationService application;
+    private final JobRepository jobs;
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
 
     private final com.gacs.backend.repository.WorkloadScheduleRepository schedules;
@@ -58,7 +67,13 @@ public class ScheduleReviewService {
                                  OptimizationPlanRecorder planRecorder, AuditEventService audit,
                                  AllocationSolver solver, OptimizerProperties properties,
                                  UserRepository users, Clock clock, ScheduleInputs inputs, ScheduleGate gate,
-                                 com.gacs.backend.repository.WorkloadScheduleRepository schedules) {
+                                 com.gacs.backend.repository.WorkloadScheduleRepository schedules,
+                                 AppSettingsService settings, CapacityLedger ledger,
+                                 ScheduleApplicationService application, JobRepository jobs) {
+        this.ledger = ledger;
+        this.application = application;
+        this.jobs = jobs;
+        this.settings = settings;
         this.schedules = schedules;
         this.optimizer = optimizer;
         this.planRecorder = planRecorder;
@@ -72,11 +87,20 @@ public class ScheduleReviewService {
     }
 
     public OptimizeResponseDto optimize(OptimizeRequestDto request, String email) {
+        return optimize(request, email, false);
+    }
+
+    /**
+     * @param discardIfEmpty true for a run the system started: when it places no job, its plan is ended as
+     *                       it is recorded, so the queue never shows it
+     */
+    public OptimizeResponseDto optimize(OptimizeRequestDto request, String email, boolean discardIfEmpty) {
         User owner = operator(email);
-        String provenance = inputs.capture(request, email);
+        var reserved = ledger.reserved();
+        String provenance = inputs.capture(request, email, reserved);
         try {
-            return optimizer.optimize(request, email,
-                (result, snapshot) -> recordPlan(result, owner, snapshot, provenance));
+            return optimizer.optimize(request, reserved, email,
+                (result, snapshot) -> recordPlan(result, owner, snapshot, provenance, discardIfEmpty));
         } catch (OptimizationFailedException failure) {
             try {
                 planRecorder.recordFailed(failure.getRunId(), clock.instant(), AopUtils.getTargetClass(solver).getSimpleName(),
@@ -86,12 +110,20 @@ public class ScheduleReviewService {
         }
     }
 
-    private void recordPlan(OptimizeResponseDto result, User owner, String snapshot, String provenance) {
+    private void recordPlan(OptimizeResponseDto result, User owner, String snapshot, String provenance,
+                            boolean discardIfEmpty) {
         try {
             var createdAt = clock.instant();
+            Map<Long, String> unplaced = new HashMap<>();
+            if (result.items() != null) for (var item : result.items())
+                if (item.scheduledStart() == null || item.scheduledEnd() == null)
+                    unplaced.put(item.jobId(), item.reason() == null ? "No feasible slot" : item.reason());
+            String discard = discardIfEmpty && OptimizeResponseDto.STATUS_INFEASIBLE.equals(result.status())
+                ? "No job could be placed" : null;
             planRecorder.record(result.runId(), createdAt, AopUtils.getTargetClass(solver).getSimpleName(),
                 AllocationSolver.VERSION, json.writeValueAsString(properties), owner,
-                json.writeValueAsString(result), StoredScheduleReader.jobIds(result), snapshot, provenance);
+                json.writeValueAsString(result), StoredScheduleReader.jobIds(result), snapshot, provenance,
+                unplaced, inputs.revisions(provenance), discard);
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException(
                     "Failed to serialize the solver config or optimizer result for run " + result.runId()
@@ -148,8 +180,10 @@ public class ScheduleReviewService {
 
     @Transactional(noRollbackFor = com.gacs.backend.exception.ScheduleExportRejectedException.class)
     public ScheduleDecisionDto decide(UUID runId, AuditActionType action, String comment, String email) {
-        OptimizationPlan plan = gate.owned(runId, email);
-        User operator = plan.getOwner();
+        User caller = operator(email);
+        OptimizationPlan plan = gate.reviewable(runId);
+        if (action == AuditActionType.APPROVE && !settings.canApprove(caller, plan))
+            throw new AccessDeniedException("You cannot approve your own plan. Another user has to approve it.");
         if (TERMINAL_DECISIONS.contains(plan.getReviewState())
             && !isRevocationOfApproval(plan.getReviewState(), action))
             throw new com.gacs.backend.exception.ScheduleExportRejectedException(
@@ -164,14 +198,35 @@ public class ScheduleReviewService {
                 com.gacs.backend.exception.ScheduleExportRejectedException.Reason.ALREADY_DECIDED,
                 "Schedule run " + runId + " is " + plan.getReviewState().name().toLowerCase(java.util.Locale.ROOT).replace('_', ' ')
                     + ", not approved, so there is no approval to revoke");
+        ScheduleGate.Checked checked = null;
+        // Capacity is shared, so approvals take turns: the owner is locked above, now the facility. The
+        // second approver waits here, then the check sees the first approval and refuses a plan that no
+        // longer fits.
+        if (action == AuditActionType.APPROVE) inputs.lockFacility(plan.getOwner().getEmail());
         if (action == AuditActionType.APPROVE || plan.getReviewState() == com.gacs.backend.model.ReviewState.INVALIDATED
-            || plan.getReviewState() == com.gacs.backend.model.ReviewState.STALE) gate.check(plan, email, false);
+            || plan.getReviewState() == com.gacs.backend.model.ReviewState.STALE) checked = gate.check(plan, false);
         plan.recordDecision(action);
         AuditEventResponseDto event = audit.recordEvent(new AuditEventRequestDto(action,
             runId.toString(), ScheduleHashUtil.computeSha256(plan.getResultJson()), comment));
-        if (action == AuditActionType.APPROVE) gate.supersede(plan);
+        if (action == AuditActionType.APPROVE) {
+            // Jobs the run never placed are not approved. Leaving them in the plan would lock them against
+            // edits while they need fixing, and re-planning one would end the approval of the rest.
+            var placed = (checked.schedule().items() == null ? java.util.List.<com.gacs.backend.dto.OptimizeResponseDto.ScheduleItem>of() : checked.schedule().items()).stream()
+                .filter(item -> item.scheduledStart() != null && item.scheduledEnd() != null)
+                .map(com.gacs.backend.dto.OptimizeResponseDto.ScheduleItem::jobId).collect(java.util.stream.Collectors.toSet());
+            var unplaced = plan.liveJobIds().stream().filter(id -> !placed.contains(id)).toList();
+            plan.removeJobs(unplaced);
+            for (Job job : jobs.findAllById(unplaced))
+                if (!job.hasCurrentPlanError())
+                    job.recordPlanError("No feasible slot in the approved plan", job.getSchedulingRevision());
+            gate.supersede(plan);
+            // Approving puts the plan on the calendar in the same step. The schedule is the one the check
+            // above returned: checking again after the decision is recorded could refuse, and this method
+            // keeps a decision whose export was refused.
+            application.applyChecked(plan, checked.schedule());
+        }
         if (action == AuditActionType.REVOKE) discardCalendarEntries(runId);
-        return new ScheduleDecisionDto(event.id(), runId, event.actionType(), operator.getId(),
+        return new ScheduleDecisionDto(event.id(), runId, event.actionType(), caller.getId(),
             event.operatorRationale(), event.timestamp(), plan.getReviewState());
     }
 

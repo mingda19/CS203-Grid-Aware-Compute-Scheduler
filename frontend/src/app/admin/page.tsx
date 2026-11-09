@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { adminApi, authApi, removeStoredUser, type User } from "@/lib/api"
+import { FacilityConfigCard } from "@/components/admin/FacilityConfigCard"
+import { ApprovalSettingsCard } from "@/components/admin/ApprovalSettingsCard"
 
 export default function AdminPage() {
   const router = useRouter()
@@ -339,6 +341,9 @@ export default function AdminPage() {
             </CardContent>
           </Card>
         </div>
+
+        <FacilityConfigCard />
+        <ApprovalSettingsCard />
 
         {/* User Management Section */}
         <Card className="border border-border shadow-sm">

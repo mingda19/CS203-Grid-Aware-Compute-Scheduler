@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import type { DataFreshnessResponse } from "@/lib/api"
+import { facilityApi, type DataFreshnessResponse, type FacilityConfig } from "@/lib/api"
 import { formatMarketDateTime } from "@/lib/date-utils"
 import { datasetAgeText, datasetStatusType } from "@/lib/data-freshness"
 import { DataStatusBadge, type DataStatusType } from "@/components/ui/data-status-badge"
@@ -14,14 +14,25 @@ interface DataStatusPopoverProps {
   response: DataFreshnessResponse | null
 }
 
-/** The top-bar data status badge. It opens a list of all datasets with what is old and by how much. */
+/**
+ * The top-bar data status badge. It opens the shared facility (read only, an admin changes it on
+ * the Admin page) and a list of all datasets with what is old and by how much.
+ */
 export function DataStatusPopover({ status, response }: DataStatusPopoverProps) {
   const [now, setNow] = React.useState(() => Date.now())
+  // Fetched on each open, so a change an admin just made shows up. Null = not loaded or failed.
+  const [facility, setFacility] = React.useState<FacilityConfig | null>(null)
 
   if (status === null) return <Skeleton className="h-7 w-28 shrink-0 rounded-full" />
 
+  const onOpenChange = (open: boolean) => {
+    if (!open) return
+    setNow(Date.now())
+    facilityApi.get().then((r) => setFacility(r.data ?? null)).catch(() => setFacility(null))
+  }
+
   return (
-    <Popover onOpenChange={(open) => { if (open) setNow(Date.now()) }}>
+    <Popover onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -38,6 +49,23 @@ export function DataStatusPopover({ status, response }: DataStatusPopoverProps) 
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" collisionPadding={16} className="w-[26rem] max-w-[calc(100vw-2rem)] p-3">
+        {facility && (
+          <section className="mb-3 border-b pb-3">
+            <h2 className="mb-2 truncate text-sm font-semibold leading-5" title={facility.name}>{facility.name}</h2>
+            <dl className="grid grid-cols-3 gap-3 text-xs leading-4">
+              {([
+                ["ERCOT zone", facility.location],
+                ["Max CPU per hour", `${facility.maxCpuHours} CPU-h`],
+                ["Max GPU per hour", `${facility.maxGpuHours} GPU-h`],
+              ] as const).map(([label, value]) => (
+                <div key={label} className="min-w-0">
+                  <dt className="truncate text-muted-foreground">{label}</dt>
+                  <dd className="truncate font-mono font-semibold">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        )}
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="min-w-0 truncate text-sm font-semibold leading-5">Data status</h2>
           {response && (

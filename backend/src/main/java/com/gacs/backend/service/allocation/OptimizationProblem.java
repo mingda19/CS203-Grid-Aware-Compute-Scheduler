@@ -43,7 +43,19 @@ public record OptimizationProblem(
         Map<OptimizerJob, JobPlan> baselines,
         List<PlacementConstraint> constraints,
         List<SynchronizedFinishConstraint> synchronizedGroups,
-        LocalDateTime earliestStart) {
+        LocalDateTime earliestStart,
+        SlotCapacity baselineCapacity) {
+
+    /**
+     * Without a capacity of its own for the baselines, a problem uses {@code capacity} for them too. The
+     * factory sets it when {@code capacity} is smaller than the facility because approved plans use the
+     * rest: baselines and "could this job finish alone" still describe the whole facility.
+     */
+    public OptimizationProblem(List<OptimizerJob> jobs, PriceSeries prices, SlotCapacity capacity,
+                               Map<OptimizerJob, JobPlan> baselines, List<PlacementConstraint> constraints,
+                               List<SynchronizedFinishConstraint> synchronizedGroups, LocalDateTime earliestStart) {
+        this(jobs, prices, capacity, baselines, constraints, synchronizedGroups, earliestStart, capacity);
+    }
 
     /**
      * Convenience for the common case of no constraints or synchronized-finish groups, and no
@@ -107,6 +119,7 @@ public record OptimizationProblem(
         synchronizedGroups = List.copyOf(synchronizedGroups);
         Objects.requireNonNull(prices, "prices");
         Objects.requireNonNull(capacity, "capacity");
+        if (baselineCapacity == null) baselineCapacity = capacity;
         for (OptimizerJob job : jobs) {
             if (!baselines.containsKey(job)) {
                 throw new IllegalArgumentException("missing baseline for job " + job.label());

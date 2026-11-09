@@ -34,7 +34,7 @@ async function loadPrices(zone: string) {
 
 function usageCard(resource: "CPU" | "GPU", data: FacilityUtilization) {
   const usage = resource === "CPU" ? data.cpu : data.gpu
-  if (data.state === "NO_APPROVED_PLAN") return { value: "—", supporting: "No approved plan" }
+  if (data.state === "NO_APPROVED_PLAN") return { value: "—", supporting: `No approved plan, limit ${hoursFormat.format(usage.limit)} ${resource}-h` }
   if (usage.percent == null || usage.used == null) return { value: "—", supporting: `No ${resource} capacity` }
   const over = usage.percent > 100
   return {

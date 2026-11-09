@@ -20,7 +20,7 @@ interface Pending {
 /** The pending count comes from stored review states. Reading a plan's detail runs its validity check. */
 async function loadPending(): Promise<Pending> {
   const read = async (): Promise<Pending> => {
-    const page = await unwrap(scheduleReviewApi.list(0, "PENDING"), "Could not load plans")
+    const page = await unwrap(scheduleReviewApi.list(0, "PENDING", true), "Could not load plans")
     const runId = page.content[0]?.runId ?? null
     const newest = runId
       ? await unwrap(scheduleReviewApi.detail(runId), "Could not load plan").catch(() => null)

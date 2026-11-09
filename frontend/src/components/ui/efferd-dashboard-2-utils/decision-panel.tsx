@@ -21,6 +21,8 @@ export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
   // otherwise an APPROVED plan (which rejects/revises as "already decided") would also disable
   // the surrounding controls, including "Add approved schedule to calendar".
   const unavailable = decisionUnavailable(review.plan, "reject")
+  // Why Approve is off for this plan, shown only while it is still waiting for a decision.
+  const approveBlocked = review.plan?.reviewState === "PENDING" ? decisionUnavailable(review.plan, "approve") : null
   const disabled = review.submitting || review.listLoading || review.detailLoading || !!review.listError || !!review.detailError || review.conflict || !!planUnavailable(review.plan)
   return <Card id="approvals">
     <CardHeader>
@@ -30,7 +32,7 @@ export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
           <RefreshCw className="mr-2 h-4 w-4" />Refresh plans
         </Button>
       </div>
-      <CardDescription>Review your saved recommendations and record an approval, rejection, or request for revision. Decisions do not dispatch workloads.</CardDescription>
+      <CardDescription>Review recommendations and record an approval, rejection, or request for revision. Decisions do not dispatch workloads.</CardDescription>
     </CardHeader>
     <CardContent className="space-y-4">
       {review.listLoading && <p role="status">Loading schedule plans…</p>}
@@ -41,7 +43,7 @@ export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
         <select id="schedule-plan-select" className="w-full rounded-md border bg-background p-2 text-sm" value={review.selected} disabled={review.submitting || !!action}
           onChange={event => review.select(event.target.value)}>
           {review.selected && !review.plans.some(plan => plan.runId === review.selected) && <option value={review.selected}>Selected recommendation — {review.selected}</option>}
-          {review.plans.map(plan => <option key={plan.runId} value={plan.runId}>{formatMarketDateTime(plan.createdAt)} — {reviewLabels[plan.runId === review.plan?.runId ? review.plan.reviewState : plan.reviewState]} — {plan.runId}</option>)}
+          {review.plans.map(plan => <option key={plan.runId} value={plan.runId}>{plan.ownerName} — {formatMarketDateTime(plan.createdAt)} — {reviewLabels[plan.runId === review.plan?.runId ? review.plan.reviewState : plan.reviewState]} — {plan.runId}</option>)}
         </select>
         <div className="flex items-center gap-3 text-xs">
           <Button type="button" size="sm" variant="outline" disabled={review.page === 0 || review.submitting || !!action} onClick={() => review.changePage(review.page - 1)}>Previous</Button>
@@ -51,12 +53,13 @@ export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
       </div>}
       {review.detailLoading && <p role="status">Loading recommendation and checking its validity…</p>}
       {review.detailError && <p role="alert" className="text-sm text-destructive">{review.detailError} Refresh plans to retry.</p>}
-      {review.conflict && <div role="alert" className="rounded-md border border-amber-500 p-3 text-sm">This schedule could not be updated because its approval or validity changed. {review.decisionError} Refresh plans to load its current state. Generate a new recommendation if it is stale or invalidated.</div>}
+      {review.conflict && <div role="alert" className="rounded-md border border-amber-500 p-3 text-sm">This plan was updated, so it could not be decided as shown: another approval, a change to a job or the facility, or time passing replaced it. {review.decisionError} The list has been reloaded. Pick the current plan for these jobs; the system plans them again within a minute if there is none yet.</div>}
       {review.decisionError && !review.conflict && <p role="alert" className="text-sm text-destructive">{review.decisionError}</p>}
       {review.notice && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-400">{review.notice}</p>}
       {review.plan && <>
         <PlanRecommendation plan={review.plan} />
         {unavailable && <p className="text-sm text-muted-foreground">{unavailable} <Link href="/jobs" className="underline">Open Jobs</Link></p>}
+        {!unavailable && approveBlocked && <p role="status" className="text-sm text-muted-foreground">{approveBlocked}</p>}
         <div className="flex flex-wrap gap-2">
           <Button type="button" disabled={disabled || !!decisionUnavailable(review.plan, "approve")} onClick={() => setAction("approve")}>{review.plan.reviewState === "APPROVED" ? "Schedule approved" : "Approve schedule"}</Button>
           <Button type="button" variant="destructive" disabled={disabled || !!decisionUnavailable(review.plan, "reject")} onClick={() => setAction("reject")}>{review.plan.reviewState === "REJECTED" ? "Schedule rejected" : "Reject schedule"}</Button>
@@ -84,6 +87,7 @@ export function PlanRecommendation({ plan }: { plan: SchedulePlanDetail }) {
   return <section aria-label="Recommendation details" className="space-y-3">
     <div className="flex flex-wrap items-center gap-2">
       <span className={`rounded-full border px-3 py-1 text-sm font-semibold ${plan.reviewState === "APPROVED" ? "border-emerald-500 text-emerald-700 dark:text-emerald-400" : plan.reviewState === "STALE" || plan.reviewState === "INVALIDATED" || plan.reviewState === "REJECTED" ? "border-destructive text-destructive" : "border-amber-500 text-amber-700 dark:text-amber-400"}`}>{reviewLabels[plan.reviewState]}</span>
+      <span className="text-xs text-muted-foreground">Submitted by {plan.ownerName}</span>
       <span className="break-all text-xs text-muted-foreground">Run {plan.runId}</span>
     </div>
     {plan.invalidationReason && <p role="alert" className="text-sm text-destructive">{plan.invalidationReason}</p>}
@@ -99,7 +103,9 @@ export function PlanRecommendation({ plan }: { plan: SchedulePlanDetail }) {
         <caption className="sr-only">Original and recommended job placements in market local time</caption>
         <thead><tr>{["Job", `Original start (${MARKET_ZONE_LABEL})`, `Proposed start (${MARKET_ZONE_LABEL})`, `Proposed end (${MARKET_ZONE_LABEL})`, "Outcome", "Savings (USD)"].map(label => <th key={label} className="p-2">{label}</th>)}</tr></thead>
         <tbody>{recommendation.items.map(item => <tr key={item.jobId} className="border-t">
-          <td className="p-2">{item.jobName} <span className="text-muted-foreground">(#{item.jobId})</span></td><td className="p-2">{formatMarketDateTime(item.baselineStart)}</td>
+          <td className="p-2">{item.jobName} <span className="text-muted-foreground">(#{item.jobId})</span>
+            {/* Deleted after approval. The stored plan is unchanged, so it still lists the job. */}
+            {item.scheduledStart && plan.removedJobIds.includes(item.jobId) && <p className="text-destructive">Deleted</p>}</td><td className="p-2">{formatMarketDateTime(item.baselineStart)}</td>
           <td className="p-2">{item.scheduledStart ? formatMarketDateTime(item.scheduledStart) : "Not scheduled"}</td>
           <td className="p-2">{item.scheduledEnd ? formatMarketDateTime(item.scheduledEnd) : "—"}</td>
           <td className="p-2">{item.perJobStatus.replaceAll("_", " ").toLowerCase()}{item.reason && <p>{item.reason}</p>}

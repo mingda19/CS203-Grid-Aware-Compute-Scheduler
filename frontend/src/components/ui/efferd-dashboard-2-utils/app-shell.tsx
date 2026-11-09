@@ -204,7 +204,7 @@ export function AppShell({ children }: AppShellProps) {
   const navItems: NavItem[] = [
     // The order follows the real flow: create jobs, approve, schedule (masterplan D17).
     { label: "Home", icon: House, href: "/home", active: pathname === "/home" || pathname === "/" },
-    { label: "Compute Jobs", icon: BriefcaseBusiness, href: "/jobs", active: pathname?.startsWith("/jobs") },
+    { label: "My jobs", icon: BriefcaseBusiness, href: "/jobs", active: pathname?.startsWith("/jobs") },
     { label: "Pending Approvals", icon: CheckCircle2, href: "/approvals", active: pathname?.startsWith("/approvals") },
     { label: "Schedule", icon: CalendarClock, href: "/workloads", active: pathname?.startsWith("/workloads") },
     { label: "Price Forecast", icon: TrendingDown, href: "/forecasts", active: pathname?.startsWith("/forecasts") },

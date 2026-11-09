@@ -1,5 +1,6 @@
 "use client"
 
+import { jobStatus } from "@/lib/job-status"
 import * as React from "react"
 import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
@@ -21,7 +22,6 @@ function upcoming(jobs: ComputeJob[], now: number) {
     .sort((a, b) => parseIsoDate(a.originalStartTime).getTime() - parseIsoDate(b.originalStartTime).getTime())
 }
 
-const sentenceCase = (text: string) => text.charAt(0).toUpperCase() + text.slice(1).toLowerCase()
 
 export function UpcomingJobsTable() {
   const jobs = useLoad("jobs", () => unwrap(jobsApi.list(), "Could not load jobs"))
@@ -70,7 +70,7 @@ export function UpcomingJobsTable() {
                   <TableCell className="whitespace-nowrap px-3 py-2.5 text-sm leading-5 tabular-nums">{formatMarketDateTime(job.originalStartTime, false)}</TableCell>
                   <TableCell className="whitespace-nowrap px-3 py-2.5 text-sm leading-5 tabular-nums">{formatMarketDateTime(job.deadline, false)}</TableCell>
                   <TableCell className="px-3 py-2.5">
-                    <Badge variant="secondary" className="whitespace-nowrap">{sentenceCase(job.status)}</Badge>
+                    <Badge variant="secondary" className="whitespace-nowrap">{jobStatus(job.status).label}</Badge>
                   </TableCell>
                 </TableRow>
               ))}

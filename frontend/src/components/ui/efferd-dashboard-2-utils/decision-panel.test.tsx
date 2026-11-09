@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest"
 import { PlanRecommendation } from "./decision-panel"
 import type { PlanReviewState, SchedulePlanDetail } from "@/lib/api"
 
-const plan: SchedulePlanDetail = { runId: "owned-run", reviewState: "PENDING", invalidationReason: null, invalidatedAt: null, appliedAt: null,
+const plan: SchedulePlanDetail = { runId: "owned-run", reviewState: "PENDING", invalidationReason: null, invalidatedAt: null, appliedAt: null, ownerName: "Ada", canApprove: true, removedJobIds: [],
   recommendation: { runId: "owned-run", status: "NEEDS_ATTENTION", provenOptimal: false, baselineCostUsd: 3, optimizedCostUsd: 4,
     projectedSavingsUsd: -1, projectedSavingsPercent: -33.33, plainEnglishExplanation: "<script>untrusted</script>", usedSeededFallbackPrices: false,
     items: [{ jobId: 1, jobName: "Training", baselineStart: "2026-11-02T10:00:00Z", scheduledStart: null, scheduledEnd: null, allocatedCpuHours: 0, allocatedGpuHours: 0, allocations: [], perJobStatus: "NO_FEASIBLE_SLOT", reason: "Insufficient capacity", baselineCostUsd: null, optimizedCostUsd: null, savingsUsd: null, rescheduledFromElapsedStart: false }] } }
@@ -20,6 +20,12 @@ describe("live recommendation display", () => {
     expect(html).toContain("&lt;script&gt;")
     expect(html).not.toContain("<script>")
     expect(html).not.toContain("Dispatched & Active")
+  })
+  it("names the owner and labels a job deleted after approval", () => {
+    const html = renderToStaticMarkup(<PlanRecommendation plan={{ ...plan, reviewState: "APPROVED", removedJobIds: [1],
+      recommendation: { ...plan.recommendation!, items: [{ ...plan.recommendation!.items[0], scheduledStart: "2026-11-02T11:00:00Z", scheduledEnd: "2026-11-02T12:00:00Z" }] } }} />)
+    expect(html).toContain("Submitted by Ada")
+    expect(html).toContain("Deleted")
   })
   it("renders a persisted invalidation reason even when recommendation data is unreadable", () => {
     const html = renderToStaticMarkup(<PlanRecommendation plan={{ ...plan, reviewState: "INVALIDATED", invalidationReason: "Job changed", recommendation: null }} />)

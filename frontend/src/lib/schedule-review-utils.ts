@@ -14,7 +14,7 @@ export const reviewLabels: Record<PlanReviewState, string> = {
  */
 export function planUnavailable(plan: SchedulePlanDetail | null): string | null {
   if (!plan) return "Select a schedule to review."
-  if (plan.reviewState === "STALE" || plan.reviewState === "INVALIDATED") return "Generate a new recommendation for this schedule."
+  if (plan.reviewState === "STALE" || plan.reviewState === "INVALIDATED") return "This plan was replaced. Pick the current plan for these jobs in the list; the system plans them again within a minute if there is none yet."
   if (!plan.recommendation) return "The stored recommendation cannot be read. Generate a new recommendation."
   return null
 }
@@ -45,6 +45,7 @@ export function decisionUnavailable(plan: SchedulePlanDetail | null, action: Sch
     return plan!.reviewState === "APPROVED"
       ? "This schedule is already approved. Revoke the approval to halt it."
       : `This schedule is already ${reviewLabels[plan!.reviewState].toLowerCase()} and cannot be decided again.`
+  if (action === "approve" && !plan!.canApprove) return "You cannot approve your own plan. Another user has to approve it."
   if (action === "approve" && !plan!.recommendation!.items.some(item => item.scheduledStart && item.scheduledEnd)) return "This recommendation has no scheduled jobs to approve."
   return null
 }

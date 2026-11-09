@@ -28,6 +28,15 @@ public class JobResponseDto {
     @Schema(description = "Authenticated operator email who owns the job", example = "operator@datacenter.io")
     private String ownerEmail;
 
+    @Schema(description = "Display name of the owner; set only in the admin listing of all jobs")
+    private String ownerName;
+
+    @Schema(description = "Run ID of the approved plan this job is in; null when it is in none. Such a job cannot be edited, only deleted.")
+    private String approvedRunId;
+
+    @Schema(description = "Why the job is in this status, when that needs saying (Needs attention, Rejected); otherwise null")
+    private String statusReason;
+
     @Schema(description = "Workload name", example = "LLM Fine-Tuning Run #42")
     private String name;
 
@@ -62,7 +71,9 @@ public class JobResponseDto {
     @Schema(description = "Decision on the latest parse; null when no parsing metadata is recorded", allowableValues = {"PENDING", "CONFIRMED", "REJECTED"})
     private ConfirmationOutcome confirmationOutcome;
 
-    @Schema(description = "Operational status", example = "PENDING")
+    @Schema(description = "Where the job stands, worked out from its plans and calendar entries",
+            example = "SCHEDULING",
+            allowableValues = {"SCHEDULING", "AWAITING_APPROVAL", "SCHEDULED", "RUNNING", "COMPLETED", "REJECTED", "NEEDS_ATTENTION", "CANCELLED"})
     private String status;
 
     @Schema(description = "Workload priority level", example = "NORMAL", allowableValues = {"CRITICAL", "HIGH", "NORMAL", "LOW"})

@@ -4,6 +4,7 @@ import com.gacs.backend.dto.ConstraintParseRequestDto;
 import com.gacs.backend.dto.ConstraintParseResponseDto;
 import com.gacs.backend.dto.JobResponseDto;
 import com.gacs.backend.service.JobService;
+import com.gacs.backend.service.JobStatusResolver;
 import com.gacs.backend.service.ScheduleInputs;
 import com.gacs.backend.service.allocation.ConstraintType;
 import org.junit.jupiter.api.Test;
@@ -31,8 +32,27 @@ class ConstraintParseClassifierWiringTest {
 
     private final com.gacs.backend.repository.JobRepository repository =
             mock(com.gacs.backend.repository.JobRepository.class);
-    private final JobService jobService =
-            new JobService(repository, mock(ScheduleInputs.class), CLOCK);
+    private final JobService jobService = new JobService(repository, mock(ScheduleInputs.class), CLOCK,
+            mock(com.gacs.backend.repository.OptimizationPlanRepository.class),
+            mock(com.gacs.backend.repository.WorkloadScheduleRepository.class),
+            mock(com.gacs.backend.service.AuditEventService.class),
+            mock(com.gacs.backend.repository.UserRepository.class), statusesFromRow());
+
+    /** Job status is derived from plans; here a finished row stays finished and the rest are still scheduling. */
+    @SuppressWarnings("unchecked")
+    private static JobStatusResolver statusesFromRow() {
+        JobStatusResolver statuses = mock(JobStatusResolver.class);
+        when(statuses.resolve(org.mockito.ArgumentMatchers.anyCollection())).thenAnswer(call -> {
+            var derived = new java.util.HashMap<Long, JobStatusResolver.Derived>();
+            for (com.gacs.backend.model.Job job : (java.util.Collection<com.gacs.backend.model.Job>) call.getArgument(0)) {
+                var status = Set.of("COMPLETED", "CANCELLED").contains(job.getStatus())
+                        ? JobStatusResolver.Status.valueOf(job.getStatus()) : JobStatusResolver.Status.SCHEDULING;
+                derived.put(job.getId(), new JobStatusResolver.Derived(status, null, null, false, JobStatusResolver.Cause.NONE));
+            }
+            return derived;
+        });
+        return statuses;
+    }
 
     /** A classifier that records what it was asked and returns what the test tells it to. */
     private static final class Stub implements ConstraintClassifier {

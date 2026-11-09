@@ -18,5 +18,7 @@ public enum AuditActionType {
      */
     REVOKE,
     OVERRIDE,
-    DISPATCH
+    DISPATCH,
+    /** A job was deleted from an approved plan. The rest of the plan stays approved. */
+    REMOVE_JOB
 }

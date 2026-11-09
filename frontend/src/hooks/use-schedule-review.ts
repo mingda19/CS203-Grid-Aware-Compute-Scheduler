@@ -83,7 +83,10 @@ export function useScheduleReview(onDecision?: () => void) {
     } catch (error) {
       if (!mounted.current) return false
       setDecisionError(error instanceof ApiRequestError && error.status === 409 ? `409 conflict: ${error.message}` : error instanceof Error ? error.message : "Could not record decision. Try again.")
-      if (error instanceof ApiRequestError && error.status === 409) setConflict(true)
+      if (error instanceof ApiRequestError && error.status === 409) {
+        setConflict(true)
+        setReload(value => value + 1) // the plan was replaced: reload the queue so the current one shows
+      }
       return false
     } finally {
       busy.current = false

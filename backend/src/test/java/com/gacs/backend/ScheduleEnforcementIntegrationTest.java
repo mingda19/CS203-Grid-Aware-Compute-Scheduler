@@ -31,6 +31,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("test")
 class ScheduleEnforcementIntegrationTest {
     @Autowired MockMvc mvc;
+    @Autowired com.gacs.backend.service.AppSettingsService appSettings;
     @Autowired UserRepository users;
     @Autowired JobRepository jobs;
     @Autowired FacilityRepository facilities;
@@ -48,6 +49,7 @@ class ScheduleEnforcementIntegrationTest {
     private LocalDateTime start;
 
     @BeforeEach void setup() {
+        appSettings.update(true);
         owner = users.save(new User(UUID.randomUUID() + "@test.io", "password", "Operator", "ROLE_USER"));
         start = LocalDateTime.now(ZoneOffset.UTC).plusDays(2).truncatedTo(ChronoUnit.HOURS);
         job = jobs.save(Job.builder().ownerEmail(owner.getEmail()).name("Train").cpuHours(4.0).gpuHours(0.0)
@@ -57,7 +59,7 @@ class ScheduleEnforcementIntegrationTest {
         schedules.deleteAll(schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail()));
         for (String run : created) { plans.deleteById(run); runs.deleteById(run); }
         jobs.deleteAll(jobs.findByOwnerEmailOrderByOriginalStartTimeAsc(owner.getEmail()));
-        facilities.deleteAll(facilities.findAllByOwnerEmail(owner.getEmail()));
+        facilities.deleteAll(); // one shared facility: reset it for the next test class
         users.deleteById(owner.getId());
     }
     private Map<String,Object> jobBody() {
@@ -70,13 +72,15 @@ class ScheduleEnforcementIntegrationTest {
         m.put("workloadCategory", j.getWorkloadCategory().name());
         return m;
     }
-    private String optimize() throws Exception {
+    private ResultActions optimizeRequest() throws Exception {
         var forecast = List.of(Map.of("intervalStartUtc", start.toString(), "predictedPrice", 100),
             Map.of("intervalStartUtc", start.plusHours(1).toString(), "predictedPrice", 10),
             Map.of("intervalStartUtc", start.plusHours(2).toString(), "predictedPrice", 50));
-        String result = mvc.perform(post("/api/schedules/optimize").with(user(owner.getEmail()))
-            .contentType(APPLICATION_JSON).content(json.writeValueAsString(Map.of("jobs", List.of(jobBody()), "forecast", forecast))))
-            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        return mvc.perform(post("/api/schedules/optimize").with(user(owner.getEmail()))
+            .contentType(APPLICATION_JSON).content(json.writeValueAsString(Map.of("jobs", List.of(jobBody()), "forecast", forecast))));
+    }
+    private String optimize() throws Exception {
+        String result = optimizeRequest().andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         String run = json.readTree(result).path("data").path("runId").asText(); created.add(run); return run;
     }
     private ResultActions decide(String run, String action) throws Exception {
@@ -89,6 +93,12 @@ class ScheduleEnforcementIntegrationTest {
     private void update(Map<String,Object> body) throws Exception {
         mvc.perform(put("/api/jobs/" + job.getId()).with(user(owner.getEmail())).contentType(APPLICATION_JSON)
             .content(json.writeValueAsString(body))).andExpect(status().isOk());
+    }
+    /** Ends every approval. An approved job cannot be edited, so tests that need an invalidated plan change the facility. */
+    private void changeFacility() throws Exception {
+        mvc.perform(put("/api/admin/facility").with(user("admin@test.io").roles("ADMIN")).contentType(APPLICATION_JSON)
+            .content("{\"name\":\"Renamed\",\"maxCpuHours\":128.0,\"maxGpuHours\":64.0,\"location\":\"LZ_NORTH\"}"))
+            .andExpect(status().isOk());
     }
     private ResultActions transition(long id, String state) throws Exception {
         return mvc.perform(patch("/api/workload-schedules/" + id + "/status").with(user(owner.getEmail()))
@@ -108,13 +118,14 @@ class ScheduleEnforcementIntegrationTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"APPROVE", "REJECT", "REVISE"})
-    void auditEndpointCannotChangeAnotherOperatorsApproval(String action) throws Exception {
+    void auditEndpointCannotChangeADecidedApproval(String action) throws Exception {
         String run = optimize();
         decide(run, "approve").andExpect(status().isOk());
         int eventCount = audit.findByRunIdOrderByTimestampDesc(run).size();
         User other = users.save(new User(UUID.randomUUID() + "@test.io", "pw", "Other", "ROLE_USER"));
         try {
-            auditDecision(run, action, other.getEmail()).andExpect(status().isNotFound());
+            // Anyone may review a plan, but a decision is final: it is refused as already decided.
+            auditDecision(run, action, other.getEmail()).andExpect(status().isConflict());
             assertThat(audit.findByRunIdOrderByTimestampDesc(run)).hasSize(eventCount);
             assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
             apply(run).andExpect(status().isOk());
@@ -140,35 +151,79 @@ class ScheduleEnforcementIntegrationTest {
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
     }
 
-    @ParameterizedTest
-    @ValueSource(strings={"cpuHours","gpuHours","originalStartTime","deadline","flexibilityWindowHours",
-        "isExempt","priority","cancelled","constraints","confirmation","deleted"})
-    void materialChangesInvalidateAndBlockEveryBoundary(String field) throws Exception {
+    private Map<String,Object> changed(String field) {
+        var body = jobBody();
+        switch(field) {
+            case "cpuHours" -> body.put(field, 5);
+            case "gpuHours" -> body.put(field, 1);
+            case "originalStartTime" -> body.put(field, start.plusHours(1).toString());
+            case "deadline" -> body.put(field, start.plusHours(4).toString());
+            case "flexibilityWindowHours" -> body.put(field, 2);
+            case "isExempt" -> body.put(field, true);
+            case "priority" -> body.put(field,"HIGH");
+            case "cancelled" -> body.put("status","CANCELLED");
+            case "constraints" -> body.put("rawConstraints","new constraint");
+            case "confirmation" -> body.put("confirmationOutcome","REJECTED");
+            case "name" -> body.put("name","Renamed");
+            case "description" -> body.put("description","Notes");
+        }
+        return body;
+    }
+    private void confirmJob(String field) {
         if (field.equals("confirmation")) {
             job.setRawConstraints("finish on time"); job.setParsedAt(start.minusDays(1));
             job.setConfirmationOutcome(ConfirmationOutcome.CONFIRMED); jobs.save(job);
         }
+    }
+
+    /** A plan nobody has approved yet is still caught by the gate when a job changes. */
+    @ParameterizedTest
+    @ValueSource(strings={"cpuHours","gpuHours","originalStartTime","deadline","flexibilityWindowHours",
+        "isExempt","priority","cancelled","constraints","confirmation"})
+    void materialChangesInvalidateAPendingPlan(String field) throws Exception {
+        confirmJob(field);
+        String run = optimize();
+        update(changed(field));
+        assertThat(jobs.findById(job.getId()).orElseThrow().getSchedulingRevision()).isEqualTo(1);
+        refused(decide(run,"approve"),"INVALIDATED");
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
+    }
+
+    /** An approved job is locked, every field of it, and nothing about the approval changes. */
+    @ParameterizedTest
+    @ValueSource(strings={"cpuHours","gpuHours","originalStartTime","deadline","flexibilityWindowHours",
+        "isExempt","priority","cancelled","constraints","confirmation","name","description"})
+    void anApprovedJobCannotBeEdited(String field) throws Exception {
+        confirmJob(field);
+        String run = optimize(); decide(run,"approve").andExpect(status().isOk()); apply(run).andExpect(status().isOk());
+        mvc.perform(put("/api/jobs/" + job.getId()).with(user(owner.getEmail())).contentType(APPLICATION_JSON)
+            .content(json.writeValueAsString(changed(field))))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.message").value("This job is approved and cannot be edited. You can delete it."));
+        assertThat(jobs.findById(job.getId()).orElseThrow().getSchedulingRevision()).isZero();
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
+        apply(run).andExpect(status().isOk());
+    }
+
+    /** Deleting the last job of an approved plan ends the approval, and every boundary then refuses it. */
+    @Test void deletingTheLastJobInvalidatesAndBlocksEveryBoundary() throws Exception {
         String run = optimize(); decide(run,"approve").andExpect(status().isOk()); apply(run).andExpect(status().isOk());
         long entry = schedules.findByRunIdOrderByIdAsc(run).getFirst().getId();
-        if (field.equals("deleted")) {
-            mvc.perform(delete("/api/jobs/" + job.getId()).with(user(owner.getEmail()))).andExpect(status().isOk());
-        } else {
-            var body = jobBody();
-            switch(field) {
-                case "cpuHours" -> body.put(field, 5);
-                case "gpuHours" -> body.put(field, 1);
-                case "originalStartTime" -> body.put(field, start.plusHours(1).toString());
-                case "deadline" -> body.put(field, start.plusHours(4).toString());
-                case "flexibilityWindowHours" -> body.put(field, 2);
-                case "isExempt" -> body.put(field, true);
-                case "priority" -> body.put(field,"HIGH");
-                case "cancelled" -> body.put("status","CANCELLED");
-                case "constraints" -> body.put("rawConstraints","new constraint");
-                case "confirmation" -> body.put("confirmationOutcome","REJECTED");
-            }
-            update(body);
-            assertThat(jobs.findById(job.getId()).orElseThrow().getSchedulingRevision()).isEqualTo(1);
-        }
+        mvc.perform(delete("/api/jobs/" + job.getId()).with(user(owner.getEmail()))).andExpect(status().isOk());
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
+        assertThat(schedules.findById(entry)).isEmpty();
+        refused(apply(run), "INVALIDATED"); refused(decide(run,"approve"),"INVALIDATED");
+        refused(mvc.perform(get("/api/schedules/"+run+"/export.json").with(user(owner.getEmail()))),"INVALIDATED");
+        mvc.perform(get("/api/schedules/"+run).with(user(owner.getEmail()))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.reviewState").value("INVALIDATED"))
+            .andExpect(jsonPath("$.data.invalidationReason").isNotEmpty());
+    }
+
+    /** A facility change ends the approval, and every boundary then refuses the plan. */
+    @Test void aFacilityChangeBlocksEveryBoundary() throws Exception {
+        String run = optimize(); decide(run,"approve").andExpect(status().isOk()); apply(run).andExpect(status().isOk());
+        long entry = schedules.findByRunIdOrderByIdAsc(run).getFirst().getId();
+        changeFacility();
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
         refused(apply(run), "INVALIDATED"); refused(decide(run,"approve"),"INVALIDATED");
         refused(transition(entry,"Running"),"INVALIDATED"); refused(transition(entry,"Scheduled"),"INVALIDATED");
@@ -186,9 +241,8 @@ class ScheduleEnforcementIntegrationTest {
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
     }
 
-    @Test void cosmeticNoopAndUnrelatedJobsDoNotInvalidate() throws Exception {
+    @Test void deletingAnUnrelatedJobDoesNotInvalidate() throws Exception {
         String run=optimize(); decide(run,"approve").andExpect(status().isOk());
-        update(jobBody()); var cosmetic=jobBody(); cosmetic.put("name","Renamed"); cosmetic.put("status","SCHEDULED"); update(cosmetic);
         Job unrelated=jobs.save(Job.builder().ownerEmail(owner.getEmail()).name("Other").cpuHours(1.0)
             .originalStartTime(start).deadline(start.plusHours(2)).build());
         mvc.perform(delete("/api/jobs/"+unrelated.getId()).with(user(owner.getEmail()))).andExpect(status().isOk());
@@ -200,11 +254,11 @@ class ScheduleEnforcementIntegrationTest {
     void facilityChangesInvalidate(String field) throws Exception {
         String run=optimize(); decide(run,"approve").andExpect(status().isOk());
         Map<String,Object> body=new LinkedHashMap<>(Map.of("name","Renamed", "maxCpuHours",256.0,"maxGpuHours",64.0,"location","LZ_NORTH"));
-        mvc.perform(put("/api/facilities/me").with(user(owner.getEmail())).contentType(APPLICATION_JSON)
+        mvc.perform(put("/api/admin/facility").with(user("admin@test.io").roles("ADMIN")).contentType(APPLICATION_JSON)
             .content(json.writeValueAsString(body))).andExpect(status().isOk());
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
         body.put(field,field.equals("location") ? "LZ_SOUTH" : 128.0);
-        mvc.perform(put("/api/facilities/me").with(user(owner.getEmail())).contentType(APPLICATION_JSON)
+        mvc.perform(put("/api/admin/facility").with(user("admin@test.io").roles("ADMIN")).contentType(APPLICATION_JSON)
             .content(json.writeValueAsString(body))).andExpect(status().isOk());
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
         refused(apply(run),"INVALIDATED");
@@ -234,7 +288,7 @@ class ScheduleEnforcementIntegrationTest {
     @Test void invalidationDoesNotInterruptRunningButBlocksResume() throws Exception {
         String run=optimize(); decide(run,"approve").andExpect(status().isOk()); apply(run).andExpect(status().isOk());
         long id=schedules.findByRunIdOrderByIdAsc(run).getFirst().getId(); transition(id,"Running").andExpect(status().isOk());
-        var changed=jobBody();changed.put("cpuHours",8);update(changed);
+        changeFacility();
         assertThat(schedules.findById(id).orElseThrow().getStatus()).isEqualTo("Running");
         transition(id,"Throttled").andExpect(status().isOk()); refused(transition(id,"Running"),"INVALIDATED");
         transition(id,"Completed").andExpect(status().isOk());
@@ -253,10 +307,12 @@ class ScheduleEnforcementIntegrationTest {
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
     }
 
-    @Test void ownerIsolationAppliesToDetailAndApplication() throws Exception {
+    @Test void onlyTheOwnerCanApplyOrEditAPlansJobs() throws Exception {
         String run=optimize();User other=users.save(new User(UUID.randomUUID()+"@test.io","pw","Other","ROLE_ADMIN"));
         try {
-            mvc.perform(get("/api/schedules/"+run).with(user(other.getEmail()).roles("ADMIN"))).andExpect(status().isNotFound());
+            // The review queue is shared, so another user can read the plan.
+            mvc.perform(get("/api/schedules/"+run).with(user(other.getEmail()).roles("ADMIN"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.ownerName").value("Operator"));
             mvc.perform(post("/api/schedules/"+run+"/apply").with(user(other.getEmail()).roles("ADMIN"))).andExpect(status().isNotFound());
             mvc.perform(put("/api/jobs/"+job.getId()).with(user(other.getEmail())).contentType(APPLICATION_JSON)
                 .content(json.writeValueAsString(jobBody()))).andExpect(status().isNotFound());
@@ -264,10 +320,17 @@ class ScheduleEnforcementIntegrationTest {
         } finally {users.deleteById(other.getId());}
     }
 
-    @Test void supersessionUsesApprovalOrderAndCannotBeRevived() throws Exception {
-        String older=optimize(),newer=optimize();decide(newer,"approve").andExpect(status().isOk());
-        decide(older,"approve").andExpect(status().isOk());refused(apply(newer),"STALE");
-        decide(older,"revoke").andExpect(status().isOk());refused(decide(newer,"approve"),"STALE");
+    @Test void aNewPlanReplacesAWaitingOneAndAnApprovedJobCannotBePlannedAgain() throws Exception {
+        String older=optimize(),newer=optimize();
+        // The newer plan replaced the older one while it waited, so only the newer can be approved.
+        refused(decide(older,"approve"),"STALE");
+        decide(newer,"approve").andExpect(status().isOk());
+        // Planning an approved job again would end the approval of the plan's other jobs.
+        optimizeRequest().andExpect(status().isConflict());
+        // Revoking releases the job, and the replaced plan stays replaced.
+        decide(newer,"revoke").andExpect(status().isOk());
+        refused(decide(older,"approve"),"STALE");
+        optimize();
     }
 
     @Test void expiryPersistsStaleWithoutAnExportRequest() throws Exception {
@@ -280,19 +343,27 @@ class ScheduleEnforcementIntegrationTest {
         expiry.expire();assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.STALE);
     }
 
-    @Test void applicationRollsBackAsOneTransaction() throws Exception {
+    @Test void approvingAppliesToTheCalendarInTheSameStep() throws Exception {
         String run=optimize();decide(run,"approve").andExpect(status().isOk());
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).hasSize(1);
+        assertThat(plans.findById(run).orElseThrow().getAppliedAt()).isNotNull();
+        assertThat(audit.findByRunIdOrderByTimestampDesc(run).stream().filter(e->e.getActionType()==AuditActionType.DISPATCH)).hasSize(1);
+    }
+
+    @Test void approvalAndApplicationRollBackAsOneTransaction() throws Exception {
+        String run=optimize();
         new TransactionTemplate(manager).executeWithoutResult(tx->{
-            try {apply(run).andExpect(status().isOk());} catch(Exception e){throw new RuntimeException(e);}
+            try {decide(run,"approve").andExpect(status().isOk());} catch(Exception e){throw new RuntimeException(e);}
             tx.setRollbackOnly();
         });
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.PENDING);
         assertThat(schedules.findByRunIdOrderByIdAsc(run)).isEmpty();
         assertThat(plans.findById(run).orElseThrow().getAppliedAt()).isNull();
         assertThat(audit.findByRunIdOrderByTimestampDesc(run).stream().filter(e->e.getActionType()==AuditActionType.DISPATCH)).isEmpty();
     }
 
     @ParameterizedTest @ValueSource(strings={"approve","apply","start"})
-    void concurrentMaterialEditCannotBeBypassed(String boundary) throws Exception {
+    void concurrentFacilityChangeCannotBeBypassed(String boundary) throws Exception {
         String run=optimize();
         if (!boundary.equals("approve")) decide(run,"approve").andExpect(status().isOk());
         if (boundary.equals("start")) apply(run).andExpect(status().isOk());
@@ -306,7 +377,7 @@ class ScheduleEnforcementIntegrationTest {
                 try {
                     assertThat(begun.await(5,TimeUnit.SECONDS)).isTrue();
                     assertThatThrownBy(()->call.get(200,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
-                    var body=jobBody();body.put("cpuHours",8);update(body);
+                    changeFacility();
                 } catch(Exception e){throw new RuntimeException(e);}
                 return call;
             });
@@ -374,25 +445,32 @@ class ScheduleEnforcementIntegrationTest {
         refused(apply(run),"NOT_APPROVED");
     }
 
-    @Test void failedInputMutationRollsBackRevisionAndInvalidation() throws Exception {
+    @Test void failedFacilityChangeRollsBackInvalidation() throws Exception {
         String run=optimize();decide(run,"approve").andExpect(status().isOk());
         new TransactionTemplate(manager).executeWithoutResult(tx->{
-            try {var body=jobBody();body.put("cpuHours",8);update(body);} catch(Exception e){throw new RuntimeException(e);}
+            try {changeFacility();} catch(Exception e){throw new RuntimeException(e);}
             tx.setRollbackOnly();
         });
-        assertThat(jobs.findById(job.getId()).orElseThrow().getSchedulingRevision()).isZero();
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
+        apply(run).andExpect(status().isOk());
     }
 
-    @Test void anotherOperatorsFacilityDoesNotInvalidateOwnerPlans() throws Exception {
+    @Test void anAdminFacilityChangeInvalidatesEveryOwnersApprovedPlans() throws Exception {
         String run=optimize();decide(run,"approve").andExpect(status().isOk());
-        User other=users.save(new User(UUID.randomUUID()+"@test.io","pw","Other","ROLE_USER"));
-        try {
-            mvc.perform(put("/api/facilities/me").with(user(other.getEmail())).contentType(APPLICATION_JSON)
-                .content("{\"name\":\"Other\",\"maxCpuHours\":128,\"maxGpuHours\":32,\"location\":\"LZ_SOUTH\"}"))
-                .andExpect(status().isOk());
-            apply(run).andExpect(status().isOk());
-        } finally {facilities.deleteAll(facilities.findAllByOwnerEmail(other.getEmail()));users.deleteById(other.getId());}
+        mvc.perform(put("/api/admin/facility").with(user("admin@test.io").roles("ADMIN")).contentType(APPLICATION_JSON)
+            .content("{\"name\":\"Other\",\"maxCpuHours\":128,\"maxGpuHours\":32,\"location\":\"LZ_SOUTH\"}"))
+            .andExpect(status().isOk());
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
+        refused(apply(run),"INVALIDATED");
+    }
+
+    @Test void aNonAdminCannotChangeTheFacility() throws Exception {
+        String run=optimize();decide(run,"approve").andExpect(status().isOk());
+        mvc.perform(put("/api/admin/facility").with(user(owner.getEmail())).contentType(APPLICATION_JSON)
+            .content("{\"name\":\"Mine\",\"maxCpuHours\":128,\"maxGpuHours\":32,\"location\":\"LZ_SOUTH\"}"))
+            .andExpect(status().isForbidden());
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
+        apply(run).andExpect(status().isOk());
     }
 
     @Test void planDetailDetectsApprovalHashTamperingAndExecutionRefusesIt() throws Exception {
@@ -408,16 +486,20 @@ class ScheduleEnforcementIntegrationTest {
     @Test
     @DisplayName("bug 4: re-optimising and re-approving the same job supersedes its calendar entry rather than accumulating one")
     void reapprovingAndApplyingSameJobSupersedesRatherThanAccumulates() throws Exception {
-        String run1 = optimize(); decide(run1,"approve").andExpect(status().isOk()); apply(run1).andExpect(status().isOk());
+        String run1 = optimize(); decide(run1,"approve").andExpect(status().isOk());
         assertThat(schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail())).hasSize(1);
 
-        String run2 = optimize(); decide(run2,"approve").andExpect(status().isOk()); apply(run2).andExpect(status().isOk());
+        // The approved job cannot be planned again. Revoking releases it and removes its entry.
+        optimizeRequest().andExpect(status().isConflict());
+        decide(run1,"revoke").andExpect(status().isOk());
+        assertThat(schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail())).isEmpty();
+
+        String run2 = optimize(); decide(run2,"approve").andExpect(status().isOk());
 
         var all = schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail());
         assertThat(all).hasSize(1);
         assertThat(all.getFirst().getRunId()).isEqualTo(run2);
         assertThat(schedules.findByRunIdOrderByIdAsc(run1)).isEmpty();
-        assertThat(plans.findById(run1).orElseThrow().getReviewState()).isEqualTo(ReviewState.STALE);
     }
 
     @Test
@@ -427,6 +509,8 @@ class ScheduleEnforcementIntegrationTest {
         long finished = schedules.findByRunIdOrderByIdAsc(run1).getFirst().getId();
         transition(finished,"Running").andExpect(status().isOk());
         transition(finished,"Completed").andExpect(status().isOk());
+        // A job in an approved plan is locked (409 on optimize), so it is revoked before it is planned again.
+        decide(run1,"revoke").andExpect(status().isOk());
 
         String run2 = optimize(); decide(run2,"approve").andExpect(status().isOk()); apply(run2).andExpect(status().isOk());
 
@@ -464,18 +548,16 @@ class ScheduleEnforcementIntegrationTest {
      * ago - and re-offered "Add approved schedule to calendar" every time the operator navigated back.
      */
     @Test
-    @DisplayName("the plan detail reports appliedAt: null until applied, then the application time")
+    @DisplayName("the plan detail reports appliedAt: null while waiting, the application time once approved")
     void planDetailCarriesAppliedAt() throws Exception {
         String run = optimize();
-        decide(run, "approve").andExpect(status().isOk());
 
         mvc.perform(get("/api/schedules/" + run).with(user(owner.getEmail())))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.reviewState").value("APPROVED"))
-            // Present in the payload and explicitly null, not simply absent: a client cannot
-            // distinguish "never applied" from "field not implemented" if the key is missing.
+            .andExpect(jsonPath("$.data.reviewState").value("PENDING"))
             .andExpect(jsonPath("$.data.appliedAt").doesNotExist());
 
+        decide(run, "approve").andExpect(status().isOk());
         apply(run).andExpect(status().isOk());
         Instant applied = plans.findById(run).orElseThrow().getAppliedAt();
         assertThat(applied).as("apply() must stamp the plan").isNotNull();
@@ -509,18 +591,16 @@ class ScheduleEnforcementIntegrationTest {
      * branch and be written straight to the audit log with no ownership or state check at all.
      */
     @Test
-    @DisplayName("a REVOKE naming another operator's run records nothing and leaves the approval standing")
-    void auditEndpointCannotRevokeAnotherOperatorsApproval() throws Exception {
+    @DisplayName("any signed-in operator can revoke an approval, and it halts the schedule")
+    void anotherOperatorCanRevokeAnApproval() throws Exception {
         String run = optimize();
         decide(run, "approve").andExpect(status().isOk());
-        int eventCount = audit.findByRunIdOrderByTimestampDesc(run).size();
         User other = users.save(new User(UUID.randomUUID() + "@test.io", "pw", "Other", "ROLE_USER"));
         try {
-            auditDecision(run, "REVOKE", other.getEmail()).andExpect(status().isNotFound());
-            assertThat(audit.findByRunIdOrderByTimestampDesc(run)).hasSize(eventCount);
-            assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
-            // The approval is untouched, so the schedule still applies.
-            apply(run).andExpect(status().isOk());
+            auditDecision(run, "REVOKE", other.getEmail()).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.actor").value(other.getEmail()));
+            assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.REJECTED);
+            refused(apply(run), "NOT_APPROVED");
         } finally { users.deleteById(other.getId()); }
     }
 
