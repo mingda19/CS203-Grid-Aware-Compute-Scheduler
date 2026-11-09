@@ -319,7 +319,9 @@ export function addMarketDays(dateString: string, days: number): string {
 /** Adds (or subtracts) whole months to a YYYY-MM-DD market date string. */
 export function addMarketMonths(dateString: string, months: number): string {
   const [y, m, d] = dateString.split("-").map(Number)
-  return marketDateStringFromParts(y, m + months, d)
+  // Resolve the target month first, then clamp the day, so Oct 31 + 1 is Nov 30, not Dec 1.
+  const [ty, tm] = marketDateStringFromParts(y, m + months, 1).split("-").map(Number)
+  return marketDateStringFromParts(ty, tm, Math.min(d, marketDaysInMonth(ty, tm)))
 }
 
 /** Day of week (0 = Sunday, ... 6 = Saturday) for a YYYY-MM-DD market date string. */
@@ -427,19 +429,16 @@ export function currentMarketHourInput(now: Date | string | number = Date.now())
 /**
  * The instant the current market hour began, as a `Date`.
  *
- * Built from {@link currentMarketHourInput} and {@link marketWallTimeToUtc} rather than by
- * truncating `Date.now()`, so the offset is resolved for the instant being converted and this module
- * stays the only place that knows about market time. Callers get an instant, which is what a
+ * Truncates the instant to the UTC hour. Central Time's offsets are whole hours, so a market hour
+ * starts on a UTC hour boundary, and truncating the instant is right even in the repeated hour when
+ * Central Time falls back, which a wall-clock round trip through {@link marketWallTimeToUtc} would
+ * resolve to the first occurrence, one hour too early. Callers get an instant, which is what a
  * comparison against a UTC timestamp from the API needs: job times travel as timezone-free strings
- * that mean UTC, and comparing those against a market wall-clock string would be wrong by the
- * offset - and ambiguous for the repeated hour when Central Time falls back.
+ * that mean UTC.
  *
  * This is the same boundary the optimiser enforces server-side (`OptimizationProblem.earliestStart`,
  * the current hour truncated), so "has this job's start passed?" gets the same answer on both sides.
  */
 export function currentMarketHourStart(now: Date | string | number = Date.now()): Date {
-  const [date, time] = currentMarketHourInput(now).split("T")
-  const [year, month, day] = date.split("-").map(Number)
-  const [hour] = time.split(":").map(Number)
-  return marketWallTimeToUtc(year, month, day, hour, 0, 0)
+  return new Date(Math.floor(parseIsoDate(now).getTime() / 36e5) * 36e5)
 }

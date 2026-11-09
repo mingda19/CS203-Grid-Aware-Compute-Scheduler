@@ -9,7 +9,7 @@ import { workloadScheduleApi, type WorkloadSchedule } from "@/lib/api"
 import {
   getMarketHoursMinutes, getMarketDateString, MARKET_ZONE_LABEL, formatMarketDateTime,
   addMarketDays, addMarketMonths, marketDayOfWeek, marketDaysInMonth,
-  marketDateStringFromParts, marketDateLabelAnchor, marketDateToUtcIso,
+  marketDateStringFromParts, marketDateLabelAnchor, marketDateToUtcIso, parseIsoDate,
 } from "@/lib/date-utils"
 
 export type WorkloadType = "ML Training" | "Crypto Mining" | "HPC Batch" | "HVAC Pre-Cool" | "Grid Alert"
@@ -110,8 +110,8 @@ function toDateStr(d: Date): string {
 }
 
 export function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
-  const start = new Date(schedule.startUtc.endsWith("Z") ? schedule.startUtc : `${schedule.startUtc}Z`)
-  const end = new Date(schedule.endUtc.endsWith("Z") ? schedule.endUtc : `${schedule.endUtc}Z`)
+  const start = parseIsoDate(schedule.startUtc)
+  const end = parseIsoDate(schedule.endUtc)
   const type = (Object.keys(TYPE_CONFIG) as WorkloadType[]).includes(schedule.type as WorkloadType)
     ? schedule.type as WorkloadType
     : "ML Training"

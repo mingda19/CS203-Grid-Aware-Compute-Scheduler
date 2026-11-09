@@ -98,6 +98,9 @@ describe("opting in to rescheduling jobs whose start has passed", () => {
 describe("hours maximum", () => {
   it("scales the per-slot cap by whole window hours", () => {
     expect(windowHours("2026-11-05T10:00", "2026-11-05T22:30")).toBe(12.5)
+    // Clock change days: 22:00 to 06:00 is 7 real hours in spring and 9 in fall.
+    expect(windowHours("2026-03-07T22:00", "2026-03-08T06:00")).toBe(7)
+    expect(windowHours("2026-10-31T22:00", "2026-11-01T06:00")).toBe(9)
     expect(maxJobHours(256, "2026-11-05T10:00", "2026-11-05T22:30")).toBe(256 * 12)
   })
   it("has no maximum without a usable window", () => {

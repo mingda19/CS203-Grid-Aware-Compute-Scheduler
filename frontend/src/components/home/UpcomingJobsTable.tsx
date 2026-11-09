@@ -14,9 +14,10 @@ import { unwrap, useLoad } from "./use-load"
 
 const ROWS = 5
 
-/** Jobs whose deadline has not passed, soonest requested start first. */
+/** Jobs still waiting to run whose deadline has not passed, soonest requested start first. */
 function upcoming(jobs: ComputeJob[], now: number) {
   return jobs
+    .filter((job) => !["CANCELLED", "COMPLETED", "RUNNING"].includes(job.status))
     .filter((job) => parseIsoDate(job.deadline).getTime() >= now)
     .sort((a, b) => parseIsoDate(a.originalStartTime).getTime() - parseIsoDate(b.originalStartTime).getTime())
 }

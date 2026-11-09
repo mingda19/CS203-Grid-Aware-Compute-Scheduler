@@ -152,6 +152,8 @@ export interface ConstraintParseRequest {
   timeZone: string
 }
 
+import type { ConstraintTypeName } from "./constraint-confirmation"
+
 export interface ConstraintParseResponse {
   status: "PARSED" | "NEEDS_CLARIFICATION" | "INVALID"
   fields: ConstraintDraft
@@ -162,6 +164,37 @@ export interface ConstraintParseResponse {
   validationError: string | null
   parsedAt: string
   timeZone: string
+  /**
+   * Constraints the classifier found that the form has no field for - a recurring daily window, or
+   * an ordering against another job. Empty when no classifier is configured, which is the default.
+   */
+  suggestions: ConstraintSuggestion[]
+  /**
+   * Where the classifier and the rule-based parser read the text differently. Each is a question,
+   * not a resolution: neither source overrides the other, so the operator picks. A non-empty list
+   * means `status` is NEEDS_CLARIFICATION.
+   */
+  disagreements: ConstraintDisagreement[]
+}
+
+export interface ConstraintSuggestion {
+  type: ConstraintTypeName
+  /** Probability the reading is correct, 0-1. Not the model's confidence - a different quantity. */
+  probability: number
+  phrase: string
+  /** The other job, for an ordering or exclusion rule. Always one the operator owns. */
+  referencedJobId: number | null
+  needsConfirmation: boolean
+}
+
+export interface ConstraintDisagreement {
+  field: keyof ConstraintDraft
+  /** What the rule-based parser read, or null when it read nothing. */
+  parsedValue: string | null
+  /** Null when the classifier never reported this type - not the same as a score of zero. */
+  probability: number | null
+  question: string
+  options: Array<{ id: string; label: string }>
 }
 
 export interface FacilityConfig {
@@ -519,7 +552,9 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
     endpoint.includes("/refresh") ||
     endpoint.includes("/register") ||
     endpoint.includes("/verify-otp") ||
-    endpoint.includes("/resend-otp")
+    endpoint.includes("/resend-otp") ||
+    endpoint.includes("/forgot-password") ||
+    endpoint.includes("/reset-password")
 
   // If access token is missing on a protected route, attempt restoring it
   if (!getAccessToken() && !isPublicAuthEndpoint && typeof window !== "undefined") {
@@ -544,25 +579,23 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
   // "NetworkError", neither of which means anything to an operator. Normalising it to an
   // ApiRequestError with status 0 means every caller has one error type to handle and one readable
   // message, instead of a raw TypeError reaching the UI as the explanation for a failed decision.
-  let response: Response
-  try {
-    response = await fetch(url, {
-      ...options,
-      headers,
-      credentials: "include", // for HttpOnly refresh-token cookies
-    })
-  } catch {
-    throw new ApiRequestError(apiErrorMessage(0, null), 0)
+  const send = async (): Promise<Response> => {
+    try {
+      return await fetch(url, {
+        ...options,
+        headers,
+        credentials: "include", // for HttpOnly refresh-token cookies
+      })
+    } catch {
+      throw new ApiRequestError(apiErrorMessage(0, null), 0)
+    }
   }
+  const response = await send()
 
   // Automatic token refresh on 401 Unauthorized or 403 Forbidden for authenticated endpoints
   if (
     (response.status === 401 || response.status === 403) &&
-    !endpoint.includes("/login") &&
-    !endpoint.includes("/refresh") &&
-    !endpoint.includes("/register") &&
-    !endpoint.includes("/verify-otp") &&
-    !endpoint.includes("/resend-otp")
+    !isPublicAuthEndpoint
   ) {
     let refreshedAccessToken: string | undefined
     try {
@@ -573,7 +606,7 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
     if (refreshedAccessToken) {
       setAccessToken(refreshedAccessToken)
       headers["Authorization"] = `Bearer ${refreshedAccessToken}`
-      const retryResponse = await fetch(url, { ...options, headers, credentials: "include" })
+      const retryResponse = await send()
       const retryData = await retryResponse.json().catch(() => ({}))
       if (!retryResponse.ok) {
         throw new ApiRequestError(apiErrorMessage(retryResponse.status, retryData),
@@ -890,6 +923,12 @@ export const scheduleExportApi = {
 }
 
 export const authApi = {
+  async forgotPassword(payload: { email: string }): Promise<ApiResponse<string>> {
+    return fetchJson("/forgot-password", { method: "POST", body: JSON.stringify(payload) })
+  },
+  async resetPassword(payload: { email: string; token: string; password: string }): Promise<ApiResponse<string>> {
+    return fetchJson("/reset-password", { method: "POST", body: JSON.stringify(payload) })
+  },
   async register(payload: {
     email: string
     password: string

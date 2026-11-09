@@ -110,6 +110,7 @@ public class JobService {
     @Transactional
     public JobResponseDto createJob(JobRequestDto request, String ownerEmail) {
         validateJobConstraints(request);
+        validateNotInThePast(request.getOriginalStartTime(), request.getDeadline());
 
         String status = (request.getStatus() != null && !request.getStatus().isBlank())
                 ? request.getStatus().trim().toUpperCase()
@@ -157,6 +158,11 @@ public class JobService {
             throw new ConflictException("This job is approved and cannot be edited. You can delete it.");
 
         validateJobConstraints(request);
+        // Only a time the edit changes is checked: a job whose start has passed stays editable (Lock
+        // switch, title, hours), as long as the edit does not move a time into the past.
+        validateNotInThePast(
+                request.getOriginalStartTime().equals(existing.getOriginalStartTime()) ? null : request.getOriginalStartTime(),
+                request.getDeadline().equals(existing.getDeadline()) ? null : request.getDeadline());
 
         var before = ScheduleInputs.state(existing);
         applyParseMetadata(existing, request);
@@ -245,7 +251,7 @@ public class JobService {
             if (plan.liveJobIds().isEmpty())
                 plan.invalidate(ReviewState.INVALIDATED, "all of its jobs were deleted", clock.instant());
         }
-        schedules.deleteByJobId(id);
+        schedules.deleteByJobIdAndStatusNot(id, "Completed");
         jobRepository.delete(existing);
     }
 
@@ -280,7 +286,6 @@ public class JobService {
             throw new IllegalArgumentException("deadline is required");
         }
         validateTiming(request.getOriginalStartTime(), request.getDeadline(), request.getFlexibilityWindowHours());
-        validateNotInThePast(request.getOriginalStartTime(), request.getDeadline());
 
         if (request.getRawConstraints() != null && request.getRawConstraints().length() > 1000) {
             throw new IllegalArgumentException("rawConstraints must not exceed 1000 characters");
@@ -320,9 +325,9 @@ public class JobService {
      * <p>The current hour itself is allowed. Starts are on the hour, so excluding it would leave an
      * operator unable to schedule anything in the hour they are working in.
      *
-     * <p>Applies to updates as well as creates, so a past start cannot be reintroduced by editing.
-     * A job saved before this rule existed therefore needs its start moved forward before any other
-     * edit to it will save - which the message says.
+     * <p>Applies to updates as well as creates, but an update passes only the times it changes, so a
+     * past start cannot be introduced by editing while a job whose start has already passed can still
+     * be edited in other ways. A {@code null} argument is not checked.
      *
      * <p>Deliberately not part of {@link #validateTiming}: the constraint parser shares that method
      * and only proposes values for the operator to review, so it must still be able to parse "6pm

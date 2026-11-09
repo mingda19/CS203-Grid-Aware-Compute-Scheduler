@@ -156,7 +156,7 @@ class ElapsedJobRescheduleIntegrationTest {
         created.add(json.readTree(body).path("data").path("runId").asText());
 
         assertThat(json.readTree(body).path("data").path("plainEnglishExplanation").asText())
-            .contains("1 job(s) had a start time that has already passed")
+            .contains("- 1 job had a start time that has already passed")
             .contains("savings are measured against a baseline that itself already partly elapsed");
     }
 

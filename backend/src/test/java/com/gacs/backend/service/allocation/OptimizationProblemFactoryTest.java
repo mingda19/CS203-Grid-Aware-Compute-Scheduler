@@ -79,7 +79,7 @@ class OptimizationProblemFactoryTest {
     }
 
     @Test
-    @DisplayName("forecastLocation loads prices from the earliest originalStartTime, default horizon 48")
+    @DisplayName("forecastLocation loads prices from the earliest originalStartTime; an omitted horizon defaults to 48")
     void forecastLocationLoadsFromEarliestStart() {
         when(provider.load("LZ_NORTH", T0, 48)).thenReturn(prices(10, 20, 30, 40, 50));
         JobInput later = new JobInput(2L, "later", 20.0, 0.0, at(2), at(4), 0, false);
@@ -89,6 +89,43 @@ class OptimizationProblemFactoryTest {
 
         verify(provider).load("LZ_NORTH", T0, 48);
         assertThat(problem.prices().priceAt(at(4))).contains(50.0);
+    }
+
+    @Test
+    @DisplayName("The priced span is at least the horizon (default 48) and reaches the latest deadline, capped at 168")
+    void omittedHorizonIsClamped() {
+        when(provider.load(anyString(), any(), anyInt())).thenReturn(prices(10, 20, 30, 40, 50));
+        JobInput farDeadline = new JobInput(1L, "far", 20.0, 0.0, T0, at(500), 0, false);
+        JobInput sameHour = new JobInput(2L, "same", 20.0, 0.0, T0, at(1), 0, false);
+
+        factory.build(new OptimizeRequestDto(List.of(farDeadline), null, "LZ_NORTH", null, null, null));
+        verify(provider).load("LZ_NORTH", T0, 168);
+        factory.build(new OptimizeRequestDto(List.of(sameHour), null, "LZ_NORTH", null, null, null));
+        verify(provider).load("LZ_NORTH", T0, 48);
+        JobInput thirtyHours = new JobInput(4L, "thirty", 20.0, 0.0, T0, at(30), 0, false);
+        factory.build(new OptimizeRequestDto(List.of(thirtyHours), null, "LZ_NORTH", 10, null, null));
+        verify(provider).load("LZ_NORTH", T0, 30); // the sent horizon is a minimum: the span still reaches the deadline
+        factory.build(new OptimizeRequestDto(List.of(validJob(3)), null, "LZ_NORTH", 72, null, null));
+        verify(provider).load("LZ_NORTH", T0, 72);
+    }
+
+    @Test
+    @DisplayName("Two jobs that must run back to back both get a slot when the deadline is past 48 hours")
+    void secondJobPastFortyEightHoursIsScheduled() {
+        // Each job needs 48 full-cluster hours. Job 1 can only start by hour 12, so job 2 must start at hour 48 or later.
+        when(provider.load(anyString(), any(), anyInt())).thenAnswer(call -> {
+            double[] flat = new double[call.<Integer>getArgument(2)];
+            java.util.Arrays.fill(flat, 10.0);
+            return prices(flat);
+        });
+        JobInput first = new JobInput(1L, "first", 4800.0, 0.0, T0, at(60), 12, false);
+        JobInput second = new JobInput(2L, "second", 4800.0, 0.0, T0, at(100), 52, false);
+        OptimizeRequestDto request = new OptimizeRequestDto(List.of(first, second),
+                new ClusterCapacityInput(100.0, 64.0), "LZ_NORTH", null, null, null);
+
+        AllocationResult result = new HybridAllocationSolver(Fixtures.COSTS).solve(factory.build(request));
+
+        assertThat(result.scheduledCount()).isEqualTo(2);
     }
 
     @Test

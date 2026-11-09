@@ -226,7 +226,7 @@ export default function AuditPage() {
             />
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            Searchable, tamper-evident record of your own decisions on optimiser schedules, with the schedule hash each decision was made on. Other operators' decisions are not visible here.
+            Searchable, tamper-evident record of your own decisions on optimiser schedules, with the schedule hash each decision was made on. Other operators&apos; decisions are not visible here.
           </p>
         </div>
 
@@ -361,7 +361,6 @@ export default function AuditPage() {
                   <th className="pb-3">Decision</th>
                   <th className="pb-3">Target Run</th>
                   <th className="pb-3">Rationale</th>
-                  <th className="pb-3 pr-2 text-right">Payload</th>
                 </tr>
               </thead>
               <tbody className={`divide-y divide-border/60 ${isLoading ? "opacity-50" : ""}`}>
@@ -382,21 +381,11 @@ export default function AuditPage() {
                     <td className="py-3 text-xs text-muted-foreground max-w-xs truncate" title={log.operatorRationale}>
                       {log.operatorRationale}
                     </td>
-                    <td className="py-3 pr-2 text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 text-xs gap-1 text-muted-foreground hover:text-foreground"
-                        onClick={() => openEvent(log)}
-                      >
-                        <Eye className="h-3.5 w-3.5" /> Details
-                      </Button>
-                    </td>
                   </tr>
                 ))}
                 {!isLoading && !error && events.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-10 text-center text-xs text-muted-foreground">
+                    <td colSpan={5} className="py-10 text-center text-xs text-muted-foreground">
                       {hasActiveFilters(appliedFilters)
                         ? "No audit events match these filters."
                         : "No audit events have been recorded yet."}
@@ -405,7 +394,7 @@ export default function AuditPage() {
                 )}
                 {isLoading && events.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-10 text-center text-xs text-muted-foreground">
+                    <td colSpan={5} className="py-10 text-center text-xs text-muted-foreground">
                       <RefreshCw className="mx-auto mb-2 h-4 w-4 animate-spin text-emerald-500" />
                       Loading audit events…
                     </td>

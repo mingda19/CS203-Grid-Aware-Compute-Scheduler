@@ -1,8 +1,9 @@
 "use client"
 
 import * as React from "react"
-import { jobsApi, type ConstraintDraft, type ConstraintParseResponse } from "@/lib/api"
-import { constraintReviewBlocker } from "@/lib/constraint-review"
+import { jobsApi, type ConstraintDisagreement, type ConstraintDraft, type ConstraintParseResponse, type ConstraintSuggestion } from "@/lib/api"
+import { applyDisagreementAnswers, constraintReviewBlocker, type DisagreementAnswers } from "@/lib/constraint-review"
+import { CONSTRAINT_LABELS } from "@/lib/constraint-confirmation"
 import { formatMarketDateTime, MARKET_TIMEZONE, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { Button } from "@/components/ui/button"
 
@@ -19,6 +20,7 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState("")
   const [confirmed, setConfirmed] = React.useState(false)
+  const [answers, setAnswers] = React.useState<DisagreementAnswers>({})
   const requestId = React.useRef(0)
   React.useEffect(() => () => { requestId.current++ }, [])
 
@@ -28,6 +30,9 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
     setLoading(false)
     setError("")
     setConfirmed(false)
+    // An answer belongs to the question it was given for. Keeping it across a re-parse would let a
+    // stale choice satisfy the blocker for a question the operator has not seen.
+    setAnswers({})
   }
 
   const parse = async () => {
@@ -36,6 +41,7 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
     setReview(null)
     setError("")
     setConfirmed(false)
+    setAnswers({})
     onPendingChange(true)
     try {
       const response = await jobsApi.parseConstraints({ rawConstraints: raw, draft, timeZone: MARKET_TIMEZONE })
@@ -49,7 +55,7 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
     }
   }
 
-  const blocker = review ? constraintReviewBlocker(review.result, review.draft, draft) : null
+  const blocker = review ? constraintReviewBlocker(review.result, review.draft, draft, answers) : null
   return (
     <section aria-label="Natural-language constraints" className="mt-4 space-y-4 rounded-lg border bg-muted/20 p-4">
       <div>
@@ -68,10 +74,15 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
       {error && <p role="alert" className="text-sm text-destructive">{error} Use “Parse and review” to retry.</p>}
       {review && <>
         <ConstraintComparison raw={review.raw} result={review.result} />
+        <DisagreementChoices disagreements={review.result.disagreements ?? []} answers={answers}
+          onAnswer={(field, option) => setAnswers(prev => ({ ...prev, [field]: option }))} />
+        <Suggestions suggestions={review.result.suggestions ?? []} />
         {blocker && <p role="alert" className="text-sm text-destructive">{blocker}</p>}
         <Button type="button" disabled={!!blocker} onClick={() => {
-          if (constraintReviewBlocker(review.result, review.draft, draft)) return
-          onConfirm(review.result, review.raw)
+          if (constraintReviewBlocker(review.result, review.draft, draft, answers)) return
+          const disagreements = review.result.disagreements ?? []
+          onConfirm({ ...review.result, fields: applyDisagreementAnswers(review.result.fields, disagreements, answers, review.draft) },
+            review.raw)
           onPendingChange(false)
           setReview(null)
           setConfirmed(true)
@@ -111,4 +122,70 @@ export function ConstraintComparison({ raw, result }: { raw: string; result: Con
     {!!result.ambiguities.length && <div className="text-sm"><p className="font-medium">Clarification needed</p><ul className="list-disc space-y-1 pl-4">{result.ambiguities.map((item, index) => <li key={index}>“{item.phrase}”: {item.message}</li>)}</ul></div>}
     {!!result.unsupported.length && <div className="text-sm"><p className="font-medium">Unsupported text</p><ul className="list-disc space-y-1 pl-4">{result.unsupported.map((item, index) => <li key={index}>{item.phrase}</li>)}</ul></div>}
   </div>
+}
+
+/**
+ * The questions where the classifier and the parser read the text differently.
+ *
+ * Radio buttons, not a "dismiss" affordance: both readings are plausible and the operator has to
+ * pick one, so there is no safe default to pre-select. Nothing is chosen until they choose it, and
+ * `constraintReviewBlocker` keeps the confirm button disabled until every question has an answer -
+ * silence is not consent about what their own text meant.
+ */
+export function DisagreementChoices({ disagreements, answers, onAnswer }: {
+  disagreements: ConstraintDisagreement[]
+  answers: DisagreementAnswers
+  onAnswer: (field: keyof ConstraintDraft, optionId: string) => void
+}) {
+  if (!disagreements.length) return null
+  return (
+    <div className="space-y-4 rounded-md border border-amber-300 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/30">
+      <div>
+        <p className="text-sm font-medium">What does your text mean?</p>
+        <p className="text-xs text-muted-foreground">
+          Your wording was read two ways. Pick the one you meant — nothing is applied until you do.
+        </p>
+      </div>
+      {disagreements.map(disagreement => (
+        <fieldset key={disagreement.field} className="space-y-2">
+          <legend className="text-sm">{disagreement.question}</legend>
+          {disagreement.options.map(option => (
+            <label key={option.id} className="flex items-start gap-2 text-sm">
+              <input type="radio" className="mt-1" name={`disagreement-${disagreement.field}`}
+                value={option.id} checked={answers[disagreement.field] === option.id}
+                onChange={() => onAnswer(disagreement.field, option.id)} />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </fieldset>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Constraints the classifier found that the form has no field for.
+ *
+ * Shown, not applied. These are kinds of rule the job form cannot hold yet - a recurring daily
+ * window, an ordering against another job - so telling the operator they were recognised is honest,
+ * while implying they will be enforced would not be.
+ */
+export function Suggestions({ suggestions }: { suggestions: ConstraintSuggestion[] }) {
+  if (!suggestions.length) return null
+  return (
+    <div className="text-sm">
+      <p className="font-medium">Also recognised, but not applied to this form</p>
+      <ul className="list-disc space-y-1 pl-4">
+        {suggestions.map((suggestion, index) => (
+          <li key={index}>
+            {CONSTRAINT_LABELS[suggestion.type] ?? suggestion.type}
+            <span className="text-muted-foreground"> — from “{suggestion.phrase}”</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1 text-xs text-muted-foreground">
+        These are not saved with the job yet. Set them when you run an optimisation.
+      </p>
+    </div>
+  )
 }

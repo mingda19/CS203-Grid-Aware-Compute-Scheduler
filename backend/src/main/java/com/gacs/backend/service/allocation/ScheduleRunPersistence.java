@@ -111,33 +111,23 @@ public class ScheduleRunPersistence {
      * leaving an explanation on record for a run whose review plan never got created. A caller with
      * nothing to do there passes a no-op.
      */
+    /**
+     * Writes the run's explanation row and runs {@code afterPersist} in the same transaction, so a
+     * failure there rolls the explanation back rather than leaving one on record for a run whose
+     * review plan never got created. A caller with nothing to do there passes a no-op.
+     *
+     * <p>The text is the deterministic summary already on {@code response}; nothing is generated
+     * here. It used to be written twice - deterministic first, then overwritten if a model answered
+     * in time - which is why this was ever separate from {@link #persist}.
+     */
     @Transactional
-    public void finalizeExplanation(Long scheduleRunId, ExplanationOutcome explanation,
-                                    OptimizeResponseDto response, Consumer<OptimizeResponseDto> afterPersist) {
-        List<ScheduleItem> freshItems = items.findByScheduleRunIdOrderByIdAsc(scheduleRunId);
-        List<ConstraintImpact> freshImpacts = freshItems.stream()
-                .flatMap(item -> constraintImpacts.findByScheduleItemIdOrderByIdAsc(item.getId()).stream())
-                .toList();
-
-        if (explanation.usedLlm()) {
-            applyLlmText(freshItems, freshImpacts, explanation.response());
-            explanations.save(ScheduleExplanation.builder()
-                    .scheduleRunId(scheduleRunId)
-                    .modelName(explanation.modelName())
-                    .rawResponseJson(explanation.rawResponseJson())
-                    .headline(explanation.response().headline())
-                    .narrative(explanation.response().narrative())
-                    .build());
-        } else {
-            explanations.save(ScheduleExplanation.builder()
-                    .scheduleRunId(scheduleRunId)
-                    .fallbackReason(explanation.fallbackReason().name())
-                    .rawResponseJson(explanation.rawResponseJson())
-                    .validationErrorsJson(joinErrors(explanation.validationErrors()))
-                    .headline(headlineFrom(response))
-                    .narrative(response.plainEnglishExplanation())
-                    .build());
-        }
+    public void finalizeExplanation(Long scheduleRunId, OptimizeResponseDto response,
+                                    Consumer<OptimizeResponseDto> afterPersist) {
+        explanations.save(ScheduleExplanation.builder()
+                .scheduleRunId(scheduleRunId)
+                .headline(headlineFrom(response))
+                .narrative(response.plainEnglishExplanation())
+                .build());
         afterPersist.accept(response);
     }
 
@@ -366,40 +356,7 @@ public class ScheduleRunPersistence {
                 .build()));
     }
 
-    /** Overwrites each row's deterministic text with the LLM's, matching by job id (items) or by
-     *  {@code (jobId, constraintType, relatedJobIds)} (impacts) - never by array position, since a
-     *  job can carry two constraints of the same type. {@code ExplanationValidator} has already
-     *  confirmed full, exact coverage, so every row here has a match. */
-    private void applyLlmText(List<ScheduleItem> scheduleItems, List<ConstraintImpact> constraintImpactRows,
-                              LlmExplanationResponse response) {
-        Map<Long, String> jobExplanationByJobId = new HashMap<>();
-        response.jobExplanations().forEach(e -> jobExplanationByJobId.put(e.jobId(), e.explanation()));
-        for (ScheduleItem item : scheduleItems) {
-            String text = jobExplanationByJobId.get(item.getJobId());
-            if (text != null) {
-                item.setWhyThisPlacement(text);
-                items.save(item);
-            }
-        }
 
-        Map<Long, Long> scheduleItemIdToJobId = new HashMap<>();
-        scheduleItems.forEach(item -> scheduleItemIdToJobId.put(item.getId(), item.getJobId()));
-        Map<String, String> constraintExplanationByKey = new HashMap<>();
-        response.constraintExplanations().forEach(e -> constraintExplanationByKey.put(
-                impactKey(e.jobId(), e.constraintType(), e.relatedJobIds()), e.explanation()));
-        for (ConstraintImpact impact : constraintImpactRows) {
-            Long jobId = scheduleItemIdToJobId.get(impact.getScheduleItemId());
-            if (jobId == null) {
-                continue;
-            }
-            String text = constraintExplanationByKey.get(
-                    impactKey(jobId, impact.getConstraintType(), parseRelatedJobIds(impact.getRelatedJobIds())));
-            if (text != null) {
-                impact.setNarrativeFragment(text);
-                constraintImpacts.save(impact);
-            }
-        }
-    }
 
     /** Related-job-ids are compared as a set: order never carries meaning. */
     private static String impactKey(long jobId, String constraintType, List<Long> relatedJobIds) {
@@ -414,9 +371,6 @@ public class ScheduleRunPersistence {
                 .map(Long::parseLong).toList();
     }
 
-    private static String joinErrors(List<String> errors) {
-        return errors.isEmpty() ? null : String.join("; ", errors);
-    }
 
     private static String whyThisPlacement(JobOutcome outcome) {
         return switch (outcome.status()) {

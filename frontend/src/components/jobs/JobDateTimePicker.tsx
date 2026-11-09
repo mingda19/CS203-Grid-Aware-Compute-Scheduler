@@ -59,7 +59,8 @@ export function JobDateTimePicker({
   const [open, setOpen] = React.useState(false)
   const containerRef = React.useRef<HTMLDivElement>(null)
 
-  const nowMarket = React.useMemo(() => getNowMarketParts(), [])
+  // Recomputed each time the picker opens, so a form left open past the hour boundary does not keep an hour that has passed.
+  const nowMarket = React.useMemo(() => getNowMarketParts(), [open]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * The earliest value this picker will produce: the current market hour, on the hour, or
@@ -71,7 +72,7 @@ export function JobDateTimePicker({
   const earliest = React.useMemo(() => {
     const nowFloor = currentMarketHourInput()
     return minDateTime && minDateTime > nowFloor ? minDateTime : nowFloor
-  }, [minDateTime])
+  }, [minDateTime, open]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const earliestDate = earliest.split("T")[0]
 

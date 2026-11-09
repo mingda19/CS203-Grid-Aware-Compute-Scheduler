@@ -32,6 +32,22 @@ public class User {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
+    @Column(name = "password_reset_hash")
+    private String passwordResetHash;
+
+    @Column(name = "password_reset_expires_at")
+    private LocalDateTime passwordResetExpiresAt;
+
+    @Column(name = "password_reset_requested_at")
+    private LocalDateTime passwordResetRequestedAt;
+
+    public String getPasswordResetHash() { return passwordResetHash; }
+    public void setPasswordResetHash(String value) { passwordResetHash = value; }
+    public LocalDateTime getPasswordResetExpiresAt() { return passwordResetExpiresAt; }
+    public void setPasswordResetExpiresAt(LocalDateTime value) { passwordResetExpiresAt = value; }
+    public LocalDateTime getPasswordResetRequestedAt() { return passwordResetRequestedAt; }
+    public void setPasswordResetRequestedAt(LocalDateTime value) { passwordResetRequestedAt = value; }
+
     public User() {
     }
 

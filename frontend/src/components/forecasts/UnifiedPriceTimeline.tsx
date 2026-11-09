@@ -22,7 +22,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { DataStatusBadge } from "@/components/ui/data-status-badge"
 import { priceApi, type ForecastModel, type PricePoint, type PriceForecastPoint } from "@/lib/api"
 import { aggregateConfidence, confidenceBand, type ConfidenceBand } from "@/lib/forecast-confidence"
-import { formatMarketDateTime, formatMarketChartTick, marketZoneAbbrev, MARKET_TIMEZONE } from "@/lib/date-utils"
+import { formatMarketDateTime, formatMarketChartTick, marketZoneAbbrev, MARKET_TIMEZONE, parseIsoDate } from "@/lib/date-utils"
 
 /** How much recorded history the chart shows. The forecast part always covers the next 72 hours. */
 export type HorizonPreset = "24h" | "7d"
@@ -87,7 +87,6 @@ export interface TimelineDataPoint {
   modelVersion?: string
 }
 
-const withZ = (utc: string) => (utc.endsWith("Z") ? utc : `${utc}Z`)
 
 /** Tick positions on whole hours, with a step that gives at most 7 labels. */
 function timeTicks(min: number, max: number): number[] {
@@ -297,13 +296,13 @@ export function UnifiedPriceTimeline({
     //    The chart holds all of them. The selected horizon only sets the axes, the statistics and the counts.
     const windowStart = nowMs - historyDays * DAY_MS
     const sortedHistory = historyPoints
-      .map((p) => ({ p, t: new Date(withZ(p.intervalStartUtc)).getTime() }))
+      .map((p) => ({ p, t: parseIsoDate(p.intervalStartUtc).getTime() }))
       .filter(({ t }) => Number.isFinite(t) && t >= nowMs - MAX_HISTORY_DAYS * DAY_MS)
       .sort((a, b) => a.t - b.t)
 
     for (const { p, t } of sortedHistory) {
       if (p.sppUsdMwh == null) continue
-      const rawUtc = withZ(p.intervalStartUtc)
+      const rawUtc = new Date(t).toISOString()
       data.push({
         key: rawUtc,
         rawUtc,
@@ -323,7 +322,7 @@ export function UnifiedPriceTimeline({
     // 2. Forecast points strictly after the last recorded point, oldest first
     const latestHistoryTime = data.length > 0 ? data[data.length - 1].t : 0
     const futureForecasts = forecastPoints
-      .map((f) => ({ f, t: new Date(withZ(f.intervalStartUtc)).getTime() }))
+      .map((f) => ({ f, t: parseIsoDate(f.intervalStartUtc).getTime() }))
       .filter(({ f, t }) => f.predictedPrice != null && Number.isFinite(t) && t > latestHistoryTime)
       .sort((a, b) => a.t - b.t)
 
@@ -337,7 +336,7 @@ export function UnifiedPriceTimeline({
 
     // 3. Map future forecast points
     for (const { f, t } of futureForecasts) {
-      const rawUtc = withZ(f.intervalStartUtc)
+      const rawUtc = new Date(t).toISOString()
       data.push({
         key: rawUtc,
         rawUtc,
@@ -494,7 +493,7 @@ export function UnifiedPriceTimeline({
                 size="sm"
                 status={error ? "unavailable" : historyPoints.length > 0 || forecastPoints.length > 0 ? "live" : "unavailable"}
                 source={`ERCOT settlements and stored model predictions (${activeHub})`}
-                updatedAt={lastRecordedUtc ? withZ(lastRecordedUtc) : null}
+                updatedAt={lastRecordedUtc ? parseIsoDate(lastRecordedUtc) : null}
               />
             )}
 
