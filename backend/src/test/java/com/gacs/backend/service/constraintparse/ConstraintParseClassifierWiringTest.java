@@ -117,6 +117,28 @@ class ConstraintParseClassifierWiringTest {
     }
 
     @Test
+    void candidatesAreOpenJobsOnlyNewestFirstAndCapped() {
+        // Jev's Choice rejects more than 255 options, and every option is billed.
+        List<com.gacs.backend.model.Job> owned = new java.util.ArrayList<>();
+        for (long id = 1; id <= ConstraintParseService.MAX_CANDIDATES + 10; id++) {
+            owned.add(com.gacs.backend.model.Job.builder().id(id).name("job " + id).status("PENDING").build());
+        }
+        long newest = ConstraintParseService.MAX_CANDIDATES + 10;
+        owned.get((int) newest - 1).setStatus("COMPLETED");
+        owned.get((int) newest - 2).setStatus("CANCELLED");
+        when(repository.findByOwnerEmailOrderByOriginalStartTimeAsc("me@example.com")).thenReturn(owned);
+        Stub stub = new Stub(List.of(), null);
+
+        serviceWith(stub).parse(request("Finish by 6pm tomorrow."), "me@example.com");
+
+        List<Long> ids = stub.sawCandidates.get().stream().map(JobReferenceResolver.Candidate::id).toList();
+        assertThat(ids).hasSize(ConstraintParseService.MAX_CANDIDATES)
+                .doesNotContain(newest, newest - 1)
+                .startsWith(newest - 2)
+                .isSortedAccordingTo(java.util.Comparator.reverseOrder());
+    }
+
+    @Test
     void withNoAuthenticatedOperator_NoJobsAreOffered() {
         // A constraint may never bind a job nobody owns, so with no operator the referent questions
         // are not asked at all rather than asked against every job in the system.

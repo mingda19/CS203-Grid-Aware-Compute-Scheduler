@@ -8,6 +8,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
+import java.net.http.HttpClient;
+
 /**
  * Registers the TypeSafe classifier, but only when a key is configured.
  *
@@ -51,7 +53,9 @@ public class ConstraintParseConfiguration {
             logger.info("TYPESAFE_API_KEY is not set; constraint parsing will use the rule-based parser only");
             return null;
         }
-        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory();
+        // Connect timeout too: the JDK client has none by default, so an unanswered connect would wait on the OS.
+        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(
+                HttpClient.newBuilder().connectTimeout(properties.timeout()).build());
         requestFactory.setReadTimeout(properties.timeout());
         RestClient.Builder builder = RestClient.builder().requestFactory(requestFactory);
         logger.info("TypeSafe classifier enabled, model {} at {}", properties.model(), properties.endpoint());

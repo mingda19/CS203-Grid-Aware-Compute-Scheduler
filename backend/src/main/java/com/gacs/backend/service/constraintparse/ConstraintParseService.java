@@ -3,6 +3,7 @@ package com.gacs.backend.service.constraintparse;
 import com.gacs.backend.dto.ConstraintParseRequestDto;
 import com.gacs.backend.dto.ConstraintParseRequestDto.Draft;
 import com.gacs.backend.dto.ConstraintParseResponseDto;
+import com.gacs.backend.dto.JobResponseDto;
 import com.gacs.backend.model.JobPriority;
 import com.gacs.backend.service.allocation.ConstraintType;
 import com.gacs.backend.service.JobService;
@@ -22,6 +23,7 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
@@ -42,6 +44,9 @@ public class ConstraintParseService {
             ConstraintType.SYNCHRONIZED_FINISH);
 
     private static final Logger logger = LoggerFactory.getLogger(ConstraintParseService.class);
+
+    static final int MAX_CANDIDATES = 50;
+    private static final Set<String> FINISHED_STATUSES = Set.of("COMPLETED", "CANCELLED");
 
     private final ConstraintParser parser;
     private final JobService jobService;
@@ -183,13 +188,19 @@ public class ConstraintParseService {
         }
     }
 
-    /** The operator's own jobs, as the only things a pair constraint may be bound to. */
+    /**
+     * The operator's own open jobs, newest first, as the only things a pair constraint may be bound
+     * to. Capped because every option is billed and Jev's Choice type rejects more than 255.
+     */
     private List<JobReferenceResolver.Candidate> candidatesFor(String ownerEmail) {
         if (ownerEmail == null || ownerEmail.isBlank()) {
             return List.of();
         }
         return jobService.getJobsByOwner(ownerEmail).stream()
                 .filter(job -> job.getId() != null && job.getName() != null)
+                .filter(job -> !FINISHED_STATUSES.contains(job.getStatus()))
+                .sorted(Comparator.comparing(JobResponseDto::getId).reversed())
+                .limit(MAX_CANDIDATES)
                 .map(job -> new JobReferenceResolver.Candidate(job.getId(), job.getName()))
                 .toList();
     }
