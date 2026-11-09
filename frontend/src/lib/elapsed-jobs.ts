@@ -1,5 +1,5 @@
 import type { ComputeJob } from "./api"
-import { currentMarketHourStart, formatMarketDateTime, marketZoneAbbrev } from "./date-utils"
+import { currentMarketHourStart, formatMarketDateTime } from "./date-utils"
 
 /**
  * Jobs whose `originalStartTime` is already behind the current market hour.
@@ -52,7 +52,7 @@ export function elapsedJobsConfirmation(count: number, now: Date | string | numb
   const hourStart = currentMarketHourStart(now)
   return `${count === 1 ? "This job's" : `These ${count} jobs'`} start time has already passed. `
     + `If you continue, the optimiser will use only the hours from `
-    + `${formatMarketDateTime(hourStart.toISOString())} ${marketZoneAbbrev(hourStart)} `
+    + `${formatMarketDateTime(hourStart.toISOString())} `
     + `onwards, up to each job's own deadline - which may place them outside the flexibility window `
     + `you originally set. Nothing will be scheduled before the current hour, and any job whose `
     + `deadline has also passed stays unschedulable.`

@@ -92,8 +92,8 @@ describe("what the confirmation says", () => {
     // The two guarantees that make the widening safe to accept.
     expect(text).toContain("Nothing will be scheduled before the current hour")
     expect(text).toContain("deadline has also passed stays unschedulable")
-    // In market-local time, with the zone named for that instant - never a bare UTC timestamp.
-    expect(text).toContain("CST")
+    // In market-local time, with the zone named once for that instant - never a bare UTC timestamp.
+    expect(text).toContain("from 04 Nov 2026, 12:00 CST onwards")
   })
 
   it("reads correctly for a single job", () => {
