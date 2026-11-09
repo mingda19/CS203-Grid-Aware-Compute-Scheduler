@@ -189,7 +189,6 @@ public class ScheduleOptimizationService {
 
     // ------------------------------------------------------------------ explanation
 
-    /** Operator-facing summary. Deterministic for a given result. */
     /**
      * The run summary an operator reads above the plan, as a point-form list.
      *

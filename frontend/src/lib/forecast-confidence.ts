@@ -2,8 +2,9 @@
  * Forecast confidence banding (contract FR-10: "expose forecast confidence and data-freshness
  * indicators… The UI distinguishes high-confidence, low-confidence, and unavailable periods").
  *
- * The API serves `confidenceScore` per forecast interval, 0-1, normalised from the model's stored
- * forecast error ratio, and omits it while no error reference exists for that model version. A bare
+ * The API serves `confidenceScore` per forecast interval on a 0-100 scale, and omits it while no
+ * error reference exists for that model version. `priceApi.getForecast` (api.ts) divides it by 100,
+ * so every score this module sees is 0-1. A bare
  * percentage does not meet FR-10 on its own — it has to read as a judgement an operator can act on
  * before approving a schedule — so a score maps to one of three bands, and absence is its own band
  * rather than being shown as zero (FR-04: missing values must not silently become zeros).

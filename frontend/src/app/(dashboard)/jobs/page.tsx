@@ -35,7 +35,7 @@ import {
 } from "@/components/ui/dialog"
 import { EstimatedPriceBadge } from "@/components/ui/estimated-price-badge"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
-import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, forecastEndMs, maxJobHours, usesEstimatedPrices, type ScheduleMode, toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
+import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, forecastEndMs, maxJobHours, usesEstimatedPrices, type ScheduleMode, toInputDate, toApiUtcDate, toOptimizeJobInput, windowHours } from "@/lib/job-form-utils"
 import { elapsedJobLabel, elapsedJobsConfirmation, elapsedStartJobs } from "@/lib/elapsed-jobs"
 import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
@@ -73,23 +73,11 @@ const blankForm = (): FormState => ({
 const displayDate = (value?: string) => (value ? formatMarketDateTime(value) : "—")
 
 const getWindowDurationText = (start: string, end: string) => {
-  if (!start || !end) return ""
-  try {
-    const [d1, t1] = start.split("T")
-    const [y1, m1, day1] = d1.split("-").map(Number)
-    const [h1, min1] = t1.split(":").map(Number)
-    const [d2, t2] = end.split("T")
-    const [y2, m2, day2] = d2.split("-").map(Number)
-    const [h2, min2] = t2.split(":").map(Number)
-    const date1 = new Date(Date.UTC(y1, m1 - 1, day1, h1, min1))
-    const date2 = new Date(Date.UTC(y2, m2 - 1, day2, h2, min2))
-    const diffHours = (date2.getTime() - date1.getTime()) / (1000 * 60 * 60)
-    if (diffHours < 0) return "⚠️ Deadline is before start time"
-    if (diffHours === 0) return "0 hours (starts at deadline)"
-    return `${diffHours % 1 === 0 ? diffHours : diffHours.toFixed(1)} hours`
-  } catch {
-    return ""
-  }
+  const diffHours = windowHours(start, end)
+  if (!start || !end || !Number.isFinite(diffHours)) return ""
+  if (diffHours < 0) return "⚠️ Deadline is before start time"
+  if (diffHours === 0) return "0 hours (starts at deadline)"
+  return `${diffHours % 1 === 0 ? diffHours : diffHours.toFixed(1)} hours`
 }
 
 // The shell's "Create Job" button links here with ?new=1. useSearchParams needs its own Suspense boundary.
