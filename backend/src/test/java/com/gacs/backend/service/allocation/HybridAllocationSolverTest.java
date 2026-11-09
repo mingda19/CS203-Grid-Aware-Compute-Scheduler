@@ -61,11 +61,17 @@ class HybridAllocationSolverTest {
     }
 
     @Test
-    @DisplayName("Size ignores hours without a price, so a far deadline does not push a small run past the threshold")
-    void sizeCountsOnlyPricedHours() {
-        // A deadline about 11,000 years out: counting must follow the 3 priced hours, not the distance.
+    @DisplayName("A far deadline keeps the size above the threshold, so the heuristic solves it instead of a huge exact model")
+    void farDeadlineSkipsExactSolver() {
+        // A deadline about 11,000 years out. The exact model makes variables for every hour up to it.
         OptimizationProblem problem = problem(List.of(job(1, 100.0, 0.0, 0, 500, 100_000_000)), prices(10, 20, 30), cpuCapacity(256.0));
+        // Check the guard first: if it fails, the test stops before solve() can build the model.
+        assertThat(HybridAllocationSolver.size(problem)).isEqualTo(100_000_000L);
 
-        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> assertThat(HybridAllocationSolver.size(problem)).isEqualTo(3));
+        AllocationResult result = assertTimeoutPreemptively(Duration.ofSeconds(5), () -> new HybridAllocationSolver(COSTS).solve(problem));
+
+        assertThat(result.provenOptimal()).isFalse();
+        assertThat(result.scheduledCount()).isEqualTo(1);
+        assertThat(ContractRules.violations(problem, result)).isEmpty();
     }
 }

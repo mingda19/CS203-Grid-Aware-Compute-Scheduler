@@ -4,7 +4,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
 import java.util.Optional;
 
 /**
@@ -71,15 +70,15 @@ public class HybridAllocationSolver implements AllocationSolver {
         }
     }
 
-    /** Number of (flexible job, priced hour) pairs the exact model would have. Unpriced hours are never used. */
-    static int size(OptimizationProblem problem) {
-        int pairs = 0;
+    /**
+     * Number of (flexible job, hour) pairs the exact model would have. The model makes variables for every
+     * hour up to the deadline, priced or not, so every hour counts. A long, so a far deadline cannot overflow.
+     */
+    static long size(OptimizationProblem problem) {
+        long pairs = 0;
         for (OptimizerJob job : problem.flexibleJobsInTieBreakOrder()) {
-            LocalDateTime first = job.originalStartTime();
-            LocalDateTime last = new JobWindow(job, problem.prices()).lastSlot();
-            // Walk the priced hours, not every hour up to the deadline, which may be years away.
-            pairs += (int) problem.prices().asMap().keySet().stream()
-                    .filter(hour -> !hour.isBefore(first) && !hour.isAfter(last)).count();
+            JobWindow window = new JobWindow(job, problem.prices());
+            pairs += Math.max(0, Duration.between(job.originalStartTime(), window.lastSlot()).toHours() + 1);
         }
         return pairs;
     }
