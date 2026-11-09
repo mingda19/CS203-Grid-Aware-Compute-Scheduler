@@ -70,13 +70,15 @@ public class HybridAllocationSolver implements AllocationSolver {
         }
     }
 
-    /** Number of (flexible job, hour) pairs the exact model would have. */
-    static int size(OptimizationProblem problem) {
-        int pairs = 0;
+    /**
+     * Number of (flexible job, hour) pairs the exact model would have. The model makes variables for every
+     * hour up to the deadline, priced or not, so every hour counts. A long, so a far deadline cannot overflow.
+     */
+    static long size(OptimizationProblem problem) {
+        long pairs = 0;
         for (OptimizerJob job : problem.flexibleJobsInTieBreakOrder()) {
             JobWindow window = new JobWindow(job, problem.prices());
-            long hours = java.time.Duration.between(job.originalStartTime(), window.lastSlot()).toHours() + 1;
-            pairs += (int) Math.max(0, hours);
+            pairs += Math.max(0, Duration.between(job.originalStartTime(), window.lastSlot()).toHours() + 1);
         }
         return pairs;
     }

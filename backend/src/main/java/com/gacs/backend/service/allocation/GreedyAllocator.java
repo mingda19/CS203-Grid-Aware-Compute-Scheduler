@@ -18,7 +18,7 @@ import java.util.Optional;
  */
 final class GreedyAllocator {
 
-    private static final double DONE_TOLERANCE = 1e-12;
+    static final double DONE_TOLERANCE = 1e-12;
 
     private GreedyAllocator() {
     }

@@ -2,6 +2,7 @@ package com.gacs.backend.service.allocation;
 
 import com.gacs.backend.service.PriceSeries;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -37,13 +38,16 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
         List<JobOutcome> outcomes = new ArrayList<>();
         Map<OptimizerJob, JobPlan> scheduled = new HashMap<>(flexiblePlans);
         problem.jobs().stream().filter(OptimizerJob::exempt).forEach(job -> scheduled.put(job, problem.baselineOf(job)));
+        // Only built when a job has no plan: the heuristic solver calls this once per round.
+        ResidualCapacity free = problem.jobs().stream().anyMatch(job -> !job.exempt() && !flexiblePlans.containsKey(job))
+                ? residualAfter(problem, scheduled) : null;
         for (OptimizerJob job : problem.jobs()) {
             if (job.exempt()) {
                 outcomes.add(new JobOutcome(job, problem.baselineOf(job), PerJobStatus.UNCHANGED_EXEMPT, null));
             } else if (flexiblePlans.containsKey(job)) {
                 outcomes.add(new JobOutcome(job, flexiblePlans.get(job), PerJobStatus.OPTIMISED, null));
             } else {
-                outcomes.add(new JobOutcome(job, null, PerJobStatus.NO_FEASIBLE_SLOT, noRoomReason(job, problem, scheduled)));
+                outcomes.add(new JobOutcome(job, null, PerJobStatus.NO_FEASIBLE_SLOT, noRoomReason(job, problem, scheduled, free)));
             }
         }
         return new AllocationResult(outcomes, provenOptimal);
@@ -99,14 +103,25 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
         return false;
     }
 
+    private static ResidualCapacity residualAfter(OptimizationProblem problem, Map<OptimizerJob, JobPlan> scheduled) {
+        ResidualCapacity free = new ResidualCapacity(problem.capacity());
+        scheduled.values().forEach(free::reserve);
+        return free;
+    }
+
     /**
      * Why a job got no plan. Request validation already ensured it could finish alone on the cluster, so
-     * the cause is always capacity taken by other jobs within the hours it was allowed to use.
+     * the cause is either capacity taken by other jobs, or free capacity that only exists in hours without
+     * a forecast price (a job cannot start in or run across one).
      */
     private static String noRoomReason(OptimizerJob job, OptimizationProblem problem,
-                                       Map<OptimizerJob, JobPlan> scheduled) {
+                                       Map<OptimizerJob, JobPlan> scheduled, ResidualCapacity free) {
         JobWindow window = new JobWindow(job, problem.prices());
         LocalDateTime lastEnd = window.lastSlot().plusHours(1);
+        String noPrice = unpricedHoursReason(job, problem.prices(), window, free);
+        if (noPrice != null) {
+            return noPrice;
+        }
         // The job that took the slot: the first (by tie-break order) of those running inside this job's window.
         List<OptimizerJob> blockers = scheduled.entrySet().stream()
                 .filter(e -> e.getValue().allocations().stream().anyMatch(a ->
@@ -119,5 +134,63 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
                 + (blockers.size() > 1 ? " and " + (blockers.size() - 1) + " other(s) use" : " uses");
         return "Cluster full between " + job.originalStartTime().format(HOUR) + " and " + lastEnd.format(HOUR)
                 + " UTC: " + took + " the capacity this job needs to finish by its deadline.";
+    }
+
+    /**
+     * A "No forecast price" reason, or null when the cluster being full explains the job. The reason applies
+     * when no run of priced hours has room for the job, yet a run that also uses unpriced hours would. The
+     * free capacity is what the scheduled jobs left, counted with the same limits as {@link GreedyAllocator}.
+     * ponytail: starts after the last priced hour are all treated as one start, so a capacity override in
+     * that stretch is ignored; scan each of them if that ever matters.
+     */
+    private static String unpricedHoursReason(OptimizerJob job, PriceSeries prices, JobWindow window,
+                                              ResidualCapacity free) {
+        LocalDateTime first = job.originalStartTime();
+        LocalDateTime lastSlot = window.lastSlot();
+        List<LocalDateTime> priced = prices.asMap().keySet().stream()
+                .filter(hour -> !hour.isBefore(first) && !hour.isAfter(lastSlot)).sorted().toList();
+        if (priced.size() >= Duration.between(first, lastSlot).toHours() + 1) {
+            return null; // every hour of the window has a price
+        }
+        LocalDateTime scanEnd = priced.isEmpty() ? first : priced.getLast().plusHours(1);
+        for (LocalDateTime limit : List.of(job.latestStart(), lastSlot)) {
+            scanEnd = limit.isBefore(scanEnd) ? limit : scanEnd;
+        }
+        LocalDateTime gapFrom = null;
+        LocalDateTime gapTo = null;
+        for (LocalDateTime start = first; !start.isAfter(scanEnd); start = start.plusHours(1)) {
+            double totalCap = 0.0;
+            int count = 0;
+            LocalDateTime runGapFrom = null;
+            LocalDateTime runGapTo = null;
+            for (LocalDateTime hour = start; !hour.isAfter(lastSlot); hour = hour.plusHours(1)) {
+                double cap = Math.min(1.0, free.freeAt(hour).maxShare(job));
+                if (cap < AllocationSolver.MIN_SHARE || (count + 1) * AllocationSolver.MIN_SHARE > 1.0) {
+                    break; // a run cannot pass through a full hour
+                }
+                count++;
+                totalCap += cap;
+                if (prices.priceAt(hour).isEmpty()) {
+                    runGapFrom = runGapFrom == null ? hour : runGapFrom;
+                    runGapTo = hour;
+                }
+                if (totalCap >= 1.0 - GreedyAllocator.DONE_TOLERANCE) {
+                    if (runGapFrom == null) {
+                        return null; // priced hours alone have room, so other jobs are the cause
+                    }
+                    if (gapFrom == null) {
+                        gapFrom = runGapFrom;
+                        gapTo = runGapTo;
+                    }
+                    break;
+                }
+            }
+        }
+        if (gapFrom == null) {
+            return null;
+        }
+        return "No forecast price between " + gapFrom.format(HOUR) + " and " + gapTo.plusHours(1).format(HOUR)
+                + " UTC: the priced hours in this job's window have too little free capacity, and it could only "
+                + "finish by also using hours the forecast does not cover.";
     }
 }
