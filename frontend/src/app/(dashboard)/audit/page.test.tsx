@@ -5,9 +5,10 @@ import AuditPage from "./page"
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
 
-it("has six table columns, with no Payload column, and its loading row spans all six", () => {
+it("has five table columns, with no Payload or Operator column, and its loading row spans all five", () => {
   const html = renderToStaticMarkup(<AuditPage />)
   expect(html).not.toContain("Payload")
-  expect(html.match(/<th /g)).toHaveLength(6)
-  expect(html).toContain('colSpan="6"')
+  expect(html).not.toContain("Operator")
+  expect(html.match(/<th /g)).toHaveLength(5)
+  expect(html).toContain('colSpan="5"')
 })

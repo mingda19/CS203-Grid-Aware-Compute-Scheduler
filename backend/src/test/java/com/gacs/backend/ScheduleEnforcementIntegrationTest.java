@@ -67,6 +67,7 @@ class ScheduleEnforcementIntegrationTest {
         m.put("gpuHours", j.getGpuHours()); m.put("originalStartTime", j.getOriginalStartTime().toString());
         m.put("deadline", j.getDeadline().toString()); m.put("flexibilityWindowHours", j.getFlexibilityWindowHours());
         m.put("isExempt", j.isExempt()); m.put("priority", j.getPriority().name());
+        m.put("workloadCategory", j.getWorkloadCategory().name());
         return m;
     }
     private String optimize() throws Exception {
@@ -209,7 +210,7 @@ class ScheduleEnforcementIntegrationTest {
         refused(apply(run),"INVALIDATED");
     }
 
-    @Test void applicationIsIdempotentAndRejectionBlocksStarts() throws Exception {
+    @Test void applicationIsIdempotentAndRevocationBlocksStarts() throws Exception {
         String run=optimize(); refused(apply(run),"NOT_APPROVED");
         decide(run,"approve").andExpect(status().isOk());
         String first=apply(run).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
@@ -218,8 +219,16 @@ class ScheduleEnforcementIntegrationTest {
         assertThat(audit.findByRunIdOrderByTimestampDesc(run).stream().filter(e->e.getActionType()==AuditActionType.DISPATCH)).hasSize(1);
         var entry=schedules.findByRunIdOrderByIdAsc(run).getFirst();
         transition(entry.getId(),"Running").andExpect(status().isOk());
-        decide(run,"reject").andExpect(status().isOk()); refused(transition(entry.getId(),"Running"),"NOT_APPROVED");
-        transition(entry.getId(),"Completed").andExpect(status().isOk());
+        // Withdrawing the approval is what halts it; "reject" is a first decision and is refused here.
+        refused(decide(run,"reject"),"ALREADY_DECIDED");
+        // Revocation now deletes the run's calendar entries outright, so a transition on one is not
+        // "refused because the plan is no longer approved" (403) - the entry is simply gone (404).
+        // Previously the row survived and sat on the timetable at Scheduled forever, which is the
+        // defect this replaced.
+        decide(run,"revoke").andExpect(status().isOk());
+        transition(entry.getId(),"Running").andExpect(status().isNotFound());
+        transition(entry.getId(),"Completed").andExpect(status().isNotFound());
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).isEmpty();
     }
 
     @Test void invalidationDoesNotInterruptRunningButBlocksResume() throws Exception {
@@ -258,7 +267,7 @@ class ScheduleEnforcementIntegrationTest {
     @Test void supersessionUsesApprovalOrderAndCannotBeRevived() throws Exception {
         String older=optimize(),newer=optimize();decide(newer,"approve").andExpect(status().isOk());
         decide(older,"approve").andExpect(status().isOk());refused(apply(newer),"STALE");
-        decide(older,"reject").andExpect(status().isOk());refused(decide(newer,"approve"),"STALE");
+        decide(older,"revoke").andExpect(status().isOk());refused(decide(newer,"approve"),"STALE");
     }
 
     @Test void expiryPersistsStaleWithoutAnExportRequest() throws Exception {
@@ -326,11 +335,43 @@ class ScheduleEnforcementIntegrationTest {
         assertThat(audit.findByRunIdOrderByTimestampDesc(run).stream().filter(e->e.getActionType()==AuditActionType.DISPATCH)).hasSize(1);
     }
 
-    @Test void revisionRequestedRunCannotBeAppliedOrStarted() throws Exception {
+    @Test void revokingAnApprovedRunClearsItsCalendarEntries() throws Exception {
+        String run=optimize(); decide(run,"approve").andExpect(status().isOk());
+        apply(run).andExpect(status().isOk());
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).isNotEmpty();
+
+        decide(run,"revoke").andExpect(status().isOk());
+
+        // Flipping the review state only stopped the work from starting; the rows stayed on the
+        // timetable, so the revocation looked like it had failed.
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).isEmpty();
+    }
+
+    @Test void revokingClearsEntriesEvenOnceTheyAreRunning() throws Exception {
+        String run=optimize(); decide(run,"approve").andExpect(status().isOk());
+        apply(run).andExpect(status().isOk());
+        long id=schedules.findByRunIdOrderByIdAsc(run).getFirst().getId();
+        transition(id,"Running").andExpect(status().isOk());
+
+        decide(run,"revoke").andExpect(status().isOk());
+
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).isEmpty();
+        assertThat(schedules.findById(id)).isEmpty();
+    }
+
+    @Test void revokedRunCannotBeAppliedOrStarted() throws Exception {
         String run=optimize();decide(run,"approve").andExpect(status().isOk());apply(run).andExpect(status().isOk());
         long id=schedules.findByRunIdOrderByIdAsc(run).getFirst().getId();
-        decide(run,"revise").andExpect(status().isOk());refused(apply(run),"NOT_APPROVED");
-        refused(transition(id,"Running"),"NOT_APPROVED");
+        decide(run,"revoke").andExpect(status().isOk());refused(apply(run),"NOT_APPROVED");
+        // The plan itself is still refused as NOT_APPROVED, but its entry no longer exists to start.
+        transition(id,"Running").andExpect(status().isNotFound());
+    }
+
+    /** Revision is a first decision now, so it is reached from PENDING rather than after approval. */
+    @Test void revisionRequestedRunCannotBeApplied() throws Exception {
+        String run=optimize();decide(run,"revise").andExpect(status().isOk());
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.REVISION_REQUESTED);
+        refused(apply(run),"NOT_APPROVED");
     }
 
     @Test void failedInputMutationRollsBackRevisionAndInvalidation() throws Exception {
@@ -364,4 +405,149 @@ class ScheduleEnforcementIntegrationTest {
         refused(transition(schedules.findByRunIdOrderByIdAsc(run).getFirst().getId(),"Running"),"INVALIDATED");
     }
 
+    @Test
+    @DisplayName("bug 4: re-optimising and re-approving the same job supersedes its calendar entry rather than accumulating one")
+    void reapprovingAndApplyingSameJobSupersedesRatherThanAccumulates() throws Exception {
+        String run1 = optimize(); decide(run1,"approve").andExpect(status().isOk()); apply(run1).andExpect(status().isOk());
+        assertThat(schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail())).hasSize(1);
+
+        String run2 = optimize(); decide(run2,"approve").andExpect(status().isOk()); apply(run2).andExpect(status().isOk());
+
+        var all = schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail());
+        assertThat(all).hasSize(1);
+        assertThat(all.getFirst().getRunId()).isEqualTo(run2);
+        assertThat(schedules.findByRunIdOrderByIdAsc(run1)).isEmpty();
+        assertThat(plans.findById(run1).orElseThrow().getReviewState()).isEqualTo(ReviewState.STALE);
+    }
+
+    @Test
+    @DisplayName("re-approving the same job keeps the Completed entry of the earlier run")
+    void reapprovingKeepsCompletedEntryOfEarlierRun() throws Exception {
+        String run1 = optimize(); decide(run1,"approve").andExpect(status().isOk()); apply(run1).andExpect(status().isOk());
+        long finished = schedules.findByRunIdOrderByIdAsc(run1).getFirst().getId();
+        transition(finished,"Running").andExpect(status().isOk());
+        transition(finished,"Completed").andExpect(status().isOk());
+
+        String run2 = optimize(); decide(run2,"approve").andExpect(status().isOk()); apply(run2).andExpect(status().isOk());
+
+        assertThat(schedules.findByRunIdOrderByIdAsc(run1)).extracting("status").containsExactly("Completed");
+        assertThat(schedules.findByRunIdOrderByIdAsc(run2)).extracting("status").containsExactly("Scheduled");
+    }
+
+    @Test
+    @DisplayName("revoking an approval keeps the Completed entry (applicationIsIdempotentAndRevocationBlocksStarts covers removal of a Running one)")
+    void revokeKeepsCompletedEntry() throws Exception {
+        String run = optimize(); decide(run,"approve").andExpect(status().isOk()); apply(run).andExpect(status().isOk());
+        long finished = schedules.findByRunIdOrderByIdAsc(run).getFirst().getId();
+        transition(finished,"Running").andExpect(status().isOk());
+        transition(finished,"Completed").andExpect(status().isOk());
+        decide(run,"revoke").andExpect(status().isOk());
+
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).extracting("id").containsExactly(finished);
+    }
+
+    @Test
+    @DisplayName("bug 6: the applied calendar entry uses the job's own workload category, not a GPU-hours guess")
+    void appliedScheduleUsesJobsWorkloadCategoryNotGpuHeuristic() throws Exception {
+        var body = jobBody(); body.put("gpuHours", 2.0); body.put("workloadCategory", "CRYPTO_MINING"); update(body);
+        String run = optimize(); decide(run,"approve").andExpect(status().isOk()); apply(run).andExpect(status().isOk());
+        // The old heuristic (any gpuHours > 0 implies "ML Training") would have mislabeled this entry.
+        assertThat(schedules.findByRunIdOrderByIdAsc(run).getFirst().getType()).isEqualTo("Crypto Mining");
+    }
+
+    // ------------------------------------------------------- appliedAt on the plan detail (task 2)
+
+    /**
+     * The plan detail DTO must carry {@code appliedAt}. The field has existed on
+     * {@code OptimizationPlan} since application became gated, but it was exposed on no DTO, so the
+     * review UI could not tell an approved plan still waiting to be applied from one applied an hour
+     * ago - and re-offered "Add approved schedule to calendar" every time the operator navigated back.
+     */
+    @Test
+    @DisplayName("the plan detail reports appliedAt: null until applied, then the application time")
+    void planDetailCarriesAppliedAt() throws Exception {
+        String run = optimize();
+        decide(run, "approve").andExpect(status().isOk());
+
+        mvc.perform(get("/api/schedules/" + run).with(user(owner.getEmail())))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.reviewState").value("APPROVED"))
+            // Present in the payload and explicitly null, not simply absent: a client cannot
+            // distinguish "never applied" from "field not implemented" if the key is missing.
+            .andExpect(jsonPath("$.data.appliedAt").doesNotExist());
+
+        apply(run).andExpect(status().isOk());
+        Instant applied = plans.findById(run).orElseThrow().getAppliedAt();
+        assertThat(applied).as("apply() must stamp the plan").isNotNull();
+
+        mvc.perform(get("/api/schedules/" + run).with(user(owner.getEmail())))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.appliedAt").exists());
+    }
+
+    /**
+     * Applying twice does not move {@code appliedAt} backwards or clear it - the UI reads this field
+     * to decide the button is done, so it has to stay set once the schedule is on the calendar.
+     */
+    @Test
+    @DisplayName("appliedAt stays set when an approved schedule is applied again")
+    void appliedAtSurvivesReapplication() throws Exception {
+        String run = optimize();
+        decide(run, "approve").andExpect(status().isOk());
+        apply(run).andExpect(status().isOk());
+        Instant first = plans.findById(run).orElseThrow().getAppliedAt();
+        apply(run).andExpect(status().isOk());
+        assertThat(plans.findById(run).orElseThrow().getAppliedAt()).isNotNull();
+        assertThat(first).isNotNull();
+    }
+
+    // ------------------------------------------------- REVOKE through /api/audit-events (task 1)
+
+    /**
+     * REVOKE through the compatibility audit endpoint must hit the same gate as
+     * {@code POST /api/schedules/{runId}/revoke}. It used to fall to that controller's {@code default}
+     * branch and be written straight to the audit log with no ownership or state check at all.
+     */
+    @Test
+    @DisplayName("a REVOKE naming another operator's run records nothing and leaves the approval standing")
+    void auditEndpointCannotRevokeAnotherOperatorsApproval() throws Exception {
+        String run = optimize();
+        decide(run, "approve").andExpect(status().isOk());
+        int eventCount = audit.findByRunIdOrderByTimestampDesc(run).size();
+        User other = users.save(new User(UUID.randomUUID() + "@test.io", "pw", "Other", "ROLE_USER"));
+        try {
+            auditDecision(run, "REVOKE", other.getEmail()).andExpect(status().isNotFound());
+            assertThat(audit.findByRunIdOrderByTimestampDesc(run)).hasSize(eventCount);
+            assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
+            // The approval is untouched, so the schedule still applies.
+            apply(run).andExpect(status().isOk());
+        } finally { users.deleteById(other.getId()); }
+    }
+
+    /** A REVOKE on a run that was never approved is refused, and writes no audit event. */
+    @Test
+    @DisplayName("a REVOKE on a pending run is refused through the audit endpoint too")
+    void auditEndpointCannotRevokeAnUnapprovedRun() throws Exception {
+        String run = optimize();
+        int eventCount = audit.findByRunIdOrderByTimestampDesc(run).size();
+        auditDecision(run, "REVOKE", owner.getEmail())
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.data.reason").value("ALREADY_DECIDED"));
+        assertThat(audit.findByRunIdOrderByTimestampDesc(run)).hasSize(eventCount);
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.PENDING);
+    }
+
+    /** The owner's own revoke through the audit endpoint behaves exactly like the dedicated route. */
+    @Test
+    @DisplayName("the owner's REVOKE through the audit endpoint halts the schedule")
+    void auditEndpointRevokeHaltsTheSchedule() throws Exception {
+        String run = optimize();
+        decide(run, "approve").andExpect(status().isOk());
+        auditDecision(run, "REVOKE", owner.getEmail()).andExpect(status().isCreated())
+            .andExpect(jsonPath("$.data.actionType").value("REVOKE"))
+            .andExpect(jsonPath("$.data.actor").value(owner.getEmail()));
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.REJECTED);
+        // Every execution gate already refuses anything not APPROVED.
+        refused(apply(run), "NOT_APPROVED");
+    }
 }

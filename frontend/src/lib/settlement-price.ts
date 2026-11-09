@@ -1,5 +1,5 @@
 import type { PricePoint } from "./api"
-import { formatSgtDateTime, parseIsoDate } from "./date-utils"
+import { formatMarketDateTime, parseIsoDate } from "./date-utils"
 
 export function currentSettlementMetrics(points: PricePoint[], asOf: number) {
   const eligible = points.filter((point): point is PricePoint & { sppUsdMwh: number } =>
@@ -7,7 +7,9 @@ export function currentSettlementMetrics(points: PricePoint[], asOf: number) {
     parseIsoDate(point.intervalStartUtc).getTime() <= asOf,
   ).sort((a, b) => parseIsoDate(a.intervalStartUtc).getTime() - parseIsoDate(b.intervalStartUtc).getTime())
   const latest = eligible.at(-1) ?? null
-  const recent = eligible.slice(-288)
+  // The day-ahead price is one point per hour, so the last 24 hours is a time window, not a point count.
+  // (This was slice(-288), which assumed 5-minute data and averaged 12 days.)
+  const recent = eligible.filter(point => parseIsoDate(point.intervalStartUtc).getTime() > asOf - 24 * 3_600_000)
   const average = recent.length ? recent.reduce((sum, point) => sum + point.sppUsdMwh, 0) / recent.length : null
   const current = latest?.sppUsdMwh ?? null
   const diff = current != null && average != null && average !== 0 ? (current - average) / Math.abs(average) * 100 : 0
@@ -21,7 +23,7 @@ export function currentSettlementMetrics(points: PricePoint[], asOf: number) {
     isDrop: diff <= 0,
     rollingAvgFormatted: average == null ? "—" : `$${average.toFixed(2)}`,
     peakPriceFormatted: peak == null ? "—" : `$${peak.sppUsdMwh.toFixed(2)}`,
-    peakWindow: peak == null ? "Recent peak: —" : `Peak ${formatSgtDateTime(peak.intervalStartUtc)}`,
+    peakWindow: peak == null ? "Recent peak: —" : `Peak ${formatMarketDateTime(peak.intervalStartUtc)}`,
     stale: latest != null && asOf - parseIsoDate(latest.intervalStartUtc).getTime() >= 3_600_000,
   }
 }

@@ -130,7 +130,7 @@ class ExactAllocationSolverTest {
     /** The API path: the problem comes from the factory, which requires every baseline hour to have a price. */
     private static AllocationResult solveRequest(OptimizeRequestDto request) {
         OptimizationProblem problem = new OptimizationProblemFactory(mock(PriceSeriesProvider.class),
-                OptimizerProperties.DEFAULTS).build(request);
+                OptimizerProperties.DEFAULTS, Fixtures.CLOCK_BEFORE_T0).build(request);
         return solve(problem);
     }
 

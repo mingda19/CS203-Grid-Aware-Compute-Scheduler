@@ -9,7 +9,7 @@ it("allows sign-in even when a stale login-presence cookie remains", () => {
 })
 
 it("redirects protected pages to sign-in when there is no session cookie", () => {
-  const response = proxy(new NextRequest("http://localhost:3000/overview"))
+  const response = proxy(new NextRequest("http://localhost:3000/home"))
   expect(response.status).toBe(307)
   expect(response.headers.get("location")).toBe("http://localhost:3000/login")
 })

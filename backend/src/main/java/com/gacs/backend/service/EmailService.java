@@ -22,6 +22,70 @@ public class EmailService {
     @Value("${spring.mail.username:noreply@gacs-platform.io}")
     private String fromEmail;
 
+    public void sendPasswordResetEmail(String toEmail, String token) {
+        if (mailSender == null) throw new IllegalStateException("SMTP is not configured");
+        try {
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            helper.setFrom(fromEmail, "GACS");
+            helper.setTo(toEmail);
+            helper.setSubject("Reset your GACS password");
+            String plainText = "Reset your password\n\n"
+                    + "Copy the recovery code below and paste it into the GACS password reset form.\n\n"
+                    + token + "\n\nThis code expires in 10 minutes and can only be used once."
+                    + "\nRequesting a new code replaces this one."
+                    + "\n\nIf you did not request this, ignore this email. Your password has not changed.";
+            String safeToken = org.springframework.web.util.HtmlUtils.htmlEscape(token);
+            String html = """
+                    <!doctype html>
+                    <html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+                    <body style="margin:0;padding:0;background:#f4f6f5;color:#172b24;font-family:Arial,Helvetica,sans-serif;">
+                      <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="background:#f4f6f5;">
+                        <tr><td align="center" style="padding:32px 16px;">
+                          <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="max-width:520px;background:#ffffff;border:1px solid #dce4df;border-radius:12px;">
+                            <tr><td style="padding:28px 28px 20px;border-bottom:1px solid #e5ebe7;">
+                              <p style="margin:0;font-size:20px;font-weight:bold;color:#166449;">GACS</p>
+                              <p style="margin:6px 0 0;font-size:12px;color:#52645b;">Grid Aware Compute Scheduler</p>
+                            </td></tr>
+                            <tr><td style="padding:28px;">
+                              <h1 style="margin:0 0 12px;font-size:26px;line-height:1.25;letter-spacing:-0.5px;">Reset your password</h1>
+                              <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#42554b;">Copy this recovery code and paste it into the password reset form in GACS.</p>
+                              <p style="margin:0 0 8px;font-size:12px;font-weight:bold;color:#42554b;">Your recovery code</p>
+                              <div style="padding:18px;background:#f0f5f2;border:1px solid #d6e3db;border-radius:6px;font-family:Consolas,monospace;font-size:16px;line-height:1.7;overflow-wrap:anywhere;word-break:break-all;">%s</div>
+                              <p style="margin:12px 0 24px;font-size:13px;line-height:1.6;color:#52645b;">Expires in <strong>10 minutes</strong>. Use it once.<br>Requesting a new code replaces this one.</p>
+                              <p style="margin:0;padding-top:20px;border-top:1px solid #e5ebe7;font-size:13px;line-height:1.6;color:#52645b;">Didn't request a reset? You can ignore this email. Your password has not changed.</p>
+                            </td></tr>
+                          </table>
+                        </td></tr>
+                      </table>
+                    </body></html>
+                    """.formatted(safeToken);
+            helper.setText(plainText, html);
+            mailSender.send(message);
+        } catch (Exception ex) {
+            throw new IllegalStateException(passwordRecoveryFailureReason(ex), ex);
+        }
+    }
+
+    // Log categories, never provider messages that might contain recipient or message data.
+    private String passwordRecoveryFailureReason(Exception failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof org.springframework.mail.MailAuthenticationException ||
+                    cause instanceof jakarta.mail.AuthenticationFailedException)
+                return "SMTP authentication rejected; check MAIL_USERNAME and MAIL_PASSWORD";
+            if (cause instanceof java.net.UnknownHostException)
+                return "SMTP hostname could not be resolved; check DNS/network access";
+            if (cause instanceof java.net.SocketTimeoutException)
+                return "SMTP connection timed out; check outbound access to port 587";
+            if (cause instanceof javax.net.ssl.SSLException)
+                return "SMTP TLS negotiation failed; check certificates/network interception";
+            if (cause instanceof java.net.ConnectException)
+                return "SMTP connection refused; check host, port, and firewall";
+        }
+        return "SMTP delivery failed (" + failure.getClass().getSimpleName()
+                + "); check SMTP connectivity and sender configuration";
+    }
+
     public void sendOtpEmail(String toEmail, String otpCode) {
         logger.info("Preparing OTP verification email for {}", toEmail);
 

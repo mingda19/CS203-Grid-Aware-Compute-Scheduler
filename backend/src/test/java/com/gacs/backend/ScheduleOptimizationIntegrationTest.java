@@ -33,12 +33,15 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import com.gacs.backend.support.FixedClockConfig;
+import org.springframework.context.annotation.Import;
 
 /**
  * Contract tests for {@code POST /api/schedules/optimize} (docs/api-contract.md section 6.4) through the
  * full application: security, JSON, the forecast query, validation, solver and response. Forecast rows are
  * stored in H2 rather than mocked, because the latest-forecast query is part of the contract.
  */
+@Import(FixedClockConfig.class)
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
@@ -186,7 +189,10 @@ class ScheduleOptimizationIntegrationTest {
         mockMvc.perform(post("/api/schedules/optimize").contentType(APPLICATION_JSON)
                 .content(locationRequest(baseline, baseline.plusHours(3), 1)))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(false)))
+            // The fixture seeds 2 hours against a 24-hour horizon, so the other 22 are filled from the
+            // fallback and the run is provisional. The placement and both costs below are unaffected:
+            // the job's window is the two forecast hours, and an estimated hour is never a candidate.
+            .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(true)))
             .andExpect(jsonPath("$.data.items[0].scheduledStart", is("2026-10-20T09:00:00Z")))
             .andExpect(jsonPath("$.data.items[0].baselineCostUsd", is(1.792)))
             .andExpect(jsonPath("$.data.items[0].optimizedCostUsd", is(0.512)));
@@ -205,7 +211,9 @@ class ScheduleOptimizationIntegrationTest {
         mockMvc.perform(post("/api/schedules/optimize").contentType(APPLICATION_JSON)
                 .content(locationRequest(baseline, baseline.plusHours(3), 1)))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(false)))
+            // Same fixture as the test above: 2 forecast hours, the rest of the horizon filled from the
+            // fallback, so the run is provisional. The costs show the optimizer used LSTM, not LEAR.
+            .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(true)))
             .andExpect(jsonPath("$.data.items[0].scheduledStart", is("2026-10-20T09:00:00Z")))
             .andExpect(jsonPath("$.data.items[0].baselineCostUsd", is(1.792)))
             .andExpect(jsonPath("$.data.items[0].optimizedCostUsd", is(0.512)));
@@ -220,7 +228,8 @@ class ScheduleOptimizationIntegrationTest {
                 .content(locationRequest(baseline, baseline.plusHours(3), 2)))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(true)))
-            .andExpect(jsonPath("$.data.plainEnglishExplanation", containsString("seeded fallback")));
+            .andExpect(jsonPath("$.data.plainEnglishExplanation",
+                containsString("history-based fallback price curve")));
     }
 
     @Test
@@ -346,8 +355,11 @@ class ScheduleOptimizationIntegrationTest {
         assertThat(constraintImpacts.findByScheduleItemIdOrderByIdAsc(savedItems.get(0).getId())).hasSize(2);
 
         var explanation = scheduleExplanations.findByScheduleRunId(savedRun.getId()).orElseThrow();
-        assertThat(explanation.getSource()).isEqualTo("DETERMINISTIC_FALLBACK");
-        assertThat(explanation.getFallbackReason()).isEqualTo("NOT_CONFIGURED");
+        // One source of text now, so there is no provenance to assert - what matters is that the
+        // stored narrative is the point-form summary the operator was shown.
+        assertThat(explanation.getNarrative()).startsWith("- Scheduled ");
+        assertThat(explanation.getNarrative())
+                .contains("The above optimisation plan is based on forecasted prices");
     }
 
     @Test

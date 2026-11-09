@@ -14,7 +14,10 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 
@@ -31,13 +34,16 @@ class JobServiceTest {
 
     private JobService jobService;
 
+    /** One hour before {@link #start}, so the jobs these tests create are not in the past. */
+    private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-10-20T09:00:00Z"), ZoneOffset.UTC);
+
     private final String owner = "operator@datacenter.io";
     private final LocalDateTime start = LocalDateTime.of(2026, 10, 20, 10, 0);
     private final LocalDateTime deadline = LocalDateTime.of(2026, 10, 21, 18, 0);
 
     @BeforeEach
     void setUp() {
-        jobService = new JobService(jobRepository, org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class));
+        jobService = new JobService(jobRepository, org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class), CLOCK);
     }
 
     @Test
@@ -189,6 +195,87 @@ class JobServiceTest {
     }
 
     @Test
+    @DisplayName("createJob with explicit workloadCategory persists and returns it")
+    void createJob_WithExplicitWorkloadCategory() {
+        JobRequestDto request = JobRequestDto.builder()
+                .name("Mining Rig")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .workloadCategory("CRYPTO_MINING")
+                .build();
+
+        Job savedJob = Job.builder()
+                .id(106L)
+                .ownerEmail(owner)
+                .name("Mining Rig")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .workloadCategory(com.gacs.backend.model.WorkloadCategory.CRYPTO_MINING)
+                .build();
+
+        when(jobRepository.save(any(Job.class))).thenReturn(savedJob);
+
+        JobResponseDto response = jobService.createJob(request, owner);
+
+        assertThat(response.getWorkloadCategory()).isEqualTo(com.gacs.backend.model.WorkloadCategory.CRYPTO_MINING);
+        ArgumentCaptor<Job> captor = ArgumentCaptor.forClass(Job.class);
+        verify(jobRepository).save(captor.capture());
+        assertThat(captor.getValue().getWorkloadCategory()).isEqualTo(com.gacs.backend.model.WorkloadCategory.CRYPTO_MINING);
+    }
+
+    @Test
+    @DisplayName("createJob without workloadCategory defaults to ML_TRAINING")
+    void createJob_DefaultsWorkloadCategory() {
+        JobRequestDto request = JobRequestDto.builder()
+                .name("Default Category Job")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .build();
+
+        Job savedJob = Job.builder()
+                .id(107L)
+                .ownerEmail(owner)
+                .name("Default Category Job")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .workloadCategory(com.gacs.backend.model.WorkloadCategory.ML_TRAINING)
+                .build();
+
+        when(jobRepository.save(any(Job.class))).thenReturn(savedJob);
+
+        jobService.createJob(request, owner);
+
+        ArgumentCaptor<Job> captor = ArgumentCaptor.forClass(Job.class);
+        verify(jobRepository).save(captor.capture());
+        assertThat(captor.getValue().getWorkloadCategory()).isEqualTo(com.gacs.backend.model.WorkloadCategory.ML_TRAINING);
+    }
+
+    @Test
+    @DisplayName("validateJobConstraints throws clear error when workloadCategory is unknown")
+    void validate_ThrowsWhenInvalidWorkloadCategory() {
+        JobRequestDto request = JobRequestDto.builder()
+                .name("Invalid Category Job")
+                .cpuHours(10.0)
+                .gpuHours(2.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .workloadCategory("UNDERWATER_BASKET_WEAVING")
+                .build();
+
+        assertThatThrownBy(() -> jobService.validateJobConstraints(request))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Invalid workloadCategory: 'UNDERWATER_BASKET_WEAVING'");
+    }
+
+    @Test
     @DisplayName("validateJobConstraints throws clear error when priority is unknown")
     void validate_ThrowsWhenInvalidPriority() {
         JobRequestDto request = JobRequestDto.builder()
@@ -320,6 +407,59 @@ class JobServiceTest {
     }
 
     @Test
+    @DisplayName("description: stored on create, kept when omitted on update, cleared when blank")
+    void description_createKeepClear() {
+        when(jobRepository.save(any(Job.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        JobRequestDto create = JobRequestDto.builder().name("D").cpuHours(1.0).gpuHours(0.0)
+                .originalStartTime(start).deadline(deadline).description("  nightly ETL  ").build();
+        assertThat(jobService.createJob(create, owner).getDescription()).isEqualTo("nightly ETL");
+
+        Job existing = Job.builder().id(204L).ownerEmail(owner).name("D").cpuHours(1.0).gpuHours(0.0)
+                .originalStartTime(start).deadline(deadline).description("nightly ETL").status("PENDING").build();
+        when(jobRepository.findByIdAndOwnerEmail(204L, owner)).thenReturn(Optional.of(existing));
+        JobRequestDto omit = JobRequestDto.builder().name("D").cpuHours(1.0).gpuHours(0.0)
+                .originalStartTime(start).deadline(deadline).build();
+        assertThat(jobService.updateJob(204L, omit, owner).getDescription()).isEqualTo("nightly ETL");
+
+        JobRequestDto blank = JobRequestDto.builder().name("D").cpuHours(1.0).gpuHours(0.0)
+                .originalStartTime(start).deadline(deadline).description("   ").build();
+        assertThat(jobService.updateJob(204L, blank, owner).getDescription()).isNull();
+    }
+
+    @Test
+    @DisplayName("updateJob changes workloadCategory when supplied")
+    void updateJob_ChangesWorkloadCategory() {
+        Job existing = Job.builder()
+                .id(203L)
+                .ownerEmail(owner)
+                .name("Batch Job")
+                .cpuHours(10.0)
+                .gpuHours(0.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .workloadCategory(com.gacs.backend.model.WorkloadCategory.ML_TRAINING)
+                .status("PENDING")
+                .build();
+
+        when(jobRepository.findByIdAndOwnerEmail(203L, owner)).thenReturn(Optional.of(existing));
+
+        JobRequestDto updateRequest = JobRequestDto.builder()
+                .name("Batch Job")
+                .cpuHours(10.0)
+                .gpuHours(0.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .workloadCategory("HPC_BATCH")
+                .build();
+
+        when(jobRepository.save(any(Job.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        JobResponseDto updated = jobService.updateJob(203L, updateRequest, owner);
+
+        assertThat(updated.getWorkloadCategory()).isEqualTo(com.gacs.backend.model.WorkloadCategory.HPC_BATCH);
+    }
+
+    @Test
     @DisplayName("updateJob throws ResourceNotFoundException when job not found for owner")
     void updateJob_NotFound_ThrowsException() {
         when(jobRepository.findByIdAndOwnerEmail(404L, owner)).thenReturn(Optional.empty());
@@ -357,5 +497,90 @@ class JobServiceTest {
                 .hasMessageContaining("Job not found with id: 404");
 
         verify(jobRepository, never()).delete(any());
+    }
+
+    // ------------------------------------------------------------------ elapsed scheduling windows
+
+    /**
+     * A job whose start has passed can never be run: the optimiser will not place work in an elapsed
+     * hour, so accepting one would only store a job that is unschedulable from the moment it is saved.
+     * CLOCK is fixed at 2026-10-20T09:00Z, so {@link #start} (10:00) is still an hour ahead.
+     */
+    private JobRequestDto.JobRequestDtoBuilder validRequest() {
+        return JobRequestDto.builder()
+                .name("Scheduling window")
+                .cpuHours(10.0)
+                .originalStartTime(start)
+                .deadline(deadline)
+                .flexibilityWindowHours(2);
+    }
+
+    @Test
+    @DisplayName("createJob rejects a start time before the current hour")
+    void createJob_RejectsElapsedStart() {
+        JobRequestDto request = validRequest().originalStartTime(start.minusDays(1)).build();
+
+        assertThatThrownBy(() -> jobService.createJob(request, owner))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("is in the past")
+                .hasMessageContaining("2026-10-20T09:00");
+
+        verify(jobRepository, never()).save(any(Job.class));
+    }
+
+    @Test
+    @DisplayName("createJob accepts a start time in the hour already under way")
+    void createJob_AcceptsCurrentHour() {
+        // 09:00 is the hour the clock is in. Starts are on the hour, so refusing it would leave an
+        // operator unable to schedule anything in the hour they are working in.
+        JobRequestDto request = validRequest().originalStartTime(LocalDateTime.of(2026, 10, 20, 9, 0)).build();
+        when(jobRepository.save(any(Job.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        assertThat(jobService.createJob(request, owner).getOriginalStartTime())
+                .isEqualTo(LocalDateTime.of(2026, 10, 20, 9, 0));
+    }
+
+    @Test
+    @DisplayName("createJob rejects a deadline that has already passed")
+    void createJob_RejectsElapsedDeadline() {
+        JobRequestDto request = validRequest()
+                .originalStartTime(start.minusDays(2))
+                .deadline(start.minusDays(1))
+                .build();
+
+        assertThatThrownBy(() -> jobService.createJob(request, owner))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("is in the past");
+
+        verify(jobRepository, never()).save(any(Job.class));
+    }
+
+    @Test
+    @DisplayName("updateJob accepts an edit that leaves an elapsed start unchanged, such as the Lock switch")
+    void updateJob_AcceptsUnchangedElapsedStart() {
+        LocalDateTime elapsedStart = start.minusDays(1);
+        Job existing = Job.builder().id(203L).ownerEmail(owner).name("Started")
+                .cpuHours(10.0).gpuHours(0.0).originalStartTime(elapsedStart).deadline(deadline)
+                .flexibilityWindowHours(2).isExempt(false).status("PENDING").build();
+        when(jobRepository.findByIdAndOwnerEmail(203L, owner)).thenReturn(Optional.of(existing));
+        when(jobRepository.save(any(Job.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        JobRequestDto request = validRequest().name("Started").originalStartTime(elapsedStart).isExempt(true).build();
+
+        assertThat(jobService.updateJob(203L, request, owner).isExempt()).isTrue();
+    }
+
+    @Test
+    @DisplayName("updateJob is gated too, so a past start cannot be reintroduced by editing")
+    void updateJob_RejectsElapsedStart() {
+        JobRequestDto request = validRequest().originalStartTime(start.minusDays(1)).build();
+        // updateJob resolves the job before validating, so the lookup has to succeed to reach the check.
+        when(jobRepository.findByIdAndOwnerEmail(202L, owner))
+                .thenReturn(Optional.of(Job.builder().id(202L).ownerEmail(owner).build()));
+
+        assertThatThrownBy(() -> jobService.updateJob(202L, request, owner))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("is in the past");
+
+        verify(jobRepository, never()).save(any(Job.class));
     }
 }

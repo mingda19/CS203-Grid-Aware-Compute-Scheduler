@@ -1,0 +1,55 @@
+{
+  "answers": {
+    "referenced_job": {
+      "choice": "101",
+      "confidence": 1.0,
+      "probabilities": {
+        "100": 0.0,
+        "101": 1.0,
+        "102": 0.0
+      },
+      "type": "choice"
+    },
+    "refers_to_another_job": {
+      "noul": 0.89,
+      "type": "noul"
+    },
+    "states_any_constraint": {
+      "noul": 0.93,
+      "type": "noul"
+    },
+    "states_daily_window": {
+      "noul": 0.07,
+      "type": "noul"
+    },
+    "states_deadline": {
+      "noul": 0.38,
+      "type": "noul"
+    },
+    "states_flexibility": {
+      "noul": 0.04,
+      "type": "noul"
+    },
+    "states_mutual_exclusion": {
+      "noul": 0.11,
+      "type": "noul"
+    },
+    "states_precedence": {
+      "noul": 0.18,
+      "type": "noul"
+    },
+    "states_synchronized_finish": {
+      "noul": 0.94,
+      "type": "noul"
+    },
+    "this_job_first": {
+      "noul": 0.16,
+      "type": "noul"
+    }
+  },
+  "model": "jev-1.14.0",
+  "usage": {
+    "input_tokens": 606,
+    "output_tokens": 224
+  }
+}

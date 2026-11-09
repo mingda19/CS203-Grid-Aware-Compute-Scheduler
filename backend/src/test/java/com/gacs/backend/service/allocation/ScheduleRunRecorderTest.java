@@ -7,13 +7,11 @@ import com.gacs.backend.repository.ConstraintImpactRepository;
 import com.gacs.backend.repository.ScheduleExplanationRepository;
 import com.gacs.backend.repository.ScheduleItemRepository;
 import com.gacs.backend.repository.ScheduleRunRepository;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -25,19 +23,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Persistence tests for {@link ScheduleRunRecorder} (docs/schedule-explanation-design.md sections
- * 1, 2.7, 3-5): what actually lands in the database, both for the deterministic-fallback path
- * (Phase A, still the default with no API key configured) and the LLM path (Phase C). Real H2
- * database, matching the {@code JobRepositoryTest} convention - not mocked repositories, since the
- * thing actually worth proving here is that rows land correctly, with correct keys and constraints.
+ * Persistence tests for {@link ScheduleRunRecorder}: what actually lands in the database for a run,
+ * its items, its constraint impacts and its explanation. Real H2 database, matching the
+ * {@code JobRepositoryTest} convention - not mocked repositories, since the thing worth proving
+ * here is that rows land correctly, with correct keys and constraints.
  *
- * <p>{@code gacs.optimiser.explanation.enabled=true} is set for this whole class - safe for the
- * Phase A tests below, which never configure a client, since {@link ExplanationGenerator} checks
- * for a client before it ever checks {@code enabled} (so they still see {@code NOT_CONFIGURED}
- * either way); it is what lets the Phase C tests actually reach their hand-set fake client.
+ * <p>There is one explanation path now. The cases that covered an LLM writing this text, and the
+ * property that enabled it, went with the feature.
  */
 @SpringBootTest
-@TestPropertySource(properties = "gacs.optimiser.explanation.enabled=true")
 @Transactional
 class ScheduleRunRecorderTest {
 
@@ -54,15 +48,6 @@ class ScheduleRunRecorderTest {
     private ConstraintImpactRepository constraintImpacts;
     @Autowired
     private ScheduleExplanationRepository explanations;
-    @Autowired
-    private ExplanationGenerator explanationGenerator;
-
-    /** The generator bean is a shared singleton across test methods; never let one test's fake
-     *  client leak into the next. */
-    @AfterEach
-    void resetExplanationClient() {
-        explanationGenerator.setClient(null);
-    }
 
     @Test
     @DisplayName("an OPTIMISED job persists a run, an item, and both DEADLINE + FLEXIBILITY_WINDOW impacts")
@@ -148,10 +133,6 @@ class ScheduleRunRecorderTest {
 
         var run = runs.findByRunId(runId).orElseThrow();
         var explanation = explanations.findByScheduleRunId(run.getId()).orElseThrow();
-        assertThat(explanation.getSource()).isEqualTo("DETERMINISTIC_FALLBACK");
-        assertThat(explanation.getFallbackReason()).isEqualTo("NOT_CONFIGURED");
-        assertThat(explanation.getModelName()).isNull();
-        assertThat(explanation.getRawResponseJson()).isNull();
         assertThat(explanation.getNarrative()).isEqualTo(response.plainEnglishExplanation());
         assertThat(explanation.getHeadline()).isNotBlank();
     }
@@ -301,71 +282,7 @@ class ScheduleRunRecorderTest {
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
-    @Test
-    @DisplayName("LLM success: ScheduleExplanation.source=LLM, and item/impact text is overwritten with the LLM's")
-    void llmSuccessOverwritesTextAndPersistsLlmSource() {
-        OptimizerJob job = job(15L, T0, T0.plusHours(10), 6);
-        JobPlan plan = singleSlotPlan(job, T0.plusHours(3));
-        JobOutcome outcome = new JobOutcome(job, plan, PerJobStatus.OPTIMISED, null);
-        String runId = UUID.randomUUID().toString();
-        OptimizeResponseDto response = response(runId, List.of(outcome), List.of(dtoItem(outcome, 1.0, 0.5)));
 
-        LlmExplanationResponse llmResponse = new LlmExplanationResponse("LLM headline", "LLM narrative",
-                List.of(new LlmExplanationResponse.JobExplanation(15L, "LLM: this job's own explanation")),
-                List.of(
-                        new LlmExplanationResponse.ConstraintExplanation(15L, "DEADLINE", List.of(), "LLM: deadline"),
-                        new LlmExplanationResponse.ConstraintExplanation(15L, "FLEXIBILITY_WINDOW", List.of(),
-                                "LLM: flex window")));
-        explanationGenerator.setClient((run, savedItems, savedImpacts, timeout) ->
-                ExplanationGenerationResult.success(llmResponse, "{\"raw\":true}"));
-
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
-
-        var run = runs.findByRunId(runId).orElseThrow();
-        var explanation = explanations.findByScheduleRunId(run.getId()).orElseThrow();
-        assertThat(explanation.getSource()).isEqualTo("LLM");
-        assertThat(explanation.getFallbackReason()).isNull();
-        assertThat(explanation.getModelName()).isEqualTo("claude-haiku-4-5-20251001");
-        assertThat(explanation.getRawResponseJson()).isEqualTo("{\"raw\":true}");
-        assertThat(explanation.getHeadline()).isEqualTo("LLM headline");
-        assertThat(explanation.getNarrative()).isEqualTo("LLM narrative");
-
-        var item = onlyItemFor(response);
-        assertThat(item.getWhyThisPlacement()).isEqualTo("LLM: this job's own explanation");
-        var impacts = constraintImpacts.findByScheduleItemIdOrderByIdAsc(item.getId());
-        assertThat(impacts).extracting(ConstraintImpact::getNarrativeFragment)
-                .containsExactlyInAnyOrder("LLM: deadline", "LLM: flex window");
-    }
-
-    @Test
-    @DisplayName("LLM failure: falls back to DETERMINISTIC_FALLBACK with the real reason, text unchanged from Phase A")
-    void llmFailureFallsBackToDeterministicTextUnchanged() {
-        OptimizerJob job = job(16L, T0, T0.plusHours(10), 6);
-        JobPlan plan = singleSlotPlan(job, T0.plusHours(3));
-        JobOutcome outcome = new JobOutcome(job, plan, PerJobStatus.OPTIMISED, null);
-        String runId = UUID.randomUUID().toString();
-        OptimizeResponseDto response = response(runId, List.of(outcome), List.of(dtoItem(outcome, 1.0, 0.5)));
-
-        explanationGenerator.setClient((run, savedItems, savedImpacts, timeout) ->
-                ExplanationGenerationResult.failure(FallbackReason.TIMEOUT, null));
-
-        recorder.record(new AllocationResult(List.of(outcome), true), List.of(), List.of(), response, OWNER, ignored -> { });
-
-        var run = runs.findByRunId(runId).orElseThrow();
-        var explanation = explanations.findByScheduleRunId(run.getId()).orElseThrow();
-        assertThat(explanation.getSource()).isEqualTo("DETERMINISTIC_FALLBACK");
-        assertThat(explanation.getFallbackReason()).isEqualTo("TIMEOUT");
-        assertThat(explanation.getModelName()).isNull();
-        assertThat(explanation.getNarrative()).isEqualTo(response.plainEnglishExplanation());
-
-        // Exactly Phase A's wording - the LLM attempt having failed must not change a single word.
-        var item = onlyItemFor(response);
-        assertThat(item.getWhyThisPlacement()).isEqualTo("Placed on its cheapest feasible plan.");
-        var impacts = constraintImpacts.findByScheduleItemIdOrderByIdAsc(item.getId());
-        assertThat(impacts).extracting(ConstraintImpact::getNarrativeFragment)
-                .containsExactlyInAnyOrder("Finishes 6h before its deadline.",
-                        "Moved 3h later than its original start, using 3 of its 6h allowed window.");
-    }
 
     @Test
     @DisplayName("ABSOLUTE_TIME_WINDOW: a declared constraint persists its own impact row alongside the intrinsic ones")

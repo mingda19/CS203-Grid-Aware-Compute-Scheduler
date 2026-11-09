@@ -110,14 +110,65 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
     }
 
     /**
-     * Why a job got no plan. Request validation already ensured it could finish alone on the cluster, so
-     * the cause is either capacity taken by other jobs, or free capacity that only exists in hours without
-     * a forecast price (a job cannot start in or run across one).
+     * Why a job got no plan. Five causes, in the order checked:
+     * <ol>
+     *   <li>the job's whole window has elapsed, so there is no hour left it may use at all - request
+     *       validation permits this, because a job's baseline is not bounded by the current hour
+     *       (see {@link OptimizationProblem#earliestStart()});</li>
+     *   <li>it has no start slot: either every hour it could start in is behind the current hour, or
+     *       its window lies beyond where the price forecast reaches;</li>
+     *   <li>it has start slots, but too few hours remain before its deadline for the job to finish
+     *       even alone on the cluster;</li>
+     *   <li>the hours it may use are full, but free capacity exists in hours it cannot use for want of a
+     *       forecast price (unpriced, or priced only by an estimate), so a forecast would unblock it;</li>
+     *   <li>otherwise capacity taken by other jobs within the hours it was allowed to use.</li>
+     * </ol>
+     *
+     * <p>Cause 3 has to be checked before the capacity causes. Admission ({@code OptimizationProblemFactory.build})
+     * only guarantees a job fits alone between its <em>original</em> start and its deadline. Once that
+     * start has passed - whether the job was re-anchored to its deadline or simply has a flexibility
+     * window long enough to still reach the current hour - fewer hours are left, and the job can be
+     * unplaceable with the cluster completely idle. Reporting that as "cluster full" would send the
+     * operator to free up capacity that is not the problem.
      */
     private static String noRoomReason(OptimizerJob job, OptimizationProblem problem,
                                        Map<OptimizerJob, JobPlan> scheduled, ResidualCapacity free) {
-        JobWindow window = new JobWindow(job, problem.prices());
+        JobWindow window = problem.windowFor(job);
         LocalDateTime lastEnd = window.lastSlot().plusHours(1);
+        if (window.firstSlot().isAfter(window.lastSlot())) {
+            return "Deadline " + lastEnd.format(HOUR) + " UTC has passed: this job's whole window is "
+                    + "earlier than " + window.earliestStart().format(HOUR)
+                    + " UTC, the first hour that can still be scheduled. Update its start and deadline, "
+                    + "or retire it.";
+        }
+        if (window.startSlots().isEmpty()) {
+            // Two different causes land here, and the operator's remedy differs completely: the window
+            // is behind us, or it is ahead of where the price forecast reaches.
+            LocalDateTime latestStart = job.latestStart().isBefore(window.lastSlot())
+                    ? job.latestStart() : window.lastSlot();
+            if (window.firstSlot().isAfter(latestStart)) {
+                return "Window elapsed: every hour this job could start in is earlier than "
+                        + window.earliestStart().format(HOUR) + " UTC, the first hour that can still be "
+                        + "scheduled. Update its start time, or widen its flexibility window. Its "
+                        + "deadline " + lastEnd.format(HOUR) + " UTC has not passed, so you can also "
+                        + "re-run with \"reschedule jobs whose start time has passed\" to let it start "
+                        + "anywhere from now until then.";
+            }
+            return "Beyond the price forecast: no hour this job could start in has a published price "
+                    + "forecast yet, so there is no priced window to move it into. Its baseline is still "
+                    + "costed from estimated prices. It becomes schedulable once the forecast reaches "
+                    + window.firstSlot().format(HOUR) + " UTC.";
+        }
+        // Not enough hours left to finish, independently of what anyone else is using: checked against
+        // full cluster capacity, so if this fires the cluster could be idle and the job still would
+        // not fit. See this method's javadoc for why it must come before the capacity message.
+        if (!new BaselineCalculator(problem.capacity()).runFrom(job, window.firstSlot()).finishesByDeadline()) {
+            return "Not enough time left: only the hours from " + window.firstSlot().format(HOUR)
+                    + " to " + lastEnd.format(HOUR) + " UTC remain before this job's deadline, which is "
+                    + "less than it needs to finish even alone on the cluster. Extend its deadline, "
+                    + "reduce its CPU/GPU hours, or retire it.";
+        }
+        // The hours it may use are full, but free capacity exists where the forecast does not reach.
         String noPrice = unpricedHoursReason(job, problem.prices(), window, free);
         if (noPrice != null) {
             return noPrice;
@@ -125,14 +176,14 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
         // The job that took the slot: the first (by tie-break order) of those running inside this job's window.
         List<OptimizerJob> blockers = scheduled.entrySet().stream()
                 .filter(e -> e.getValue().allocations().stream().anyMatch(a ->
-                        !a.slotStart().isBefore(job.originalStartTime()) && a.slotStart().isBefore(lastEnd)))
+                        !a.slotStart().isBefore(window.firstSlot()) && a.slotStart().isBefore(lastEnd)))
                 .map(Map.Entry::getKey)
                 .sorted(OptimizationProblem.TIE_BREAK_ORDER)
                 .toList();
         String took = blockers.isEmpty() ? "other jobs use"
                 : "job " + blockers.get(0).label() + " (" + blockers.get(0).priority() + ")"
                 + (blockers.size() > 1 ? " and " + (blockers.size() - 1) + " other(s) use" : " uses");
-        return "Cluster full between " + job.originalStartTime().format(HOUR) + " and " + lastEnd.format(HOUR)
+        return "Cluster full between " + window.firstSlot().format(HOUR) + " and " + lastEnd.format(HOUR)
                 + " UTC: " + took + " the capacity this job needs to finish by its deadline.";
     }
 
@@ -145,10 +196,11 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
      */
     private static String unpricedHoursReason(OptimizerJob job, PriceSeries prices, JobWindow window,
                                               ResidualCapacity free) {
-        LocalDateTime first = job.originalStartTime();
+        LocalDateTime first = window.firstSlot();
         LocalDateTime lastSlot = window.lastSlot();
         List<LocalDateTime> priced = prices.asMap().keySet().stream()
-                .filter(hour -> !hour.isBefore(first) && !hour.isAfter(lastSlot)).sorted().toList();
+                .filter(hour -> !hour.isBefore(first) && !hour.isAfter(lastSlot) && prices.isCandidateAt(hour))
+                .sorted().toList();
         if (priced.size() >= Duration.between(first, lastSlot).toHours() + 1) {
             return null; // every hour of the window has a price
         }
@@ -170,7 +222,7 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
                 }
                 count++;
                 totalCap += cap;
-                if (prices.priceAt(hour).isEmpty()) {
+                if (!prices.isCandidateAt(hour)) {
                     runGapFrom = runGapFrom == null ? hour : runGapFrom;
                     runGapTo = hour;
                 }

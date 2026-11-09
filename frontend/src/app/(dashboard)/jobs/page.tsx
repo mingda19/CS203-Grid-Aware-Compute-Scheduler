@@ -2,20 +2,25 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { useRouter, useSearchParams } from "next/navigation"
 import { BriefcaseBusiness, Eye, Pencil, Plus, RefreshCw, Trash2, Sparkles, TrendingUp, Clock, Calendar, Server, Check, ArrowRight, SlidersHorizontal } from "lucide-react"
 import {
   jobsApi,
+  priceApi,
   optimizerApi,
   facilityApi,
   type JobExplanation,
   type ComputeJob,
   type ComputeJobPayload,
   type JobPriority,
+  type WorkloadCategory,
+  WORKLOAD_CATEGORY_LABELS,
+  PRIORITY_LABELS,
   type OptimizeResponse,
   type ScheduleItem,
   type FacilityConfig,
 } from "@/lib/api"
-import { formatSgtDateTime } from "@/lib/date-utils"
+import { currentMarketHourInput, formatMarketDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -28,20 +33,25 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { EstimatedPriceBadge } from "@/components/ui/estimated-price-badge"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
-import { toInputDate, toApiUtcDate, toOptimizeJobInput } from "@/lib/job-form-utils"
+import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, forecastEndMs, maxJobHours, usesEstimatedPrices, type ScheduleMode, toInputDate, toApiUtcDate, toOptimizeJobInput, windowHours } from "@/lib/job-form-utils"
+import { elapsedJobLabel, elapsedJobsConfirmation, elapsedStartJobs } from "@/lib/elapsed-jobs"
 import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
+import { ExplanationSummary } from "@/components/ui/explanation-summary"
 
 type FormState = {
   name: string
+  description: string
   cpuHours: string
   gpuHours: string
   originalStartTime: string
   deadline: string
-  flexibilityWindowHours: string
+  flexibilityWindowHours: string // "" = whole window (see effectiveFlexHours)
+  scheduleMode: ScheduleMode // "locked" is saved as isExempt
   priority: JobPriority
-  isExempt: boolean
+  workloadCategory: WorkloadCategory
   rawConstraints?: string | null
   parsedAt?: string | null
   confirmationOutcome?: ComputeJobPayload["confirmationOutcome"]
@@ -49,35 +59,38 @@ type FormState = {
 
 const blankForm = (): FormState => ({
   name: "",
+  description: "",
   cpuHours: "0",
   gpuHours: "0",
   originalStartTime: "",
   deadline: "",
-  flexibilityWindowHours: "0",
+  flexibilityWindowHours: "",
+  scheduleMode: "flexible",
   priority: "NORMAL",
-  isExempt: false,
+  workloadCategory: "ML_TRAINING",
 })
 
-const displayDate = (value?: string) => (value ? formatSgtDateTime(value) : "—")
+const displayDate = (value?: string) => (value ? formatMarketDateTime(value) : "—")
 
 const getWindowDurationText = (start: string, end: string) => {
-  if (!start || !end) return ""
-  try {
-    const [d1, t1] = start.split("T")
-    const [y1, m1, day1] = d1.split("-").map(Number)
-    const [h1, min1] = t1.split(":").map(Number)
-    const [d2, t2] = end.split("T")
-    const [y2, m2, day2] = d2.split("-").map(Number)
-    const [h2, min2] = t2.split(":").map(Number)
-    const date1 = new Date(Date.UTC(y1, m1 - 1, day1, h1, min1))
-    const date2 = new Date(Date.UTC(y2, m2 - 1, day2, h2, min2))
-    const diffHours = (date2.getTime() - date1.getTime()) / (1000 * 60 * 60)
-    if (diffHours < 0) return "⚠️ Deadline is before start time"
-    if (diffHours === 0) return "0 hours (starts at deadline)"
-    return `${diffHours % 1 === 0 ? diffHours : diffHours.toFixed(1)} hours span`
-  } catch {
-    return ""
-  }
+  const diffHours = windowHours(start, end)
+  if (!start || !end || !Number.isFinite(diffHours)) return ""
+  if (diffHours < 0) return "⚠️ Deadline is before start time"
+  if (diffHours === 0) return "0 hours (starts at deadline)"
+  return `${diffHours % 1 === 0 ? diffHours : diffHours.toFixed(1)} hours`
+}
+
+// The shell's "Create Job" button links here with ?new=1. useSearchParams needs its own Suspense boundary.
+function OpenCreateOnParam({ onOpen }: { onOpen: () => void }) {
+  const wanted = useSearchParams().get("new") === "1"
+  const router = useRouter()
+  React.useEffect(() => {
+    if (!wanted) return
+    onOpen()
+    router.replace("/jobs") // clear the param so a refresh does not reopen the form
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wanted])
+  return null
 }
 
 export default function JobsPage() {
@@ -91,6 +104,10 @@ export default function JobsPage() {
   const [editing, setEditing] = React.useState<ComputeJob | null>(null)
   const [viewing, setViewing] = React.useState<ComputeJob | null>(null)
   const [parseReviewPending, setParseReviewPending] = React.useState(false)
+  // End of the stored forecast (ms); null until known. Drives the "Estimated prices" flag and warning.
+  const [forecastEnd, setForecastEnd] = React.useState<number | null>(null)
+  const [template, setTemplate] = React.useState("") // label of the chosen template; "" = none
+  const [estimatedToConfirm, setEstimatedToConfirm] = React.useState<ComputeJobPayload | null>(null)
   const [form, setForm] = React.useState<FormState>(blankForm)
 
   // Optimizer state
@@ -98,6 +115,10 @@ export default function JobsPage() {
   const [optimizationPlan, setOptimizationPlan] = React.useState<OptimizeResponse | null>(null)
   const [optimizeOpen, setOptimizeOpen] = React.useState(false)
   const [jobToDelete, setJobToDelete] = React.useState<ComputeJob | null>(null)
+  // The jobs whose start time has already passed, held while the operator decides whether to let
+  // the optimiser reschedule them. Null means no question is pending - the common path, where no
+  // job has elapsed and optimising must not cost an extra click.
+  const [elapsedToConfirm, setElapsedToConfirm] = React.useState<ComputeJob[] | null>(null)
   const [deletingJob, setDeletingJob] = React.useState(false)
 
   const [jobExplanations, setJobExplanations] = React.useState<JobExplanation[]>([])
@@ -169,6 +190,14 @@ export default function JobsPage() {
     }))
   }
 
+  React.useEffect(() => {
+    let active = true
+    priceApi.getForecast({ location: facility.location, hours: 168 })
+      .then((r) => { if (active && r.data) setForecastEnd(forecastEndMs(r.data.points)) })
+      .catch(() => { if (active) setForecastEnd(null) }) // unknown forecast: show no warning rather than a wrong one
+    return () => { active = false }
+  }, [facility.location])
+
   const loadJobs = React.useCallback(async () => {
     setLoading(true)
     setError("")
@@ -209,10 +238,15 @@ export default function JobsPage() {
     }
   }, [])
 
+  const maxCpu = maxJobHours(Number(facility.maxCpuHours), form.originalStartTime, form.deadline)
+  const maxGpu = maxJobHours(Number(facility.maxGpuHours), form.originalStartTime, form.deadline)
+  const blockNumberKeys = (e: React.KeyboardEvent) => { if (BLOCKED_NUMBER_KEYS.includes(e.key)) e.preventDefault() }
+
   const openCreate = () => {
     setEditing(null)
     setParseReviewPending(false)
-    setForm(blankForm())
+    setTemplate("")
+    setForm({ ...blankForm(), originalStartTime: currentMarketHourInput() })
     setError("")
     setFormOpen(true)
   }
@@ -223,13 +257,15 @@ export default function JobsPage() {
     setError("")
     setForm({
       name: job.name,
+      description: job.description ?? "",
       cpuHours: String(job.cpuHours),
       gpuHours: String(job.gpuHours),
       originalStartTime: toInputDate(job.originalStartTime),
       deadline: toInputDate(job.deadline),
       flexibilityWindowHours: String(job.flexibilityWindowHours),
+      scheduleMode: job.isExempt ? "locked" : "flexible",
       priority: job.priority ?? "NORMAL",
-      isExempt: job.isExempt,
+      workloadCategory: job.workloadCategory ?? "ML_TRAINING",
       rawConstraints: job.rawConstraints,
       parsedAt: job.parsedAt,
       confirmationOutcome: job.confirmationOutcome,
@@ -252,34 +288,70 @@ export default function JobsPage() {
     event.preventDefault()
     setError("")
     if (parseReviewPending) {
-      setError("Confirm the proposed constraints or discard the text changes before saving.")
+      setError("Confirm the proposed constraints or restore the original text before saving.")
       return
     }
     const cpuHours = Number(form.cpuHours)
     const gpuHours = Number(form.gpuHours)
-    const flexibilityWindowHours = Number(form.flexibilityWindowHours)
+    if (!Number.isFinite(cpuHours) || !Number.isFinite(gpuHours) || cpuHours < 0 || gpuHours < 0) {
+      setError("CPU and GPU hours must be plain non-negative numbers.")
+      return
+    }
     if (cpuHours === 0 && gpuHours === 0) {
       setError("Enter CPU hours, GPU hours, or both.")
       return
     }
+    // Pasted values such as "1e9" pass the key block, so the cap is enforced here too.
+    if (cpuHours > maxCpu || gpuHours > maxGpu) {
+      setError(`Hours exceed what the facility can run in this window (max ${maxCpu} CPU-h, ${maxGpu} GPU-h).`)
+      return
+    }
     if (form.deadline < form.originalStartTime) {
-      setError("Deadline must be at or after the original start time.")
+      setError("Deadline must be at or after the start time.")
+      return
+    }
+    // Checked here as well as server-side so the operator sees market time rather than the API's UTC
+    // phrasing. A job starting in an elapsed hour can never be run, so it is rejected on save rather
+    // than left for the optimiser to report as unschedulable.
+    const earliest = currentMarketHourInput()
+    const flexibilityWindowHours = effectiveFlexHours(form.scheduleMode, form.flexibilityWindowHours, form.originalStartTime, form.deadline)
+    // On an edit only a time the operator changed is checked, matching the backend: a started job stays
+    // editable (Lock switch, hours) as long as the edit does not move a time into the past.
+    const startChanged = !editing || form.originalStartTime !== toInputDate(editing.originalStartTime)
+    const deadlineChanged = !editing || form.deadline !== toInputDate(editing.deadline)
+    if (startChanged && form.originalStartTime < earliest) {
+      setError(`Start time has passed. Choose ${earliest.replace("T", " ")} ${MARKET_ZONE_LABEL} or later.`)
+      return
+    }
+    if (deadlineChanged && form.deadline <= earliest) {
+      setError(`Deadline has passed. Choose a deadline after ${earliest.replace("T", " ")} ${MARKET_ZONE_LABEL}.`)
       return
     }
     // originalStartTime is formatted to exact hour (00 minutes) per optimizer specification
     const payload: ComputeJobPayload = {
       name: form.name.trim(),
+      description: form.description.trim(),
       cpuHours,
       gpuHours,
       originalStartTime: toApiUtcDate(form.originalStartTime, true),
       deadline: toApiUtcDate(form.deadline, false),
       flexibilityWindowHours,
       priority: form.priority,
-      isExempt: form.isExempt,
+      workloadCategory: form.workloadCategory,
+      isExempt: form.scheduleMode === "locked",
       rawConstraints: form.rawConstraints,
       parsedAt: form.parsedAt,
       confirmationOutcome: form.confirmationOutcome,
     }
+    // Ask once when the save newly pushes the window past the forecast (an edit that already was past it stays quiet).
+    if (usesEstimatedPrices(payload.deadline, forecastEnd) && !(editing && usesEstimatedPrices(editing.deadline, forecastEnd))) {
+      setEstimatedToConfirm(payload)
+      return
+    }
+    await persist(payload)
+  }
+
+  const persist = async (payload: ComputeJobPayload) => {
     setSaving(true)
     try {
       if (editing) await jobsApi.update(editing.id, payload)
@@ -304,6 +376,7 @@ export default function JobsPage() {
       deadline: job.deadline,
       flexibilityWindowHours: job.flexibilityWindowHours,
       priority: job.priority ?? "NORMAL",
+      workloadCategory: job.workloadCategory ?? "ML_TRAINING",
       isExempt,
     }
     try {
@@ -334,23 +407,51 @@ export default function JobsPage() {
     }
   }
 
-  // Schedule Optimization execution
+  /** The jobs this run would submit: everything not already cancelled, completed or running. */
+  const schedulableJobs = () => jobs.filter(job => !["CANCELLED", "COMPLETED", "RUNNING"].includes(job.status))
+
+  /**
+   * Schedule optimisation, with one question in front of it.
+   *
+   * A job whose start time has passed has a flexibility window anchored to a time that no longer
+   * exists, so the optimiser has nowhere to put it and reports it NO_FEASIBLE_SLOT even when its
+   * deadline is hours away. It can instead be rescheduled into the hours between now and that
+   * deadline - but that places it outside the window the operator specified, so it is their call,
+   * not an inference from the data. Hence the confirmation, which names the jobs.
+   *
+   * If nothing has elapsed there is no dialog: the common path keeps exactly one click.
+   */
   const runOptimization = async () => {
     if (jobs.length === 0) {
       setError("Add at least one compute job before running schedule optimization.")
       return
     }
+    const pending = schedulableJobs()
+    if (!pending.length) {
+      setError("No pending jobs are available for optimization.")
+      return
+    }
+    const elapsed = elapsedStartJobs(pending)
+    if (elapsed.length) {
+      setError("")
+      setElapsedToConfirm(elapsed)
+      return
+    }
+    await optimize(false)
+  }
+
+  const optimize = async (rescheduleElapsedJobs: boolean) => {
     setError("")
     setOptimizing(true)
 
     // Build optimize payload ensuring originalStartTime is truncated to the hour
-    const schedulableJobs = jobs.filter(job => !["CANCELLED", "COMPLETED", "RUNNING"].includes(job.status))
-    if (!schedulableJobs.length) {
+    const pending = schedulableJobs()
+    if (!pending.length) {
       setError("No pending jobs are available for optimization.")
       setOptimizing(false)
       return
     }
-    const optimizeJobs = schedulableJobs.map(toOptimizeJobInput)
+    const optimizeJobs = pending.map(toOptimizeJobInput)
 
     try {
       const response = await optimizerApi.optimize({
@@ -360,6 +461,8 @@ export default function JobsPage() {
           maxConcurrentCpuHours: Number(facility.maxCpuHours),
           maxConcurrentGpuHours: Number(facility.maxGpuHours),
         },
+        // Only ever true because the operator just confirmed it for these jobs.
+        ...(rescheduleElapsedJobs ? { rescheduleElapsedJobs: true } : {}),
       })
       if (!response.success || !response.data) {
         throw new Error(response.message || "Failed to generate schedule")
@@ -376,6 +479,7 @@ export default function JobsPage() {
 
   return (
     <div className="space-y-6" id="jobs-root">
+      <React.Suspense fallback={null}><OpenCreateOnParam onOpen={openCreate} /></React.Suspense>
       <div className="flex flex-col gap-4 rounded-2xl border border-border bg-gradient-to-r from-card to-card/60 p-6 shadow-xs sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -383,7 +487,7 @@ export default function JobsPage() {
             <h1 className="text-2xl font-bold tracking-tight">Compute Jobs</h1>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Manage compute workloads and run grid-aware schedule optimization against ERCOT LMP pricing signals.
+            Manage compute jobs and run grid-aware schedule optimization against ERCOT LMP pricing signals.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -406,7 +510,7 @@ export default function JobsPage() {
             <RefreshCw className="mr-2 h-4 w-4" />
             Refresh
           </Button>
-          <Button onClick={openCreate} className="bg-emerald-600 text-white hover:bg-emerald-700">
+          <Button onClick={openCreate}>
             <Plus className="mr-2 h-4 w-4" />
             New job
           </Button>
@@ -584,7 +688,7 @@ export default function JobsPage() {
                   type="submit"
                   size="sm"
                   disabled={facilityLoading || facilitySaving}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5 font-medium cursor-pointer"
+                  className="gap-1.5 font-medium cursor-pointer"
                 >
                   <Check className="h-3.5 w-3.5" />
                   {facilityLoading ? "Loading…" : facilitySaving ? "Saving to DB…" : "Save Facility Envelope"}
@@ -608,7 +712,7 @@ export default function JobsPage() {
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="text-lg">Your Compute Workloads</CardTitle>
+              <CardTitle className="text-lg">Your Compute Jobs</CardTitle>
               <CardDescription>
                 {jobs.length} registered {jobs.length === 1 ? "job" : "jobs"} available for scheduling
               </CardDescription>
@@ -637,7 +741,7 @@ export default function JobsPage() {
               <p className="mt-1 text-sm text-muted-foreground">
                 Create a compute job with CPU/GPU requirements and deadlines to start optimizing.
               </p>
-              <Button onClick={openCreate} className="mt-4 bg-emerald-600 text-white hover:bg-emerald-700">
+              <Button onClick={openCreate} className="mt-4">
                 <Plus className="mr-2 h-4 w-4" />
                 Create your first job
               </Button>
@@ -647,13 +751,15 @@ export default function JobsPage() {
               <table className="w-full min-w-[920px] text-left text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
+                    <th className="px-3 py-3">ID</th>
                     <th className="px-3 py-3">Name</th>
                     <th className="px-3 py-3">CPU / GPU hours</th>
-                    <th className="px-3 py-3">Original start (SGT)</th>
-                    <th className="px-3 py-3">Deadline (SGT)</th>
+                    <th className="px-3 py-3">Original start ({MARKET_ZONE_LABEL})</th>
+                    <th className="px-3 py-3">Deadline ({MARKET_ZONE_LABEL})</th>
                     <th className="px-3 py-3">Flexibility</th>
                     <th className="px-3 py-3">Priority</th>
-                    <th className="px-3 py-3">Exemption</th>
+                    <th className="px-3 py-3">Category</th>
+                    <th className="px-3 py-3">Lock</th>
                     <th className="px-3 py-3">Status</th>
                     <th className="px-3 py-3">Actions</th>
                   </tr>
@@ -661,14 +767,19 @@ export default function JobsPage() {
                 <tbody>
                   {jobs.map((job) => (
                     <tr key={job.id} className="border-b last:border-0 hover:bg-muted/30">
-                      <td className="px-3 py-3 font-medium text-foreground">{job.name}</td>
+                      <td className="px-3 py-3 font-mono text-xs text-muted-foreground">#{job.id}</td>
+                      <td className="px-3 py-3 font-medium text-foreground">
+                        {job.name}
+                        {usesEstimatedPrices(job.deadline, forecastEnd) && <div className="mt-1"><EstimatedPriceBadge /></div>}
+                      </td>
                       <td className="px-3 py-3">
                         {job.cpuHours} CPU · {job.gpuHours} GPU
                       </td>
                       <td className="px-3 py-3">{displayDate(job.originalStartTime)}</td>
                       <td className="px-3 py-3">{displayDate(job.deadline)}</td>
                       <td className="px-3 py-3">{`${job.flexibilityWindowHours}h`}</td>
-                      <td className="px-3 py-3">{job.priority ?? "NORMAL"}</td>
+                      <td className="px-3 py-3">{PRIORITY_LABELS[job.priority ?? "NORMAL"]}</td>
+                      <td className="px-3 py-3">{WORKLOAD_CATEGORY_LABELS[job.workloadCategory ?? "ML_TRAINING"]}</td>
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-2">
                           <Checkbox
@@ -676,12 +787,11 @@ export default function JobsPage() {
                             checked={job.isExempt}
                             disabled={updatingExemptionId === job.id}
                             onCheckedChange={(checked) => void setJobExempt(job, Boolean(checked))}
-                            aria-label={`${job.isExempt ? "Remove exemption from" : "Mark"} ${job.name} ${job.isExempt ? "as reschedulable" : "as exempt"
-                              }`}
+                            aria-label={`${job.isExempt ? "Unlock" : "Lock"} ${job.name}`}
                           />
                           {job.isExempt ? (
                             <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
-                              Exempt
+                              Locked
                             </span>
                           ) : (
                             <span className="text-xs text-muted-foreground">Flexible</span>
@@ -727,6 +837,58 @@ export default function JobsPage() {
           )}
         </CardContent>
       </Card>
+
+      {/*
+        Elapsed-start confirmation. Shown only when at least one job's start time has already gone
+        by; optimising when nothing has elapsed does not pass through here at all. Choosing
+        "Optimize anyway" is what sends rescheduleElapsedJobs - the operator's explicit consent to
+        placement outside the window they originally set.
+      */}
+      <Dialog open={!!elapsedToConfirm} onOpenChange={open => { if (!open && !optimizing) setElapsedToConfirm(null) }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {elapsedToConfirm?.length === 1
+                ? "One job's start time has passed"
+                : `${elapsedToConfirm?.length ?? 0} jobs' start times have passed`}
+            </DialogTitle>
+            <DialogDescription>
+              {elapsedToConfirm ? elapsedJobsConfirmation(elapsedToConfirm.length) : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-56 overflow-y-auto rounded-md border p-3">
+            <ul className="space-y-1 text-sm">
+              {elapsedToConfirm?.map(job => (
+                <li key={job.id} className="flex flex-wrap items-baseline justify-between gap-2">
+                  {/* Name and id, not the id alone: an operator cannot tell which job "#118" is. */}
+                  <span className="font-medium">{elapsedJobLabel(job)}</span>
+                  <span className="text-xs text-muted-foreground">
+                    was due {formatMarketDateTime(job.originalStartTime)} {MARKET_ZONE_LABEL}, deadline{" "}
+                    {formatMarketDateTime(job.deadline)} {MARKET_ZONE_LABEL}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={optimizing}
+              onClick={() => setElapsedToConfirm(null)}>Cancel</Button>
+            {/*
+              Optimising without the flag stays available: it is today's behaviour, and an operator
+              who would rather fix the start times themselves should not have to accept a widened
+              window to see the rest of the plan.
+            */}
+            <Button type="button" variant="outline" disabled={optimizing}
+              onClick={() => { setElapsedToConfirm(null); void optimize(false) }}>
+              Leave them out
+            </Button>
+            <Button type="button" disabled={optimizing}
+              onClick={() => { setElapsedToConfirm(null); void optimize(true) }}>
+              {optimizing ? "Solving Schedule…" : "Reschedule and optimize"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Optimizer Results Dialog */}
       <Dialog open={optimizeOpen} onOpenChange={setOptimizeOpen}>
@@ -815,14 +977,7 @@ export default function JobsPage() {
                   <Clock className="h-3.5 w-3.5 text-teal-500" />
                   Solver Rationale & Summary
                 </span>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  {optimizationPlan.plainEnglishExplanation}
-                </p>
-                {optimizationPlan.usedSeededFallbackPrices && (
-                  <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-2">
-                    Note: Stored forecast prices were unavailable for parts of the horizon; historical fallback curve was utilized.
-                  </p>
-                )}
+                <ExplanationSummary text={optimizationPlan.plainEnglishExplanation} />
               </div>
 
               {/* Schedule Items Table */}
@@ -836,8 +991,8 @@ export default function JobsPage() {
                       <tr>
                         <th className="py-2.5 px-3">Job</th>
                         <th className="py-2.5 px-3">Outcome</th>
-                        <th className="py-2.5 px-3">Scheduled Start (SGT)</th>
-                        <th className="py-2.5 px-3">Scheduled End (SGT)</th>
+                        <th className="py-2.5 px-3">Scheduled Start ({MARKET_ZONE_LABEL})</th>
+                        <th className="py-2.5 px-3">Scheduled End ({MARKET_ZONE_LABEL})</th>
                         <th className="py-2.5 px-3 text-right">Cost</th>
                         <th className="py-2.5 px-3 text-right">Savings</th>
                       </tr>
@@ -846,7 +1001,7 @@ export default function JobsPage() {
                       {optimizationPlan.items.map((item: ScheduleItem) => (
                         <React.Fragment key={item.jobId}>
                         <tr className="hover:bg-muted/20">
-                          <td className="py-2.5 px-3 font-medium text-foreground">{item.jobName}</td>
+                          <td className="py-2.5 px-3 font-medium text-foreground">{item.jobName} <span className="font-mono text-[10px] font-normal text-muted-foreground">#{item.jobId}</span></td>
                           <td className="py-2.5 px-3">
                             <span
                               className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${item.perJobStatus === "OPTIMISED"
@@ -896,7 +1051,7 @@ export default function JobsPage() {
           <DialogFooter className="flex flex-col sm:flex-row gap-2 justify-between">
             {optimizationPlan && (
               <div className="space-y-2">
-                <Button type="button" asChild className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700">
+                <Button type="button" asChild className="gap-1.5">
                   <Link href={`/approvals?runId=${encodeURIComponent(optimizationPlan.runId)}`}>
                     Review and approve <ArrowRight className="h-3.5 w-3.5" />
                   </Link>
@@ -918,36 +1073,11 @@ export default function JobsPage() {
             <DialogHeader>
               <DialogTitle>{editing ? "Edit compute job" : "Create compute job"}</DialogTitle>
               <DialogDescription>
-                Enter resource requirements and allowed scheduling window. Times are shown in Singapore time (SGT).
+                Enter resource requirements and allowed scheduling window. Times are shown in ERCOT market local time (Central).
               </DialogDescription>
             </DialogHeader>
-            {formOpen && <ConstraintParseReview
-              draft={{
-                originalStartTime: form.originalStartTime ? toApiUtcDate(form.originalStartTime, true) : null,
-                deadline: form.deadline ? toApiUtcDate(form.deadline) : null,
-                flexibilityWindowHours: form.flexibilityWindowHours === "" ? null : Number(form.flexibilityWindowHours),
-                priority: form.priority,
-                isExempt: form.isExempt,
-              }}
-              confirmedSource={form.rawConstraints ?? ""}
-              onPendingChange={setParseReviewPending}
-              onConfirm={(result, rawConstraints) => {
-                setForm((current) => ({
-                  ...current,
-                  originalStartTime: result.fields.originalStartTime ? toInputDate(result.fields.originalStartTime) : "",
-                  deadline: result.fields.deadline ? toInputDate(result.fields.deadline) : "",
-                  flexibilityWindowHours: result.fields.flexibilityWindowHours == null ? "" : String(result.fields.flexibilityWindowHours),
-                  priority: result.fields.priority ?? current.priority,
-                  isExempt: result.fields.isExempt ?? current.isExempt,
-                  rawConstraints,
-                  parsedAt: result.parsedAt,
-                  confirmationOutcome: "CONFIRMED",
-                }))
-                setError("")
-              }}
-            />}
-            <div className="grid gap-4 py-5 sm:grid-cols-2">
-              <Field label="Job name">
+            <div className="grid gap-4 py-6 sm:grid-cols-2">
+              <Field label="Job title">
                 <Input
                   value={form.name}
                   maxLength={255}
@@ -956,7 +1086,35 @@ export default function JobsPage() {
                   placeholder="e.g. Model fine-tuning run"
                 />
               </Field>
-              <div className="grid grid-cols-2 gap-3">
+              {!editing && (
+                <Field label="Template (optional)">
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={template}
+                    onChange={(e) => {
+                      setTemplate(e.target.value)
+                      const t = JOB_TEMPLATES.find((item) => item.label === e.target.value)
+                      if (t) setForm((f) => ({ ...f, cpuHours: t.cpuHours, gpuHours: t.gpuHours, workloadCategory: t.workloadCategory, priority: t.priority, name: f.name || t.label }))
+                    }}
+                  >
+                    <option value="">None</option>
+                    {JOB_TEMPLATES.map((t) => <option key={t.label} value={t.label}>{t.label}</option>)}
+                  </select>
+                </Field>
+              )}
+              <div className="space-y-2 text-sm sm:col-span-2">
+                <label htmlFor="job-description" className="block font-medium">Description (optional)</label>
+                <textarea
+                  id="job-description"
+                  rows={3}
+                  maxLength={1000}
+                  className="w-full rounded-md border bg-background px-4 py-2 text-sm"
+                  placeholder="What this job does"
+                  value={form.description}
+                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4 sm:col-span-2">
                 <Field label="CPU hours">
                   <Input
                     type="number"
@@ -964,6 +1122,7 @@ export default function JobsPage() {
                     step="any"
                     required
                     value={form.cpuHours}
+                    onKeyDown={blockNumberKeys}
                     onChange={(e) => setForm({ ...form, cpuHours: e.target.value })}
                   />
                 </Field>
@@ -974,86 +1133,146 @@ export default function JobsPage() {
                     step="any"
                     required
                     value={form.gpuHours}
+                    onKeyDown={blockNumberKeys}
                     onChange={(e) => setForm({ ...form, gpuHours: e.target.value })}
                   />
                 </Field>
               </div>
-              <Field label="Original start time (SGT)">
-                <JobDateTimePicker
-                  id="job-original-start"
-                  value={form.originalStartTime}
-                  onChange={(val) => setForm({ ...form, originalStartTime: val })}
-                  placeholder="Select start date & hour (SGT)..."
-                  mode="start"
-                  required
-                />
-              </Field>
-              <Field label="Deadline (SGT)">
-                <JobDateTimePicker
-                  id="job-deadline"
-                  value={form.deadline}
-                  onChange={(val) => setForm({ ...form, deadline: val })}
-                  placeholder="Select deadline (SGT)..."
-                  mode="deadline"
-                  minDateTime={form.originalStartTime}
-                  required
-                />
-              </Field>
-              {form.originalStartTime && form.deadline && (
-                <div className="rounded-md bg-muted/50 p-2.5 text-xs flex items-center justify-between border border-border/60">
-                  <span className="text-muted-foreground flex items-center gap-1.5">
+              <div className="grid gap-4 sm:col-span-2 sm:grid-cols-2">
+                <Field label="Priority">
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={form.priority}
+                    onChange={(e) => setForm({ ...form, priority: e.target.value as JobPriority })}
+                  >
+                    {(Object.keys(PRIORITY_LABELS) as JobPriority[]).map((p) => (
+                      <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Job type">
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={form.workloadCategory}
+                    onChange={(e) => setForm({ ...form, workloadCategory: e.target.value as WorkloadCategory })}
+                  >
+                    {Object.entries(WORKLOAD_CATEGORY_LABELS).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <div className="grid content-start gap-4 rounded-md border p-4 sm:col-span-2">
+                <Field label={`Start time (${MARKET_ZONE_LABEL})`}>
+                  <JobDateTimePicker
+                    id="job-original-start"
+                    value={form.originalStartTime}
+                    onChange={(val) => setForm({ ...form, originalStartTime: val })}
+                    placeholder={`Select start date & hour (${MARKET_ZONE_LABEL})...`}
+                    mode="start"
+                    required
+                  />
+                </Field>
+                <Field label={`Deadline (${MARKET_ZONE_LABEL})`}>
+                  <JobDateTimePicker
+                    id="job-deadline"
+                    value={form.deadline}
+                    onChange={(val) => setForm({ ...form, deadline: val })}
+                    placeholder={`Select deadline (${MARKET_ZONE_LABEL})...`}
+                    mode="deadline"
+                    minDateTime={form.originalStartTime}
+                    required
+                  />
+                </Field>
+                <div className="mt-2 rounded-md bg-muted/50 p-2 text-xs flex min-h-10 items-center justify-between border border-border/60">
+                  <span className="text-muted-foreground flex items-center gap-2">
                     <Clock className="h-3.5 w-3.5 text-emerald-500" />
                     <span>Scheduling Window:</span>
                   </span>
-                  <span className={`font-mono font-medium ${form.deadline < form.originalStartTime ? "text-destructive font-semibold" : "text-foreground"}`}>
-                    {getWindowDurationText(form.originalStartTime, form.deadline)}
+                  <span className={`font-mono font-medium ${form.deadline && form.deadline < form.originalStartTime ? "text-destructive font-semibold" : "text-foreground"}`}>
+                    {getWindowDurationText(form.originalStartTime, form.deadline) || "—"}
                   </span>
                 </div>
-              )}
-              <Field label="Flexibility window (hours)">
-                <Input
-                  type="number"
-                  min="0"
-                  step="1"
-                  required
-                  value={form.flexibilityWindowHours}
-                  onChange={(e) => setForm({ ...form, flexibilityWindowHours: e.target.value })}
-                />
-              </Field>
-              <Field label="Priority">
-                <select
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  value={form.priority}
-                  onChange={(e) => setForm({ ...form, priority: e.target.value as JobPriority })}
-                >
-                  <option value="CRITICAL">CRITICAL</option>
-                  <option value="HIGH">HIGH</option>
-                  <option value="NORMAL">NORMAL</option>
-                  <option value="LOW">LOW</option>
-                </select>
-              </Field>
-              <div className="flex items-center gap-3 self-end rounded-md border p-3 text-sm">
-                <Checkbox
-                  id="job-is-exempt"
-                  checked={form.isExempt}
-                  onCheckedChange={(isExempt) => setForm({ ...form, isExempt: Boolean(isExempt) })}
-                />
-                <label htmlFor="job-is-exempt" className="cursor-pointer">
-                  <span className="block font-medium">Exempt from rescheduling</span>
-                  <span className="text-xs text-muted-foreground">Keep this job at its original start time.</span>
-                </label>
               </div>
+              <fieldset className="grid gap-2 sm:col-span-2">
+                <legend className="mb-2 text-sm font-medium">Scheduling</legend>
+                {([["flexible", "Flexible schedule", "The scheduler may move this job to cheaper hours before the deadline."],
+                  ["locked", "Lock schedule", "The scheduler will not move this job. It runs at the start time you choose."]] as const).map(([mode, label, help]) => (
+                  <label key={mode} className="flex cursor-pointer items-start gap-2 rounded-md border p-4 text-sm">
+                    <input
+                      type="radio"
+                      name="schedule-mode"
+                      className="mt-1"
+                      checked={form.scheduleMode === mode}
+                      onChange={() => setForm({ ...form, scheduleMode: mode, flexibilityWindowHours: "" })}
+                    />
+                    <span>
+                      <span className="block font-medium">{label}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {mode === "flexible" && Number(form.flexibilityWindowHours) > 0 ? `The scheduler may delay the start by up to ${form.flexibilityWindowHours} h.` : help}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
             </div>
-            {error && <p role="alert" className="mb-3 text-sm text-destructive">{error}</p>}
-            <DialogFooter>
+            {formOpen && <ConstraintParseReview
+              draft={{
+                originalStartTime: form.originalStartTime ? toApiUtcDate(form.originalStartTime, true) : null,
+                deadline: form.deadline ? toApiUtcDate(form.deadline) : null,
+                flexibilityWindowHours: form.scheduleMode === "locked" ? 0 : form.flexibilityWindowHours === "" ? null : Number(form.flexibilityWindowHours),
+                priority: form.priority,
+                isExempt: form.scheduleMode === "locked",
+              }}
+              confirmedSource={form.rawConstraints ?? ""}
+              onPendingChange={setParseReviewPending}
+              onConfirm={(result, rawConstraints) => {
+                setForm((current) => ({
+                  ...current,
+                  originalStartTime: result.fields.originalStartTime ? toInputDate(result.fields.originalStartTime) : "",
+                  deadline: result.fields.deadline ? toInputDate(result.fields.deadline) : "",
+                  flexibilityWindowHours: result.fields.flexibilityWindowHours == null ? "" : String(result.fields.flexibilityWindowHours),
+                  scheduleMode: (result.fields.isExempt ?? current.scheduleMode === "locked") ? "locked" : "flexible",
+                  priority: result.fields.priority ?? current.priority,
+                  rawConstraints,
+                  parsedAt: result.parsedAt,
+                  confirmationOutcome: "CONFIRMED",
+                }))
+                setError("")
+              }}
+            />}
+            {error && <p role="alert" className="my-4 text-sm text-destructive">{error}</p>}
+            <DialogFooter className="mt-6">
               <Button type="button" variant="outline" onClick={() => setFormOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={saving || parseReviewPending} className="bg-emerald-600 text-white hover:bg-emerald-700">
+              <Button type="submit" disabled={saving || parseReviewPending}>
                 {saving ? "Saving…" : editing ? "Save changes" : "Create job"}
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Estimated-price confirmation (masterplan D10) */}
+      <Dialog open={!!estimatedToConfirm} onOpenChange={(open) => { if (!open && !saving) setEstimatedToConfirm(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Prices are estimated for this job</DialogTitle>
+            <DialogDescription>
+              Prices for this period are estimated from history, not forecast. The plan can change when forecast data arrives.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={saving} onClick={() => setEstimatedToConfirm(null)}>Cancel</Button>
+            <Button
+              type="button"
+              disabled={saving}
+              onClick={async () => { const p = estimatedToConfirm; setEstimatedToConfirm(null); if (p) await persist(p) }}
+            >
+              {editing ? "Save changes" : "Create job"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -1067,14 +1286,17 @@ export default function JobsPage() {
           {viewing && (
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 py-3 text-sm">
               <Detail label="Job ID" value={String(viewing.id)} />
+              {viewing.description && <Detail label="Description" value={viewing.description} />}
+              {usesEstimatedPrices(viewing.deadline, forecastEnd) && <EstimatedPriceBadge />}
               <Detail label="Status" value={viewing.status} />
               <Detail label="CPU hours" value={String(viewing.cpuHours)} />
               <Detail label="GPU hours" value={String(viewing.gpuHours)} />
               <Detail label="Original start" value={displayDate(viewing.originalStartTime)} />
               <Detail label="Deadline" value={displayDate(viewing.deadline)} />
               <Detail label="Flexibility" value={`${viewing.flexibilityWindowHours} hours`} />
-              <Detail label="Priority" value={viewing.priority ?? "NORMAL"} />
-              <Detail label="Exempt" value={viewing.isExempt ? "Yes" : "No"} />
+              <Detail label="Priority" value={PRIORITY_LABELS[viewing.priority ?? "NORMAL"]} />
+              <Detail label="Job type" value={WORKLOAD_CATEGORY_LABELS[viewing.workloadCategory ?? "ML_TRAINING"]} />
+              <Detail label="Locked" value={viewing.isExempt ? "Yes" : "No"} />
             </dl>
           )}
           <DialogFooter>
@@ -1089,12 +1311,16 @@ export default function JobsPage() {
           <DialogHeader>
             <DialogTitle>Delete compute job</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete <strong className="text-foreground">{jobToDelete?.name}</strong>? This action cannot be undone and will remove all associated resource specifications.
+              Are you sure you want to delete <strong className="text-foreground">{jobToDelete?.name}</strong> (#{jobToDelete?.id})? This action cannot be undone and will remove all associated resource specifications.
             </DialogDescription>
           </DialogHeader>
 
           {jobToDelete && (
             <div className="rounded-lg border bg-muted/40 p-3 text-xs space-y-1.5 text-muted-foreground">
+              <div className="flex justify-between">
+                <span>Job ID:</span>
+                <span className="font-medium text-foreground font-mono">#{jobToDelete.id}</span>
+              </div>
               <div className="flex justify-between">
                 <span>Priority:</span>
                 <span className="font-medium text-foreground">{jobToDelete.priority}</span>
@@ -1104,12 +1330,12 @@ export default function JobsPage() {
                 <span className="font-medium text-foreground">{jobToDelete.cpuHours} CPU-hrs · {jobToDelete.gpuHours} GPU-hrs</span>
               </div>
               <div className="flex justify-between">
-                <span>Baseline Start (SGT):</span>
-                <span className="font-medium text-foreground">{formatSgtDateTime(jobToDelete.originalStartTime)}</span>
+                <span>Baseline Start ({MARKET_ZONE_LABEL}):</span>
+                <span className="font-medium text-foreground">{formatMarketDateTime(jobToDelete.originalStartTime)}</span>
               </div>
               <div className="flex justify-between">
-                <span>Deadline (SGT):</span>
-                <span className="font-medium text-foreground">{formatSgtDateTime(jobToDelete.deadline)}</span>
+                <span>Deadline ({MARKET_ZONE_LABEL}):</span>
+                <span className="font-medium text-foreground">{formatMarketDateTime(jobToDelete.deadline)}</span>
               </div>
             </div>
           )}
@@ -1138,7 +1364,7 @@ export default function JobsPage() {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="space-y-1.5 text-sm">
+    <label className="space-y-2 text-sm">
       <span className="block font-medium">{label}</span>
       {children}
     </label>

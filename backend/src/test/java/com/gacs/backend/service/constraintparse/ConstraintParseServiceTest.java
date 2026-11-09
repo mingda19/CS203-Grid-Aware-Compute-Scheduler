@@ -19,19 +19,20 @@ import static org.mockito.Mockito.verifyNoInteractions;
 
 class ConstraintParseServiceTest {
 
-    /** Monday 2026-11-02 14:00 in Singapore. */
+    /** Monday 2026-11-02 00:00 in ERCOT market time (CST, UTC-6). */
     private static final Instant NOW = Instant.parse("2026-11-02T06:00:00Z");
 
     private final JobRepository repository = mock(JobRepository.class);
     private final ConstraintParseService service = new ConstraintParseService(new RuleBasedConstraintParser(),
-            new JobService(repository, org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class)), Clock.fixed(NOW, ZoneOffset.UTC), "Asia/Singapore");
+            new JobService(repository, org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class), Clock.fixed(NOW, ZoneOffset.UTC)), Clock.fixed(NOW, ZoneOffset.UTC), "America/Chicago");
 
     @Test
-    @DisplayName("Times are read in SGT by default and returned in UTC")
-    void defaultZoneIsSingapore() {
+    @DisplayName("Times are read in ERCOT market time by default and returned in UTC")
+    void defaultZoneIsMarketLocal() {
         ConstraintParseResponseDto r = service.parse(request("finish by 6pm", null));
-        assertThat(r.timeZone()).isEqualTo("Asia/Singapore");
-        assertThat(r.fields().deadline()).isEqualTo(LocalDateTime.of(2026, 11, 2, 10, 0));
+        assertThat(r.timeZone()).isEqualTo("America/Chicago");
+        // 18:00 on 02 Nov in CST (UTC-6) is 00:00 on 03 Nov in UTC
+        assertThat(r.fields().deadline()).isEqualTo(LocalDateTime.of(2026, 11, 3, 0, 0));
     }
 
     @Test

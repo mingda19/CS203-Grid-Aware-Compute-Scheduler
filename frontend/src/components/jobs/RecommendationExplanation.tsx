@@ -10,8 +10,19 @@ export function RecommendationExplanation({ item, explanation, loading, error, o
 }) {
   return (
     <details className="rounded-lg border bg-muted/30 p-3 text-xs">
-      <summary className="cursor-pointer font-medium">Why this recommendation? — {item.jobName}</summary>
+      <summary className="cursor-pointer font-medium">Why this recommendation? — {item.jobName} (#{item.jobId})</summary>
       <div className="mt-3 space-y-3">
+        {/*
+          This job moved because its start time had passed, not to find a cheaper hour, and its
+          savings compare against a baseline that already partly elapsed. Said here rather than
+          left to be inferred from a cost difference that is not like the others'.
+        */}
+        {item.rescheduledFromElapsedStart && <p role="note" className="rounded-md border border-amber-500 p-2 text-amber-700 dark:text-amber-400">
+          Rescheduled because its start time had already passed. It was moved into the hours between
+          the current hour and its deadline, which may be outside the flexibility window originally
+          set for it. The cost difference below is against a baseline that itself already partly
+          elapsed, so treat it as indicative.
+        </p>}
         {loading ? <p role="status">Loading explanation…</p> : error ? (
           <div role="alert">{error} <button type="button" onClick={onRetry} className="underline">Retry</button></div>
         ) : <p className="whitespace-pre-wrap">{explanation?.whyThisPlacement || item.reason || "No explanation is available for this recommendation."}</p>}

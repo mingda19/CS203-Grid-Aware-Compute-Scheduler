@@ -3,7 +3,7 @@
 import * as React from "react"
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, X } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { SGT_TIMEZONE } from "@/lib/date-utils"
+import { MARKET_TIMEZONE, currentMarketHourInput } from "@/lib/date-utils"
 
 export interface JobDateTimePickerProps {
   id?: string
@@ -11,6 +11,8 @@ export interface JobDateTimePickerProps {
   onChange: (value: string) => void
   label?: string
   placeholder?: string
+  /** Extra lower bound, format YYYY-MM-DDTHH:mm. The picker never allows a time before the
+   *  current market hour regardless, so this only ever narrows further. */
   minDateTime?: string // format: YYYY-MM-DDTHH:mm
   mode?: "start" | "deadline"
   align?: "left" | "right"
@@ -19,9 +21,9 @@ export interface JobDateTimePickerProps {
   error?: boolean
 }
 
-function getNowSgtParts() {
+function getNowMarketParts() {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: SGT_TIMEZONE,
+    timeZone: MARKET_TIMEZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -57,7 +59,25 @@ export function JobDateTimePicker({
   const [open, setOpen] = React.useState(false)
   const containerRef = React.useRef<HTMLDivElement>(null)
 
-  const nowSgt = React.useMemo(() => getNowSgtParts(), [])
+  // Recomputed each time the picker opens, so a form left open past the hour boundary does not keep an hour that has passed.
+  const nowMarket = React.useMemo(() => getNowMarketParts(), [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * The earliest value this picker will produce: the current market hour, on the hour, or
+   * `minDateTime` when that is later. Work cannot be run in an hour that has already passed, so the
+   * backend rejects a job starting before the current hour - offering one here would only produce a
+   * form the operator cannot submit. Both strings are fixed-width YYYY-MM-DDTHH:mm, so comparing
+   * them lexicographically is the same as comparing the instants.
+   */
+  const earliest = React.useMemo(() => {
+    const nowFloor = currentMarketHourInput()
+    return minDateTime && minDateTime > nowFloor ? minDateTime : nowFloor
+  }, [minDateTime, open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const earliestDate = earliest.split("T")[0]
+
+  /** `candidate`, or `earliest` when that is later. */
+  const notBeforeEarliest = (candidate: string) => (candidate < earliest ? earliest : candidate)
 
   // Parse current value
   const parsed = React.useMemo(() => {
@@ -69,8 +89,8 @@ export function JobDateTimePicker({
     return { year: y, month: m, day, hour: isNaN(h) ? 0 : h, minute: isNaN(min) ? 0 : min }
   }, [value])
 
-  const [viewYear, setViewYear] = React.useState<number>(() => parsed?.year ?? nowSgt.year)
-  const [viewMonth, setViewMonth] = React.useState<number>(() => parsed?.month ?? nowSgt.month)
+  const [viewYear, setViewYear] = React.useState<number>(() => parsed?.year ?? nowMarket.year)
+  const [viewMonth, setViewMonth] = React.useState<number>(() => parsed?.month ?? nowMarket.month)
 
   const [previousValue, setPreviousValue] = React.useState(value)
   if (previousValue !== value) {
@@ -121,80 +141,114 @@ export function JobDateTimePicker({
 
   const isDateDisabled = (day: number) => {
     const dateStr = `${viewYear}-${pad2(viewMonth)}-${pad2(day)}`
-    if (minDateTime) {
-      const minDate = minDateTime.split("T")[0]
-      if (dateStr < minDate) return true
-    }
-    return false
+    return dateStr < earliestDate
   }
 
   const handleSelectDay = (day: number) => {
-    const currentHour = parsed ? parsed.hour : (nowSgt.hour + 1) % 24
+    // Carry the time already chosen, else the floor's own time. Never the next hour modulo 24, which
+    // wrapped to 00:00 of the same day late in the evening and so pointed at the past.
+    const currentHour = parsed ? parsed.hour : parseInt(earliest.slice(11, 13), 10)
     const currentMinute = parsed ? parsed.minute : 0
     const newDateStr = `${viewYear}-${pad2(viewMonth)}-${pad2(day)}T${pad2(currentHour)}:${pad2(currentMinute)}`
-    onChange(newDateStr)
+    onChange(notBeforeEarliest(newDateStr))
     setOpen(false)
+  }
+
+  const dateValue = parsed ? value.slice(0, 10) : ""
+  const timeValue = parsed ? value.slice(11, 16) : ""
+  // The hour floor only binds on the earliest day, so a later date may pick any time.
+  const timeMin = !dateValue || dateValue === earliestDate ? earliest.slice(11, 16) : undefined
+
+  // A new date keeps the time already chosen, else the floor's own hour (never the past: see notBeforeEarliest).
+  const setDate = (date: string) => {
+    if (!date) return onChange("")
+    const time = parsed ? `${pad2(parsed.hour)}:${pad2(parsed.minute)}` : `${earliest.slice(11, 13)}:00`
+    onChange(notBeforeEarliest(`${date}T${time}`))
+  }
+  // A time with no date yet lands on the earliest day.
+  const setTime = (time: string) => {
+    if (time) onChange(notBeforeEarliest(`${dateValue || earliestDate}T${time}`))
   }
 
   const alignRight = align === "right" || mode === "deadline"
 
   return (
     <div className="relative w-full" ref={containerRef}>
-      {/* Direct editable input with calendar toggle button */}
-      <div className="relative flex items-center">
-        <input
-          id={id}
-          name={id}
-          type="datetime-local"
-          step={mode === "start" ? "3600" : "60"}
-          required={required}
-          disabled={disabled}
-          value={value}
-          min={minDateTime}
-          onChange={(e) => onChange(e.target.value)}
-          className={cn(
-            "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 pr-16 text-sm ring-offset-background",
-            "file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-            "disabled:cursor-not-allowed disabled:opacity-50",
-            "[&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:w-0",
-            error && "border-destructive ring-destructive",
-            open && "ring-1 ring-emerald-500 border-emerald-500"
-          )}
-        />
+      {/* Two controls, one value: a date (with the calendar dropdown) and a time. */}
+      <div className="flex gap-2">
+        <div className="relative flex flex-1 items-center">
+          <input
+            id={id}
+            name={id}
+            type="date"
+            aria-label={`${mode === "start" ? "Start" : "Deadline"} date`}
+            required={required}
+            disabled={disabled}
+            value={dateValue}
+            min={earliestDate}
+            onChange={(e) => setDate(e.target.value)}
+            className={cn(
+              "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 pr-16 text-sm ring-offset-background",
+              "placeholder:text-muted-foreground",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+              "[&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:w-0",
+              error && "border-destructive ring-destructive",
+              open && "ring-1 ring-emerald-500 border-emerald-500"
+            )}
+          />
 
-        <div className="absolute right-1.5 flex items-center gap-1">
-          {value && !disabled && (
+          <div className="absolute right-1.5 flex items-center gap-1">
+            {value && !disabled && (
+              <button
+                type="button"
+                onClick={() => onChange("")}
+                title="Clear date and time"
+                className="p-1 text-muted-foreground hover:text-foreground rounded transition-colors"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+
             <button
               type="button"
-              onClick={() => onChange("")}
-              title="Clear timing"
-              className="p-1 text-muted-foreground hover:text-foreground rounded transition-colors"
+              disabled={disabled}
+              onClick={() => setOpen(!open)}
+              title="Toggle calendar dropdown"
+              className={cn(
+                "p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors",
+                open && "bg-emerald-500/20"
+              )}
             >
-              <X className="h-3.5 w-3.5" />
+              <CalendarIcon className="h-4 w-4" />
             </button>
-          )}
-
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => setOpen(!open)}
-            title="Toggle calendar dropdown"
-            className={cn(
-              "p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors",
-              open && "bg-emerald-500/20"
-            )}
-          >
-            <CalendarIcon className="h-4 w-4" />
-          </button>
+          </div>
         </div>
+
+        <input
+          id={id ? `${id}-time` : undefined}
+          type="time"
+          min={timeMin}
+          step={mode === "start" ? "3600" : "60"}
+          aria-label={`${mode === "start" ? "Start" : "Deadline"} time`}
+          required={required}
+          disabled={disabled}
+          value={timeValue}
+          onChange={(e) => setTime(e.target.value)}
+          className={cn(
+            "flex h-10 w-28 shrink-0 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+            "disabled:cursor-not-allowed disabled:opacity-50",
+            error && "border-destructive ring-destructive"
+          )}
+        />
       </div>
 
       {/* Pure Compact Calendar Dropdown */}
       {open && (
         <div
           className={cn(
-            "absolute z-50 w-[280px] sm:w-[300px] rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-xl animate-in fade-in-0 zoom-in-95 top-full mt-1.5",
+            "absolute z-50 w-[280px] sm:w-[300px] rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-xl animate-in fade-in-0 zoom-in-95 top-full mt-1.5",
             alignRight ? "right-0" : "left-0"
           )}
         >
@@ -235,9 +289,9 @@ export function JobDateTimePicker({
                 parsed?.month === viewMonth &&
                 parsed?.day === day
               const isToday =
-                nowSgt.year === viewYear &&
-                nowSgt.month === viewMonth &&
-                nowSgt.day === day
+                nowMarket.year === viewYear &&
+                nowMarket.month === viewMonth &&
+                nowMarket.day === day
               const disabledDay = isDateDisabled(day)
 
               return (
@@ -251,7 +305,7 @@ export function JobDateTimePicker({
                     disabledDay && "cursor-not-allowed opacity-25 text-muted-foreground",
                     !disabledDay && !isSelected && "hover:bg-muted hover:text-foreground",
                     isToday && !isSelected && "border border-emerald-500/60 font-semibold text-emerald-600 dark:text-emerald-400",
-                    isSelected && "bg-emerald-600 text-white font-bold shadow-xs"
+                    isSelected && "bg-primary text-primary-foreground font-bold shadow-xs"
                   )}
                 >
                   {day}
@@ -265,15 +319,28 @@ export function JobDateTimePicker({
             <button
               type="button"
               onClick={() => {
-                const currentHour = parsed ? parsed.hour : (nowSgt.hour + 1) % 24
+                const currentHour = parsed ? parsed.hour : parseInt(earliest.slice(11, 13), 10)
                 const currentMinute = parsed ? parsed.minute : 0
-                const todayStr = `${nowSgt.year}-${pad2(nowSgt.month)}-${pad2(nowSgt.day)}T${pad2(currentHour)}:${pad2(currentMinute)}`
-                onChange(todayStr)
+                const todayStr = `${nowMarket.year}-${pad2(nowMarket.month)}-${pad2(nowMarket.day)}T${pad2(currentHour)}:${pad2(currentMinute)}`
+                onChange(notBeforeEarliest(todayStr))
                 setOpen(false)
               }}
               className="text-emerald-600 hover:text-emerald-700 font-medium"
             >
               Today
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const next = new Date(Date.UTC(nowMarket.year, nowMarket.month - 1, nowMarket.day + 1)).toISOString().slice(0, 10)
+                const currentHour = parsed ? parsed.hour : parseInt(earliest.slice(11, 13), 10)
+                const currentMinute = parsed ? parsed.minute : 0
+                onChange(notBeforeEarliest(`${next}T${pad2(currentHour)}:${pad2(currentMinute)}`))
+                setOpen(false)
+              }}
+              className="text-emerald-600 hover:text-emerald-700 font-medium"
+            >
+              Tomorrow
             </button>
             <button
               type="button"

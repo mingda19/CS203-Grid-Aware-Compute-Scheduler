@@ -40,6 +40,9 @@ class FacilityControllerTest {
     @MockitoBean
     private FacilityService facilityService;
 
+    @MockitoBean
+    private com.gacs.backend.service.FacilityUtilizationService utilizationService;
+
     @Test
     @WithMockUser(username = "operator@datacenter.io")
     @DisplayName("GET /api/facilities/me returns 200 with facility configuration")

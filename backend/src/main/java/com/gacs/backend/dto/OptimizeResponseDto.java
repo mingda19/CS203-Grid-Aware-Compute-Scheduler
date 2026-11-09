@@ -44,8 +44,11 @@ public record OptimizeResponseDto(
     @Schema(description = "Plain-English summary of the run")
     String plainEnglishExplanation,
 
-    @Schema(description = "True when no stored forecast covered the window and the history-based fallback "
-        + "price curve was used")
+    @Schema(description = "True when any price used by this run was estimated from the history-based "
+        + "fallback curve rather than taken from a stored model forecast - either because no forecast "
+        + "covered the window at all, or because the forecast did not reach every hour of it. When true "
+        + "the plan is provisional: plainEnglishExplanation names how many hours were estimated and from "
+        + "when")
     boolean usedSeededFallbackPrices,
 
     @Schema(description = "Every input job exactly once, in request order")
@@ -86,8 +89,33 @@ public record OptimizeResponseDto(
         Double optimizedCostUsd,
         @Schema(description = "baselineCostUsd minus optimizedCostUsd; may be negative; null for NO_FEASIBLE_SLOT",
             example = "0.8448")
-        Double savingsUsd
-    ) {}
+        Double savingsUsd,
+
+        @Schema(description = "True when this job was placed only because the run opted in to "
+            + "rescheduling jobs whose originalStartTime had already passed: its start window was "
+            + "re-anchored from [originalStartTime, originalStartTime + flexibilityWindowHours] to "
+            + "[current hour, last slot that still finishes by its deadline]. Such a job moved "
+            + "because its start had elapsed, not (or not only) to save money, and its savings are "
+            + "measured against a baseline that itself already partly elapsed - see section 6.4. "
+            + "False for every job in a run that did not opt in.", example = "false")
+        boolean rescheduledFromElapsedStart
+    ) {
+
+        /**
+         * Convenience for the ordinary case, and for every caller predating the elapsed-job option:
+         * a job that was not re-anchored. Keeps the 13-argument shape the serializers and their
+         * fixtures already build.
+         */
+        public ScheduleItem(Long jobId, String jobName, LocalDateTime baselineStart,
+                            LocalDateTime scheduledStart, LocalDateTime scheduledEnd,
+                            double allocatedCpuHours, double allocatedGpuHours,
+                            List<Allocation> allocations, String perJobStatus, String reason,
+                            Double baselineCostUsd, Double optimizedCostUsd, Double savingsUsd) {
+            this(jobId, jobName, baselineStart, scheduledStart, scheduledEnd, allocatedCpuHours,
+                    allocatedGpuHours, allocations, perJobStatus, reason, baselineCostUsd,
+                    optimizedCostUsd, savingsUsd, false);
+        }
+    }
 
     @Schema(description = "Work done by a job in one slot")
     public record Allocation(

@@ -8,7 +8,7 @@ const item: ScheduleItem = {
   jobId: 1, jobName: "Training", baselineStart: "2026-10-20T10:00:00Z",
   scheduledStart: "2026-10-20T11:00:00Z", scheduledEnd: "2026-10-20T12:00:00Z",
   allocatedCpuHours: 1, allocatedGpuHours: 0, allocations: [], perJobStatus: "OPTIMISED",
-  reason: null, baselineCostUsd: 1, optimizedCostUsd: 1.25, savingsUsd: -0.25,
+  reason: null, baselineCostUsd: 1, optimizedCostUsd: 1.25, savingsUsd: -0.25, rescheduledFromElapsedStart: false,
 }
 
 const render = (overrides = {}) => renderToStaticMarkup(<RecommendationExplanation

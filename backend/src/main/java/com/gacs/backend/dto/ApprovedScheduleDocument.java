@@ -64,7 +64,7 @@ public record ApprovedScheduleDocument(
     @Schema(description = "One job and its approved time slots")
     @JsonPropertyOrder({"jobId", "jobName", "perJobStatus", "reason", "baselineStart", "scheduledStart",
         "scheduledEnd", "allocatedCpuHours", "allocatedGpuHours", "baselineCostUsd", "optimizedCostUsd",
-        "savingsUsd", "slots"})
+        "savingsUsd", "rescheduledFromElapsedStart", "slots"})
     public record Job(
         @Schema(example = "101") Long jobId,
         @Schema(example = "LLM Fine-Tuning Run #42") String jobName,
@@ -78,6 +78,11 @@ public record ApprovedScheduleDocument(
         @Schema(description = "4 decimal places; null for NO_FEASIBLE_SLOT", example = "1.0752") BigDecimal baselineCostUsd,
         @Schema(description = "4 decimal places; null for NO_FEASIBLE_SLOT", example = "0.2304") BigDecimal optimizedCostUsd,
         @Schema(description = "4 decimal places; null for NO_FEASIBLE_SLOT", example = "0.8448") BigDecimal savingsUsd,
+        @Schema(description = "True when this job was placed only because the run opted in to rescheduling "
+            + "jobs whose originalStartTime had already passed, so its start lies outside the flexibility "
+            + "window the job record carries. Provenance for an adapter reconciling the plan against the "
+            + "job: the slots below are still the approved ones and still end by the deadline.",
+            example = "false") boolean rescheduledFromElapsedStart,
         @Schema(description = "Approved slots sorted by start; empty for NO_FEASIBLE_SLOT") List<Slot> slots
     ) {}
 

@@ -209,6 +209,29 @@ class LoadExogenousTests(unittest.TestCase):
         self.assertEqual(len(out), 24)
         self.assertTrue(out["wind_power_output_proxy_total"].isna().all())
 
+    def test_gas_lag_survives_a_gap_at_the_fetch_boundary(self):
+        # A real production case (update.py, 2026-11-04 tune run): a
+        # multi-day gas-price gap (weekend/holiday, up to GAS_MAX_STALE_DAYS
+        # long) landing right at the fetch's lower edge used to make
+        # gas.index.min() - the OLD reindex floor - later than the real
+        # published day before it, losing that day entirely and leaving
+        # shift(3) with no row to reach for the earliest requested day. The
+        # fix floors the daily index at a fixed boundary instead, so a real
+        # row further back (within the now-wider fetch) still reaches
+        # through the gap via ffill.
+        with self.engine.begin() as conn:
+            conn.execute(sa.text("DELETE FROM fuel_price"))
+            # Real row just before a 5-day gap (2026-03-04..2026-03-08
+            # missing), then real rows resume - the requested window starts
+            # right after the gap, at 2026-03-10.
+            conn.execute(sa.text("INSERT INTO fuel_price VALUES ('2026-03-03T00:00:00', 3.0), "
+                                 "('2026-03-09T00:00:00', 3.5), ('2026-03-10T00:00:00', 4.0)"))
+        out = pred.load_exogenous(self.engine, datetime(2026, 3, 10), datetime(2026, 3, 10, 23))
+        self.assertFalse(out["henry_hub_price_usd_mmbtu_lag3d"].isna().any())
+        # lag3d at 2026-03-10 reaches back to 2026-03-07, inside the gap -
+        # ffill carries the last real value (3.0, from 2026-03-03) through it.
+        self.assertTrue((out["henry_hub_price_usd_mmbtu_lag3d"] == 3.0).all())
+
 
 class WritePredictionsTests(unittest.TestCase):
     def setUp(self):

@@ -58,7 +58,8 @@ final class SynchronizedGroupPlacer {
                 continue; // nothing to synchronize among fewer than 2 flexible members
             }
             members.forEach(member -> groupedIds.add(member.id()));
-            cheapestCommonEndHour(members, free, problem.prices(), costs).ifPresent(groupPlans -> {
+            cheapestCommonEndHour(members, free, problem.prices(), problem.earliestStart(), costs)
+                    .ifPresent(groupPlans -> {
                 groupPlans.values().forEach(free::reserve);
                 plans.putAll(groupPlans);
             });
@@ -71,10 +72,15 @@ final class SynchronizedGroupPlacer {
      * first; within one trial hour, members reserve capacity from each other in declaration order.
      */
     private static Optional<Map<OptimizerJob, JobPlan>> cheapestCommonEndHour(
-            List<OptimizerJob> members, ResidualCapacity free, PriceSeries prices, EnergyCostModel costs) {
-        LocalDateTime rangeStart = members.stream().map(OptimizerJob::originalStartTime)
+            List<OptimizerJob> members, ResidualCapacity free, PriceSeries prices,
+            LocalDateTime earliestStart, EnergyCostModel costs) {
+        // The group cannot end before the latest member can start, and a member whose own start has
+        // already passed can start no earlier than the run's earliest schedulable hour.
+        LocalDateTime rangeStart = members.stream()
+                .map(member -> new JobWindow(member, prices, earliestStart).firstSlot())
                 .max(LocalDateTime::compareTo).orElseThrow();
-        LocalDateTime rangeEnd = members.stream().map(member -> new JobWindow(member, prices).lastSlot())
+        LocalDateTime rangeEnd = members.stream()
+                .map(member -> new JobWindow(member, prices, earliestStart).lastSlot())
                 .min(LocalDateTime::compareTo).orElseThrow();
         if (rangeStart.isAfter(rangeEnd)) {
             return Optional.empty();
@@ -88,7 +94,8 @@ final class SynchronizedGroupPlacer {
             double cost = 0.0;
             boolean feasible = true;
             for (OptimizerJob member : members) {
-                Optional<JobPlan> plan = GreedyAllocator.cheapestPlanEndingAt(member, end, trial, prices, costs);
+                Optional<JobPlan> plan =
+                        GreedyAllocator.cheapestPlanEndingAt(member, end, trial, prices, earliestStart, costs);
                 if (plan.isEmpty()) {
                     feasible = false;
                     break;

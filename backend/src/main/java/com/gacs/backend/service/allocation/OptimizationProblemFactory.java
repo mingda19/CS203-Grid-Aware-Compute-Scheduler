@@ -11,12 +11,18 @@ import com.gacs.backend.service.PriceSeries;
 import com.gacs.backend.service.PriceSeriesProvider;
 import org.springframework.stereotype.Service;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.stream.Collectors;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -41,22 +47,48 @@ public class OptimizationProblemFactory {
 
     static final int MIN_HORIZON_HOURS = 1;
     static final int MAX_HORIZON_HOURS = 168;
+    static final int DEFAULT_HORIZON_HOURS = 48;
     static final int MAX_NAME_LENGTH = 255;
     static final int MAX_LOCATION_LENGTH = 100;
 
+    /**
+     * Caps on {@code pairConstraints[]}, for the same reason {@link #MAX_HORIZON_HOURS} exists: a
+     * request should not be able to buy unbounded solver work.
+     *
+     * <p>The expensive part is not validating them. Cycle detection is Kahn's algorithm, linear in
+     * the rules and run once. The cost is downstream: {@link OptimizationProblem#constraintsFor}
+     * filters the whole list per job, and {@link AnnealingAllocationSolver} calls it inside its
+     * search loop, which is bounded at {@code WORK_LIMIT} (150,000) job-placements. Every rule in
+     * the list multiplies that bounded work, so 10,000 rules would turn 150,000 units into 1.5
+     * billion filter operations before a single hour is costed.
+     *
+     * <p>{@link #MAX_PAIR_CONSTRAINTS_PER_JOB} bounds a second amplification: each rule governing a
+     * job adds a layer to {@code JobWindow}'s composed predicate ({@code extra.and(allowed)}), and
+     * that chain is evaluated once per candidate hour per candidate start. Deep chains make each
+     * hour more expensive, which the total cap alone would not prevent if every rule named one job.
+     *
+     * <p>Both are far above anything an operator would author by hand; they exist to bound the
+     * pathological case, not to constrain real use.
+     */
+    static final int MAX_PAIR_CONSTRAINTS = 200;
+    static final int MAX_PAIR_CONSTRAINTS_PER_JOB = 25;
+
     private final PriceSeriesProvider priceSeriesProvider;
     private final OptimizerProperties properties;
+    private final Clock clock;
 
-    public OptimizationProblemFactory(PriceSeriesProvider priceSeriesProvider, OptimizerProperties properties) {
+    public OptimizationProblemFactory(PriceSeriesProvider priceSeriesProvider, OptimizerProperties properties,
+                                      Clock clock) {
         this.priceSeriesProvider = priceSeriesProvider;
         this.properties = properties;
+        this.clock = clock;
     }
 
     public OptimizationProblem build(OptimizeRequestDto request) {
         if (request == null) {
             throw invalid("request body is required");
         }
-        List<OptimizerJob> jobs = jobs(request.jobs());
+        List<OptimizerJob> jobs = reanchorElapsed(jobs(request.jobs()), request.reschedulesElapsedJobs());
         SlotCapacity capacity = capacity(request.clusterCapacity(), request.capacityOverrides());
 
         BaselineCalculator baselines = new BaselineCalculator(capacity);
@@ -64,7 +96,7 @@ public class OptimizationProblemFactory {
         for (OptimizerJob job : jobs) {
             Optional<JobPlan> baseline = baselines.baseline(job).plan();
             if (baseline.isEmpty()) {
-                throw invalid("Job " + job.label() + " cannot finish between its originalStartTime "
+                throw invalid("Job " + job.identity() + " cannot finish between its originalStartTime "
                         + job.originalStartTime() + " and its deadline " + job.deadline()
                         + " even alone on the cluster");
             }
@@ -76,11 +108,189 @@ public class OptimizationProblemFactory {
             Optional<LocalDateTime> missing = EnergyCostModel.firstUnpricedSlot(
                     baselinePlans.get(job).allocations(), prices);
             if (missing.isPresent()) {
-                throw new UnprocessableDataException("No forecast price for " + missing.get()
-                        + ", which job " + job.label() + " uses at its original time. Its baseline cost cannot be priced.");
+                throw new UnprocessableDataException("No price available for " + missing.get()
+                        + " UTC, which job " + job.identity() + " needs at its original time, so its baseline"
+                        + " cost cannot be computed and there is nothing to compare a plan against. Every hour"
+                        + " from the earliest start to the latest deadline is priced, estimating any hour the"
+                        + " forecast does not reach, up to a " + MAX_HORIZON_HOURS + "-hour ("
+                        + (MAX_HORIZON_HOURS / 24) + "-day) planning window. This job's window falls outside"
+                        + " that window: move its start and deadline within " + (MAX_HORIZON_HOURS / 24)
+                        + " days of the earliest job's start, or retire it.");
             }
         }
-        return new OptimizationProblem(jobs, prices, capacity, baselinePlans);
+        return new OptimizationProblem(jobs, prices, capacity, baselinePlans, pairConstraints(request, jobs),
+                List.of(), earliestStart());
+    }
+
+    // ------------------------------------------------------------ pair constraints
+
+    /**
+     * Builds the run's ordering and exclusion rules from {@code pairConstraints[]}.
+     *
+     * <p>Every rule is validated against the jobs actually in this run. A rule naming a job that is
+     * not here cannot be enforced - the solver would have nothing to order against - and silently
+     * dropping it would produce a plan that looks like it honoured a constraint it never saw. So it
+     * is a 400, like any other malformed input.
+     */
+    private static List<PlacementConstraint> pairConstraints(OptimizeRequestDto request, List<OptimizerJob> jobs) {
+        List<OptimizeRequestDto.PairConstraintInput> declared = request.pairConstraintsOrEmpty();
+        if (declared.isEmpty()) {
+            return List.of();
+        }
+        // Checked before anything is built or walked, so an over-limit list costs one comparison
+        // rather than a full validation pass.
+        if (declared.size() > MAX_PAIR_CONSTRAINTS) {
+            throw invalid("pairConstraints must contain at most " + MAX_PAIR_CONSTRAINTS + " rules, got "
+                    + declared.size());
+        }
+        Set<Long> present = jobs.stream().map(OptimizerJob::id).collect(Collectors.toSet());
+        Map<Long, Integer> rulesPerJob = new LinkedHashMap<>();
+        List<PlacementConstraint> built = new ArrayList<>();
+        for (int index = 0; index < declared.size(); index++) {
+            OptimizeRequestDto.PairConstraintInput rule = declared.get(index);
+            String where = "pairConstraints[" + index + "]";
+            if (rule == null) {
+                throw invalid(where + " must not be null");
+            }
+            if (rule.type() == null) {
+                throw invalid(where + ".type is required");
+            }
+            long first = requirePresent(rule.jobId(), where + ".jobId", present);
+            long second = requirePresent(rule.otherJobId(), where + ".otherJobId", present);
+            if (first == second) {
+                throw invalid(where + " names job " + first + " on both sides; a job cannot be ordered "
+                        + "against, or excluded from, itself");
+            }
+            countRule(rulesPerJob, first, where);
+            countRule(rulesPerJob, second, where);
+            built.add(switch (rule.type()) {
+                case PRECEDENCE -> new PrecedenceConstraint(first, second);
+                // A dependency is a precedence with the two jobs the other way round: "jobId runs
+                // after otherJobId" is "otherJobId finishes before jobId starts". Normalised here,
+                // at the one point that turns the request into solver constraints, so cycle
+                // detection and both solvers only ever see one ordering rule - and so the two
+                // directions cannot drift apart into two implementations of the same thing.
+                case DEPENDENCY -> new PrecedenceConstraint(second, first);
+                case MUTUAL_EXCLUSION -> new MutualExclusionConstraint(first, second);
+                default -> throw invalid(where + ".type " + rule.type() + " is not a pair constraint; "
+                        + "only PRECEDENCE, DEPENDENCY and MUTUAL_EXCLUSION bind two jobs");
+            });
+        }
+        rejectPrecedenceCycles(built);
+        return List.copyOf(built);
+    }
+
+    /** Tallies how many rules govern one job, failing as soon as it passes the per-job cap. */
+    private static void countRule(Map<Long, Integer> rulesPerJob, long jobId, String where) {
+        int count = rulesPerJob.merge(jobId, 1, Integer::sum);
+        if (count > MAX_PAIR_CONSTRAINTS_PER_JOB) {
+            throw invalid(where + ": job " + jobId + " is governed by more than "
+                    + MAX_PAIR_CONSTRAINTS_PER_JOB + " pair constraints");
+        }
+    }
+
+    private static long requirePresent(Long jobId, String where, Set<Long> present) {
+        if (jobId == null) {
+            throw invalid(where + " is required");
+        }
+        if (!present.contains(jobId)) {
+            throw invalid(where + " " + jobId + " is not one of the jobs in this run");
+        }
+        return jobId;
+    }
+
+    /**
+     * Rejects a set of precedence rules that cannot all hold, such as A before B before A.
+     *
+     * <p>{@code OptimizationProblem.flexibleJobsInPlacementOrder} has a defensive fallback for a
+     * cycle, but it is a fallback: it keeps the solver from looping, and then produces an order that
+     * honours none of the rules involved. Caught here instead, the operator is told their rules
+     * contradict each other rather than receiving a plan that quietly ignores some of them.
+     *
+     * <p>Kahn's algorithm: repeatedly remove a job nothing still has to follow. Whatever cannot be
+     * removed is in, or downstream of, a cycle.
+     */
+    private static void rejectPrecedenceCycles(List<PlacementConstraint> constraints) {
+        Map<Long, List<Long>> successors = new LinkedHashMap<>();
+        Map<Long, Integer> incoming = new LinkedHashMap<>();
+        for (PlacementConstraint constraint : constraints) {
+            if (constraint instanceof PrecedenceConstraint edge) {
+                successors.computeIfAbsent(edge.beforeJobId(), key -> new ArrayList<>()).add(edge.afterJobId());
+                incoming.putIfAbsent(edge.beforeJobId(), 0);
+                incoming.merge(edge.afterJobId(), 1, Integer::sum);
+            }
+        }
+        Deque<Long> ready = new ArrayDeque<>(incoming.entrySet().stream()
+                .filter(entry -> entry.getValue() == 0).map(Map.Entry::getKey).toList());
+        int removed = 0;
+        while (!ready.isEmpty()) {
+            long job = ready.removeFirst();
+            removed++;
+            for (long next : successors.getOrDefault(job, List.of())) {
+                if (incoming.merge(next, -1, Integer::sum) == 0) {
+                    ready.addLast(next);
+                }
+            }
+        }
+        if (removed < incoming.size()) {
+            List<Long> inCycle = incoming.entrySet().stream()
+                    .filter(entry -> entry.getValue() > 0).map(Map.Entry::getKey).sorted().toList();
+            throw invalid("pairConstraints contain a precedence cycle involving jobs " + inCycle
+                    + "; these rules cannot all hold at once");
+        }
+    }
+
+    /**
+     * Re-anchors the start window of every job whose {@code originalStartTime} has already passed, if
+     * and only if the request opted in ({@code rescheduleElapsedJobs}).
+     *
+     * <p>Without the opt-in, such a job keeps a window of {@code [originalStartTime,
+     * originalStartTime + flexibilityWindowHours]} that can lie entirely behind the current hour, so
+     * it has no usable start slot and the solver reports it {@code NO_FEASIBLE_SLOT} - correct, but
+     * blunt: the deadline may still be hours away, and the only thing wrong with the job is that the
+     * operator did not get to it in time. With the opt-in its window becomes {@code [now, last slot
+     * that still finishes by the deadline]} (see {@link OptimizerJob#latestStart()}).
+     *
+     * <p>Three limits are deliberate:
+     * <ul>
+     *   <li>the flag is applied per job, only where the start has really elapsed, so the response can
+     *       say exactly which jobs moved for this reason rather than to save money;</li>
+     *   <li>exempt jobs are untouched - {@link OptimizerJob#reanchoredToDeadline()} returns them
+     *       unchanged - because an exempt job's whole meaning is that it runs at its original time;</li>
+     *   <li>a job whose <em>deadline</em> has also passed gains nothing: its last usable slot is
+     *       still behind the current hour, so there is no window left to widen and it stays
+     *       infeasible, with or without the flag.</li>
+     * </ul>
+     *
+     * <p>Baselines are computed after this, from {@code originalStartTime} as always, which is what
+     * keeps the comparison honest: see {@code ScheduleOptimizationService}'s note on what a saving
+     * means for a job whose baseline has partly elapsed.
+     */
+    private List<OptimizerJob> reanchorElapsed(List<OptimizerJob> jobs, boolean optedIn) {
+        if (!optedIn) {
+            return jobs;
+        }
+        LocalDateTime now = earliestStart();
+        return jobs.stream()
+                .map(job -> job.originalStartTime().isBefore(now) ? job.reanchoredToDeadline() : job)
+                .toList();
+    }
+
+    /**
+     * The earliest hour this run may schedule work into: the current hour, truncated. Work cannot be
+     * started in an hour that has already begun elapsing in full, and a job placed in a past hour
+     * could never actually be run, so no solver may use one (contract section 6.4). The current hour
+     * itself stays usable: starts are on the hour, so excluding it would leave an operator unable to
+     * act on the hour they are in.
+     *
+     * <p>Jobs whose whole window is already past are not rejected here. Their baseline is unaffected
+     * (it describes what would have happened), so validation still passes and the solver reports them
+     * as {@link PerJobStatus#NO_FEASIBLE_SLOT} with a reason, leaving the rest of the plan usable. A
+     * request may instead opt in to rescheduling them, which re-anchors their start window to their
+     * deadline rather than their vanished start time - see {@link #reanchorElapsed}.
+     */
+    private LocalDateTime earliestStart() {
+        return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC).truncatedTo(ChronoUnit.HOURS);
     }
 
     // ------------------------------------------------------------------ jobs
@@ -194,21 +404,43 @@ public class OptimizationProblemFactory {
         if (location.length() > MAX_LOCATION_LENGTH) {
             throw invalid("forecastLocation must be at most " + MAX_LOCATION_LENGTH + " characters");
         }
-        LocalDateTime earliest = jobs.stream().map(OptimizerJob::originalStartTime).min(LocalDateTime::compareTo)
-                .orElseThrow();
-        int horizon;
-        if (request.horizonHours() == null) {
-            // Omitted: price every hour up to the latest deadline, so a job pushed past 48 hours still has prices.
-            LocalDateTime latest = jobs.stream().map(OptimizerJob::deadline).max(LocalDateTime::compareTo).orElseThrow();
-            long hours = (ChronoUnit.MINUTES.between(earliest, latest) + 59) / 60;
-            horizon = (int) Math.max(MIN_HORIZON_HOURS, Math.min(MAX_HORIZON_HOURS, hours));
-        } else {
-            horizon = request.horizonHours();
-            if (horizon < MIN_HORIZON_HOURS || horizon > MAX_HORIZON_HOURS) {
-                throw invalid("horizonHours must be between " + MIN_HORIZON_HOURS + " and " + MAX_HORIZON_HOURS);
-            }
+        int horizon = request.horizonHours() == null ? DEFAULT_HORIZON_HOURS : request.horizonHours();
+        if (horizon < MIN_HORIZON_HOURS || horizon > MAX_HORIZON_HOURS) {
+            throw invalid("horizonHours must be between " + MIN_HORIZON_HOURS + " and " + MAX_HORIZON_HOURS);
         }
-        return priceSeriesProvider.load(location.trim(), earliest, horizon);
+        return priceSeriesProvider.load(location.trim(), windowStart(jobs), pricedHours(jobs, horizon));
+    }
+
+    /** First hour any job could use: the earliest original start, on the hour. */
+    private static LocalDateTime windowStart(List<OptimizerJob> jobs) {
+        return jobs.stream().map(OptimizerJob::originalStartTime).min(LocalDateTime::compareTo).orElseThrow()
+                .truncatedTo(ChronoUnit.HOURS);
+    }
+
+    /**
+     * How many hours of price curve this run needs: enough to reach the last hour any job could use,
+     * which is the latest deadline, and never fewer than the requested horizon.
+     *
+     * <p>{@code horizonHours} alone is not enough. It was previously used as the exact span, measured
+     * from the earliest original start, so a job whose window sat beyond {@code earliest + 48h} was
+     * never priced at all - not even by the fallback, which only fills gaps inside the span. A single
+     * older job with a start time from before starts were required to be in the future drags
+     * {@code earliest} days back and pushes every other job out of the priced range, and the run then
+     * fails with "No forecast price for <hour>, which job <id> uses at its original time". Pricing a
+     * baseline is what makes a job admissible at all, so the span has to be derived from the jobs
+     * rather than assumed.
+     *
+     * <p>Capped at {@link #MAX_HORIZON_HOURS}. A job reaching past the cap keeps an unpriced baseline
+     * and is reported per job rather than failing the run - see the baseline check in {@link #build}.
+     */
+    private static int pricedHours(List<OptimizerJob> jobs, int requestedHorizon) {
+        LocalDateTime start = windowStart(jobs);
+        LocalDateTime lastDeadline = jobs.stream().map(OptimizerJob::deadline).max(LocalDateTime::compareTo)
+                .orElseThrow().truncatedTo(ChronoUnit.HOURS);
+        // lastDeadline's own hour is not usable: a run must END by the deadline, so the last usable
+        // slot starts an hour earlier. Spanning exactly this many hours from start lands on it.
+        long needed = Duration.between(start, lastDeadline).toHours();
+        return (int) Math.min(MAX_HORIZON_HOURS, Math.max(requestedHorizon, needed));
     }
 
     private static PriceSeries explicitPrices(List<ForecastPointInput> points) {

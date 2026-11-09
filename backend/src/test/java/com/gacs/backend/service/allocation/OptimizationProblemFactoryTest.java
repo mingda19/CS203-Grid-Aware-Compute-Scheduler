@@ -33,7 +33,7 @@ import static org.mockito.Mockito.when;
 class OptimizationProblemFactoryTest {
 
     private final PriceSeriesProvider provider = mock(PriceSeriesProvider.class);
-    private final OptimizationProblemFactory factory = new OptimizationProblemFactory(provider, OptimizerProperties.DEFAULTS);
+    private final OptimizationProblemFactory factory = new OptimizationProblemFactory(provider, OptimizerProperties.DEFAULTS, Fixtures.CLOCK_BEFORE_T0);
 
     /** A valid job: 64 CPU-hours from slot 0, may wait 2 hours, finishes by slot 4. */
     private static JobInput validJob(long id) {
@@ -79,20 +79,20 @@ class OptimizationProblemFactoryTest {
     }
 
     @Test
-    @DisplayName("forecastLocation loads prices from the earliest originalStartTime; an omitted horizon runs to the latest deadline")
+    @DisplayName("forecastLocation loads prices from the earliest originalStartTime; an omitted horizon defaults to 48")
     void forecastLocationLoadsFromEarliestStart() {
-        when(provider.load("LZ_NORTH", T0, 4)).thenReturn(prices(10, 20, 30, 40, 50));
+        when(provider.load("LZ_NORTH", T0, 48)).thenReturn(prices(10, 20, 30, 40, 50));
         JobInput later = new JobInput(2L, "later", 20.0, 0.0, at(2), at(4), 0, false);
         OptimizeRequestDto request = new OptimizeRequestDto(List.of(later, validJob(1)), null, "LZ_NORTH", null, null, null);
 
         OptimizationProblem problem = factory.build(request);
 
-        verify(provider).load("LZ_NORTH", T0, 4);
+        verify(provider).load("LZ_NORTH", T0, 48);
         assertThat(problem.prices().priceAt(at(4))).contains(50.0);
     }
 
     @Test
-    @DisplayName("An omitted horizon is clamped to 1-168 hours; a sent horizon is used as sent")
+    @DisplayName("The priced span is at least the horizon (default 48) and reaches the latest deadline, capped at 168")
     void omittedHorizonIsClamped() {
         when(provider.load(anyString(), any(), anyInt())).thenReturn(prices(10, 20, 30, 40, 50));
         JobInput farDeadline = new JobInput(1L, "far", 20.0, 0.0, T0, at(500), 0, false);
@@ -101,9 +101,12 @@ class OptimizationProblemFactoryTest {
         factory.build(new OptimizeRequestDto(List.of(farDeadline), null, "LZ_NORTH", null, null, null));
         verify(provider).load("LZ_NORTH", T0, 168);
         factory.build(new OptimizeRequestDto(List.of(sameHour), null, "LZ_NORTH", null, null, null));
-        verify(provider).load("LZ_NORTH", T0, 1);
-        factory.build(new OptimizeRequestDto(List.of(validJob(3)), null, "LZ_NORTH", 48, null, null));
         verify(provider).load("LZ_NORTH", T0, 48);
+        JobInput thirtyHours = new JobInput(4L, "thirty", 20.0, 0.0, T0, at(30), 0, false);
+        factory.build(new OptimizeRequestDto(List.of(thirtyHours), null, "LZ_NORTH", 10, null, null));
+        verify(provider).load("LZ_NORTH", T0, 30); // the sent horizon is a minimum: the span still reaches the deadline
+        factory.build(new OptimizeRequestDto(List.of(validJob(3)), null, "LZ_NORTH", 72, null, null));
+        verify(provider).load("LZ_NORTH", T0, 72);
     }
 
     @Test
@@ -247,7 +250,10 @@ class OptimizationProblemFactoryTest {
         // 600 CPU-hours at 256 per hour needs 3 hours; the deadline allows 2.
         JobInput tooBig = new JobInput(1L, "big", 600.0, 0.0, T0, at(2), 0, false);
         assertThatThrownBy(() -> build(tooBig))
-                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("even alone on the cluster");
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("even alone on the cluster")
+                // Bug 2: the job's own name, not just its (possibly duplicated) numeric id, so an
+                // operator can tell which of their jobs this refers to.
+                .hasMessageContaining("id 1 ('big')");
     }
 
     // ------------------------------------------------------------------ 422: missing data
@@ -262,7 +268,10 @@ class OptimizationProblemFactoryTest {
         assertThatThrownBy(() -> factory.build(request))
                 .isInstanceOf(UnprocessableDataException.class)
                 .hasMessageContaining(at(1).toString())
-                .hasMessageContaining("job id 1");
+                .hasMessageContaining("job id 1")
+                // Bug 2: the job's name too, so "job id 1" alone (meaningless to an operator, and
+                // ambiguous once two jobs share a name) isn't the only identifying information.
+                .hasMessageContaining("job-1");
     }
 
     @Test

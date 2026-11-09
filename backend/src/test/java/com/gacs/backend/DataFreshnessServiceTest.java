@@ -61,6 +61,21 @@ class DataFreshnessServiceTest {
     }
 
     @Test
+    void everyDatasetCarriesAReadableLabel() {
+        whenAllLatest(LocalDateTime.now(ZoneOffset.UTC).minusMinutes(20));
+        when(solar.findLatestTime()).thenThrow(new RuntimeException("down"));
+
+        DataFreshnessResponse response = service().checkFreshness();
+
+        assertEquals(8, response.datasets().size());
+        assertEquals("Daily ERCOT price", response.datasets().get(0).label());
+        // The label is also set on the DATABASE_UNAVAILABLE and MISSING branches.
+        var solarRow = response.datasets().stream().filter(d -> d.dataset().equals("solar")).findFirst().orElseThrow();
+        assertEquals("DATABASE_UNAVAILABLE", solarRow.status());
+        assertEquals("Hourly solar weather data", solarRow.label());
+    }
+
+    @Test
     void missingDataIsReportedAndNotConfusedWithDatabaseFailure() {
         whenAllLatest(null);
 
