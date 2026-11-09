@@ -1,4 +1,4 @@
-import { MARKET_TIMEZONE, marketWallTimeToUtc } from "./date-utils"
+import { MARKET_TIMEZONE, marketWallTimeToUtc, parseIsoDate } from "./date-utils"
 import type { ComputeJob, OptimizeJobInput } from "./api"
 
 export function toOptimizeJobInput(job: ComputeJob): OptimizeJobInput {
@@ -16,7 +16,6 @@ export function toOptimizeJobInput(job: ComputeJob): OptimizeJobInput {
 // them explicitly so datetime-local inputs always show market wall time.
 export const toInputDate = (value?: string) => {
   if (!value) return ""
-  const iso = value.endsWith("Z") || value.includes("+") ? value : `${value}Z`
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: MARKET_TIMEZONE,
     year: "numeric",
@@ -25,7 +24,7 @@ export const toInputDate = (value?: string) => {
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
-  }).formatToParts(new Date(iso))
+  }).formatToParts(parseIsoDate(value))
   const part = (type: string) => parts.find((item) => item.type === type)?.value ?? ""
   return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`
 }
@@ -73,8 +72,7 @@ export const JOB_TEMPLATES = [
   { label: "ML Training", cpuHours: "0", gpuHours: "8", workloadCategory: "ML_TRAINING", priority: "NORMAL" },
 ] as const
 
-// API timestamps are timezone-free UTC strings; add the Z so Date.parse does not read them as local time.
-const utcMs = (v: string) => Date.parse(/Z$|[+-]\d\d:\d\d$/.test(v) ? v : `${v}Z`)
+const utcMs = (v: string) => parseIsoDate(v).getTime()
 
 // End (ms) of the last stored forecast hour. 0 when no forecast is stored.
 export const forecastEndMs = (points: { intervalStartUtc: string }[]) =>

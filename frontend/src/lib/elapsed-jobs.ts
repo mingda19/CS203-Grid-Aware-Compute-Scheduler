@@ -1,5 +1,5 @@
 import type { ComputeJob } from "./api"
-import { currentMarketHourStart, formatMarketDateTime } from "./date-utils"
+import { currentMarketHourStart, formatMarketDateTime, parseIsoDate } from "./date-utils"
 
 /**
  * Jobs whose `originalStartTime` is already behind the current market hour.
@@ -25,14 +25,9 @@ export function elapsedStartJobs(jobs: ComputeJob[], now: Date | string | number
   const hourStart = currentMarketHourStart(now).getTime()
   return jobs.filter(job => {
     if (job.isExempt) return false
-    const start = Date.parse(utcIso(job.originalStartTime))
+    const start = parseIsoDate(job.originalStartTime).getTime()
     return !Number.isNaN(start) && start < hourStart
   })
-}
-
-/** The API's timezone-free UTC strings need an explicit `Z` before `Date.parse` treats them as UTC. */
-function utcIso(value: string): string {
-  return value.endsWith("Z") || value.includes("+") ? value : `${value}Z`
 }
 
 /**
