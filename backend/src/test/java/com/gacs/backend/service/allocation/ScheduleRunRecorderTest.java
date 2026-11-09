@@ -148,7 +148,6 @@ class ScheduleRunRecorderTest {
 
         var run = runs.findByRunId(runId).orElseThrow();
         var explanation = explanations.findByScheduleRunId(run.getId()).orElseThrow();
-        assertThat(explanation.getSource()).isEqualTo("DETERMINISTIC_FALLBACK");
         assertThat(explanation.getFallbackReason()).isEqualTo("NOT_CONFIGURED");
         assertThat(explanation.getModelName()).isNull();
         assertThat(explanation.getRawResponseJson()).isNull();
@@ -323,7 +322,6 @@ class ScheduleRunRecorderTest {
 
         var run = runs.findByRunId(runId).orElseThrow();
         var explanation = explanations.findByScheduleRunId(run.getId()).orElseThrow();
-        assertThat(explanation.getSource()).isEqualTo("LLM");
         assertThat(explanation.getFallbackReason()).isNull();
         assertThat(explanation.getModelName()).isEqualTo("claude-haiku-4-5-20251001");
         assertThat(explanation.getRawResponseJson()).isEqualTo("{\"raw\":true}");
@@ -353,7 +351,6 @@ class ScheduleRunRecorderTest {
 
         var run = runs.findByRunId(runId).orElseThrow();
         var explanation = explanations.findByScheduleRunId(run.getId()).orElseThrow();
-        assertThat(explanation.getSource()).isEqualTo("DETERMINISTIC_FALLBACK");
         assertThat(explanation.getFallbackReason()).isEqualTo("TIMEOUT");
         assertThat(explanation.getModelName()).isNull();
         assertThat(explanation.getNarrative()).isEqualTo(response.plainEnglishExplanation());

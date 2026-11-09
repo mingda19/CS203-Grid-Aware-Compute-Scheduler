@@ -15,7 +15,7 @@ describe("review controls", () => {
   })
   it.each(["STALE", "INVALIDATED"] as const)("blocks all decisions for %s schedules", reviewState => {
     for (const action of ["approve", "reject", "revise"] as const)
-      expect(decisionUnavailable({ ...plan, reviewState }, action)).toContain("new recommendation")
+      expect(decisionUnavailable({ ...plan, reviewState }, action)).toContain("plan was replaced")
   })
   it("blocks missing or unreadable plans", () => {
     expect(decisionUnavailable(null, "approve")).toBeTruthy()

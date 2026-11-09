@@ -42,6 +42,17 @@ public final class SlotCapacity {
         return new SlotCapacity(limit, Map.of());
     }
 
+    /**
+     * This capacity less what is already taken in some slots. The result has an override for each of those
+     * slots, so every other slot keeps its limit.
+     */
+    public SlotCapacity minus(Map<LocalDateTime, CapacityLimit> taken) {
+        if (taken.isEmpty()) return this;
+        Map<LocalDateTime, CapacityLimit> left = new TreeMap<>(overrides);
+        taken.forEach((slot, used) -> left.put(slot, limitAt(slot).minus(used.cpuHours(), used.gpuHours())));
+        return new SlotCapacity(cluster, left);
+    }
+
     public CapacityLimit limitAt(LocalDateTime slotStart) {
         return overrides.getOrDefault(slotStart, cluster);
     }

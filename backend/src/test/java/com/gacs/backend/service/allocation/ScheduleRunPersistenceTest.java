@@ -96,7 +96,6 @@ class ScheduleRunPersistenceTest {
         assertThat(savedImpacts).extracting(ConstraintImpact::getNarrativeFragment)
                 .containsExactlyInAnyOrder("LLM: deadline", "LLM: flex");
         var savedExplanation = explanations.findByScheduleRunId(persisted.run().getId()).orElseThrow();
-        assertThat(savedExplanation.getSource()).isEqualTo("LLM");
         assertThat(savedExplanation.getModelName()).isEqualTo("model-x");
     }
 
@@ -115,7 +114,6 @@ class ScheduleRunPersistenceTest {
         var savedItem = items.findByScheduleRunIdOrderByIdAsc(persisted.run().getId()).get(0);
         assertThat(savedItem.getWhyThisPlacement()).isEqualTo("Placed on its cheapest feasible plan.");
         var savedExplanation = explanations.findByScheduleRunId(persisted.run().getId()).orElseThrow();
-        assertThat(savedExplanation.getSource()).isEqualTo("DETERMINISTIC_FALLBACK");
         assertThat(savedExplanation.getFallbackReason()).isEqualTo("TIMEOUT");
         assertThat(savedExplanation.getNarrative()).isEqualTo(response.plainEnglishExplanation());
     }

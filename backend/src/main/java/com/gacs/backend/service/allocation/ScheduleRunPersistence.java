@@ -123,7 +123,6 @@ public class ScheduleRunPersistence {
             applyLlmText(freshItems, freshImpacts, explanation.response());
             explanations.save(ScheduleExplanation.builder()
                     .scheduleRunId(scheduleRunId)
-                    .source("LLM")
                     .modelName(explanation.modelName())
                     .rawResponseJson(explanation.rawResponseJson())
                     .headline(explanation.response().headline())
@@ -132,7 +131,6 @@ public class ScheduleRunPersistence {
         } else {
             explanations.save(ScheduleExplanation.builder()
                     .scheduleRunId(scheduleRunId)
-                    .source("DETERMINISTIC_FALLBACK")
                     .fallbackReason(explanation.fallbackReason().name())
                     .rawResponseJson(explanation.rawResponseJson())
                     .validationErrorsJson(joinErrors(explanation.validationErrors()))

@@ -119,7 +119,7 @@ class ConstraintPhraseCorpusTest {
     }
 
     static ConstraintParseService service(Clock clock) {
-        return new ConstraintParseService(new RuleBasedConstraintParser(), new JobService(mock(JobRepository.class), org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class), clock, null, null, null, null),
+        return new ConstraintParseService(new RuleBasedConstraintParser(), new JobService(mock(JobRepository.class), org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class), clock, null, null, null, null, null),
                 clock, "America/Chicago");
     }
 

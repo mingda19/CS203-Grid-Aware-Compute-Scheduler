@@ -67,6 +67,9 @@ class ConstraintParseControllerTest {
     @MockitoBean
     private com.gacs.backend.repository.UserRepository userRepository;
 
+    @MockitoBean
+    private com.gacs.backend.service.JobStatusResolver jobStatusResolver;
+
     private final ObjectMapper json = new ObjectMapper();
 
     @Test

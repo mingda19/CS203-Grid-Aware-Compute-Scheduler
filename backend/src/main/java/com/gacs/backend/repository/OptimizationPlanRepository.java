@@ -45,6 +45,25 @@ public interface OptimizationPlanRepository extends JpaRepository<OptimizationPl
                                                         @Param("after") Instant after);
 
     List<OptimizationPlan> findByOwnerIdAndReviewState(Long ownerId, ReviewState state);
+
+    /** One job in one plan, without loading the plan's stored result. */
+    record PlanLink(Long jobId, String runId, ReviewState state, Instant createdAt, Instant invalidatedAt) {}
+
+    @Query("select new com.gacs.backend.repository.OptimizationPlanRepository$PlanLink(j, p.runId, p.reviewState,"
+        + " p.createdAt, p.invalidatedAt) from OptimizationPlan p join p.jobIds j where j in :ids")
+    List<PlanLink> findLinks(@Param("ids") java.util.Collection<Long> ids);
+
+    /** The (job, run) pairs where the job left the plan after approval. */
+    @Query("select r, p.runId from OptimizationPlan p join p.removedJobIds r where r in :ids")
+    List<Object[]> findRemoved(@Param("ids") java.util.Collection<Long> ids);
+
+    @Query("select p.inputSnapshot from OptimizationPlan p where p.runId = :runId")
+    Optional<String> findInputSnapshot(@Param("runId") String runId);
+
+    /** Of these jobs, the ones in an approved plan that they have not left. */
+    @Query("select j from OptimizationPlan p join p.jobIds j where p.reviewState = com.gacs.backend.model.ReviewState.APPROVED"
+        + " and j in :ids and j not member of p.removedJobIds")
+    List<Long> findApprovedLiveJobIds(@Param("ids") java.util.Collection<Long> ids);
     List<OptimizationPlan> findByReviewState(ReviewState state);
 
     /** Plans with no recorded job IDs: stored before they were kept, or with no jobs at all. */

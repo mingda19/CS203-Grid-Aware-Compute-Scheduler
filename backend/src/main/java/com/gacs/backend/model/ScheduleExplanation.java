@@ -39,10 +39,6 @@ public class ScheduleExplanation {
     @Column(name = "schedule_run_id", nullable = false, unique = true)
     private Long scheduleRunId;
 
-    /** {@code LLM} or {@code DETERMINISTIC_FALLBACK}. */
-    @Column(nullable = false, length = 30)
-    private String source;
-
     /** Null means the LLM succeeded. Otherwise one of NOT_CONFIGURED, DISABLED_BY_CONFIG,
      *  TIMEOUT, PARSE_FAILURE, VALIDATION_FAILURE, PROVIDER_ERROR
      *  ({@code com.gacs.backend.service.allocation.FallbackReason}). */

@@ -14,7 +14,7 @@ export const reviewLabels: Record<PlanReviewState, string> = {
  */
 export function planUnavailable(plan: SchedulePlanDetail | null): string | null {
   if (!plan) return "Select a schedule to review."
-  if (plan.reviewState === "STALE" || plan.reviewState === "INVALIDATED") return "Generate a new recommendation for this schedule."
+  if (plan.reviewState === "STALE" || plan.reviewState === "INVALIDATED") return "This plan was replaced. Pick the current plan for these jobs in the list; the system plans them again within a minute if there is none yet."
   if (!plan.recommendation) return "The stored recommendation cannot be read. Generate a new recommendation."
   return null
 }

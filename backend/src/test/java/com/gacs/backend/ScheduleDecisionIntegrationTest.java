@@ -114,7 +114,9 @@ class ScheduleDecisionIntegrationTest {
     }
 
     private List<AuditEvent> history(UUID runId) {
+        // Approving also applies the plan, which records a dispatch. These tests are about the decisions.
         return decisions.findByRunIdOrderByTimestampDesc(runId.toString()).stream()
+            .filter(e -> e.getActionType() != AuditActionType.DISPATCH)
             .sorted(Comparator.comparing(AuditEvent::getId)).toList();
     }
 
@@ -139,8 +141,11 @@ class ScheduleDecisionIntegrationTest {
         // actually about - that the database identity comes from the authenticated user and never
         // from the token's numeric claim, and that each decision is recorded against the plan's hash
         // - is unchanged by that.
-        for (AuditActionType action : List.of(AuditActionType.APPROVE, AuditActionType.REJECT, AuditActionType.REVISE)) {
+        // Approve is last: an approved job cannot be planned again for the next run.
+        UUID[] lastRun = new UUID[1];
+        for (AuditActionType action : List.of(AuditActionType.REJECT, AuditActionType.REVISE, AuditActionType.APPROVE)) {
             UUID runId = optimize();
+            lastRun[0] = runId;
             String snapshot = plans.findById(runId.toString()).orElseThrow().getResultJson();
             String response = mvc.perform(post("/api/schedules/" + runId + "/" + action.name().toLowerCase(Locale.ROOT))
                     // Even a signed token's numeric claim is not trusted as the database identity.
@@ -172,6 +177,11 @@ class ScheduleDecisionIntegrationTest {
             // Deciding never rewrites the plan it was decided on.
             assertThat(plan.getResultJson()).isEqualTo(snapshot);
         }
+
+        // The last run was approved, so its job is locked. Revoke it to plan the job again.
+        mvc.perform(post("/api/schedules/" + lastRun[0] + "/revoke").with(user(owner.getEmail()))
+                .contentType(APPLICATION_JSON).content("{\"comment\":\"releasing the job\"}"))
+            .andExpect(status().isOk());
 
         // Revoking an approval appends a second decision to that run's history, and is the only
         // transition left open on a decided run.

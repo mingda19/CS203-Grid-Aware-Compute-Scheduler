@@ -253,11 +253,13 @@ class FacilityUtilizationIntegrationTest {
     }
 
     @Test
-    @DisplayName("A STALE plan, superseded by a later approval of the same job, is not counted")
+    @DisplayName("A plan that has gone STALE is not counted")
     void stalePlanIsNotCounted() throws Exception {
-        Job job = flexibleJob(4.0, 0.0);
-        String older = approvedPlan(job);
-        String newer = approvedPlan(job);
+        String older = approvedPlan(flexibleJob(4.0, 0.0));
+        var plan = plans.findById(older).orElseThrow();
+        plan.invalidate(ReviewState.STALE, "Superseded by approved run x", Instant.now());
+        plans.save(plan);
+        String newer = approvedPlan(flexibleJob(4.0, 0.0));
         assertThat(stateOf(older)).isEqualTo(ReviewState.STALE);
         clockAt(usedHour.plusMinutes(10));
 

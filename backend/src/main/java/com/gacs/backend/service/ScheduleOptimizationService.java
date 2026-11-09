@@ -86,7 +86,15 @@ public class ScheduleOptimizationService {
      */
     public OptimizeResponseDto optimize(OptimizeRequestDto request, String ownerEmail,
                                         BiConsumer<OptimizeResponseDto, String> afterExplanationPersisted) {
-        OptimizationProblem problem = problems.build(request);
+        return optimize(request, java.util.Map.of(), ownerEmail, afterExplanationPersisted);
+    }
+
+    /** As above, solving against the facility less what approved plans use ({@code reserved}, by hour). */
+    public OptimizeResponseDto optimize(OptimizeRequestDto request,
+                                        java.util.Map<java.time.LocalDateTime, com.gacs.backend.service.allocation.CapacityLimit> reserved,
+                                        String ownerEmail,
+                                        BiConsumer<OptimizeResponseDto, String> afterExplanationPersisted) {
+        OptimizationProblem problem = problems.build(request, reserved);
         AllocationResult result;
         try {
             result = solver.solve(problem);

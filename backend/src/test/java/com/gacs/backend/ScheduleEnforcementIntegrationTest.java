@@ -72,13 +72,15 @@ class ScheduleEnforcementIntegrationTest {
         m.put("workloadCategory", j.getWorkloadCategory().name());
         return m;
     }
-    private String optimize() throws Exception {
+    private ResultActions optimizeRequest() throws Exception {
         var forecast = List.of(Map.of("intervalStartUtc", start.toString(), "predictedPrice", 100),
             Map.of("intervalStartUtc", start.plusHours(1).toString(), "predictedPrice", 10),
             Map.of("intervalStartUtc", start.plusHours(2).toString(), "predictedPrice", 50));
-        String result = mvc.perform(post("/api/schedules/optimize").with(user(owner.getEmail()))
-            .contentType(APPLICATION_JSON).content(json.writeValueAsString(Map.of("jobs", List.of(jobBody()), "forecast", forecast))))
-            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        return mvc.perform(post("/api/schedules/optimize").with(user(owner.getEmail()))
+            .contentType(APPLICATION_JSON).content(json.writeValueAsString(Map.of("jobs", List.of(jobBody()), "forecast", forecast))));
+    }
+    private String optimize() throws Exception {
+        String result = optimizeRequest().andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         String run = json.readTree(result).path("data").path("runId").asText(); created.add(run); return run;
     }
     private ResultActions decide(String run, String action) throws Exception {
@@ -318,10 +320,17 @@ class ScheduleEnforcementIntegrationTest {
         } finally {users.deleteById(other.getId());}
     }
 
-    @Test void supersessionUsesApprovalOrderAndCannotBeRevived() throws Exception {
-        String older=optimize(),newer=optimize();decide(newer,"approve").andExpect(status().isOk());
-        decide(older,"approve").andExpect(status().isOk());refused(apply(newer),"STALE");
-        decide(older,"revoke").andExpect(status().isOk());refused(decide(newer,"approve"),"STALE");
+    @Test void aNewPlanReplacesAWaitingOneAndAnApprovedJobCannotBePlannedAgain() throws Exception {
+        String older=optimize(),newer=optimize();
+        // The newer plan replaced the older one while it waited, so only the newer can be approved.
+        refused(decide(older,"approve"),"STALE");
+        decide(newer,"approve").andExpect(status().isOk());
+        // Planning an approved job again would end the approval of the plan's other jobs.
+        optimizeRequest().andExpect(status().isConflict());
+        // Revoking releases the job, and the replaced plan stays replaced.
+        decide(newer,"revoke").andExpect(status().isOk());
+        refused(decide(older,"approve"),"STALE");
+        optimize();
     }
 
     @Test void expiryPersistsStaleWithoutAnExportRequest() throws Exception {
@@ -334,12 +343,20 @@ class ScheduleEnforcementIntegrationTest {
         expiry.expire();assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.STALE);
     }
 
-    @Test void applicationRollsBackAsOneTransaction() throws Exception {
+    @Test void approvingAppliesToTheCalendarInTheSameStep() throws Exception {
         String run=optimize();decide(run,"approve").andExpect(status().isOk());
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).hasSize(1);
+        assertThat(plans.findById(run).orElseThrow().getAppliedAt()).isNotNull();
+        assertThat(audit.findByRunIdOrderByTimestampDesc(run).stream().filter(e->e.getActionType()==AuditActionType.DISPATCH)).hasSize(1);
+    }
+
+    @Test void approvalAndApplicationRollBackAsOneTransaction() throws Exception {
+        String run=optimize();
         new TransactionTemplate(manager).executeWithoutResult(tx->{
-            try {apply(run).andExpect(status().isOk());} catch(Exception e){throw new RuntimeException(e);}
+            try {decide(run,"approve").andExpect(status().isOk());} catch(Exception e){throw new RuntimeException(e);}
             tx.setRollbackOnly();
         });
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.PENDING);
         assertThat(schedules.findByRunIdOrderByIdAsc(run)).isEmpty();
         assertThat(plans.findById(run).orElseThrow().getAppliedAt()).isNull();
         assertThat(audit.findByRunIdOrderByTimestampDesc(run).stream().filter(e->e.getActionType()==AuditActionType.DISPATCH)).isEmpty();
@@ -469,16 +486,20 @@ class ScheduleEnforcementIntegrationTest {
     @Test
     @DisplayName("bug 4: re-optimising and re-approving the same job supersedes its calendar entry rather than accumulating one")
     void reapprovingAndApplyingSameJobSupersedesRatherThanAccumulates() throws Exception {
-        String run1 = optimize(); decide(run1,"approve").andExpect(status().isOk()); apply(run1).andExpect(status().isOk());
+        String run1 = optimize(); decide(run1,"approve").andExpect(status().isOk());
         assertThat(schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail())).hasSize(1);
 
-        String run2 = optimize(); decide(run2,"approve").andExpect(status().isOk()); apply(run2).andExpect(status().isOk());
+        // The approved job cannot be planned again. Revoking releases it and removes its entry.
+        optimizeRequest().andExpect(status().isConflict());
+        decide(run1,"revoke").andExpect(status().isOk());
+        assertThat(schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail())).isEmpty();
+
+        String run2 = optimize(); decide(run2,"approve").andExpect(status().isOk());
 
         var all = schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail());
         assertThat(all).hasSize(1);
         assertThat(all.getFirst().getRunId()).isEqualTo(run2);
         assertThat(schedules.findByRunIdOrderByIdAsc(run1)).isEmpty();
-        assertThat(plans.findById(run1).orElseThrow().getReviewState()).isEqualTo(ReviewState.STALE);
     }
 
     @Test
@@ -499,18 +520,16 @@ class ScheduleEnforcementIntegrationTest {
      * ago - and re-offered "Add approved schedule to calendar" every time the operator navigated back.
      */
     @Test
-    @DisplayName("the plan detail reports appliedAt: null until applied, then the application time")
+    @DisplayName("the plan detail reports appliedAt: null while waiting, the application time once approved")
     void planDetailCarriesAppliedAt() throws Exception {
         String run = optimize();
-        decide(run, "approve").andExpect(status().isOk());
 
         mvc.perform(get("/api/schedules/" + run).with(user(owner.getEmail())))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.reviewState").value("APPROVED"))
-            // Present in the payload and explicitly null, not simply absent: a client cannot
-            // distinguish "never applied" from "field not implemented" if the key is missing.
+            .andExpect(jsonPath("$.data.reviewState").value("PENDING"))
             .andExpect(jsonPath("$.data.appliedAt").doesNotExist());
 
+        decide(run, "approve").andExpect(status().isOk());
         apply(run).andExpect(status().isOk());
         Instant applied = plans.findById(run).orElseThrow().getAppliedAt();
         assertThat(applied).as("apply() must stamp the plan").isNotNull();

@@ -354,7 +354,6 @@ class ScheduleOptimizationIntegrationTest {
         assertThat(constraintImpacts.findByScheduleItemIdOrderByIdAsc(savedItems.get(0).getId())).hasSize(2);
 
         var explanation = scheduleExplanations.findByScheduleRunId(savedRun.getId()).orElseThrow();
-        assertThat(explanation.getSource()).isEqualTo("DETERMINISTIC_FALLBACK");
         assertThat(explanation.getFallbackReason()).isEqualTo("NOT_CONFIGURED");
     }
 

@@ -283,25 +283,22 @@ class ScheduleExportIntegrationTest {
     }
 
     @Test
-    @DisplayName("AC4.3 — a later approval that schedules the same job makes the older plan stale (409)")
-    void newerApprovalOfSameJob_Stale() throws Exception {
+    @DisplayName("AC4.3 — a newer plan for the same job replaces the older waiting one, which is stale (409)")
+    void newerPlanOfSameJob_Stale() throws Exception {
         Job shared = job("Shared", start);
         String older = optimize(start, shared);
-        decide(older, "approve");
 
         String unrelated = optimize(start, job("Unrelated", start));
         decide(unrelated, "approve");
-        export(older, "csv").andExpect(status().isOk());
+        expectRejected(older, 403, "NOT_APPROVED", "is PENDING, not APPROVED"); // an unrelated approval changes nothing
 
         String newer = optimize(start, shared);
-        export(older, "csv").andExpect(status().isOk());
-
+        expectRejected(older, 409, "STALE", "Replaced by run " + newer);
         decide(newer, "approve");
-        expectRejected(older, 409, "STALE", "Superseded by approved run " + newer);
         export(newer, "csv").andExpect(status().isOk());
 
         decide(newer, "revoke");
-        expectRejected(older, 409, "STALE", "Superseded by approved run " + newer);
+        expectRejected(older, 409, "STALE", "Replaced by run " + newer);
     }
 
     @Test

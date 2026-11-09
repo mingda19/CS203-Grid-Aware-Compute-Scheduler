@@ -52,7 +52,7 @@ export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
       </div>}
       {review.detailLoading && <p role="status">Loading recommendation and checking its validity…</p>}
       {review.detailError && <p role="alert" className="text-sm text-destructive">{review.detailError} Refresh plans to retry.</p>}
-      {review.conflict && <div role="alert" className="rounded-md border border-amber-500 p-3 text-sm">This schedule could not be updated because its approval or validity changed. {review.decisionError} Refresh plans to load its current state. Generate a new recommendation if it is stale or invalidated.</div>}
+      {review.conflict && <div role="alert" className="rounded-md border border-amber-500 p-3 text-sm">This plan was updated, so it could not be decided as shown: another approval, a change to a job or the facility, or time passing replaced it. {review.decisionError} The list has been reloaded. Pick the current plan for these jobs; the system plans them again within a minute if there is none yet.</div>}
       {review.decisionError && !review.conflict && <p role="alert" className="text-sm text-destructive">{review.decisionError}</p>}
       {review.notice && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-400">{review.notice}</p>}
       {review.plan && <>

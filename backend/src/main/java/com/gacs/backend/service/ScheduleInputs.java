@@ -2,12 +2,15 @@ package com.gacs.backend.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gacs.backend.dto.OptimizeRequestDto;
+import com.gacs.backend.exception.ConflictException;
 import com.gacs.backend.model.*;
+import com.gacs.backend.service.allocation.CapacityLimit;
 import com.gacs.backend.repository.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.authentication.BadCredentialsException;
 import java.time.Clock;
+import java.time.LocalDateTime;
 import java.util.*;
 
 /** Captures provenance before solving, without holding a transaction across solver/LLM calls. */
@@ -40,8 +43,14 @@ public class ScheduleInputs {
         boolean cancelled, String constraints, ConfirmationOutcome confirmation) {}
     public record JobVersion(long revision, JobState state) {}
     public record FacilityState(long revision, Double cpu, Double gpu, String location) {}
+    /**
+     * @param reserved what approved plans used when the run was solved, by hour. Absent in a snapshot taken
+     *                 before the ledger existed, which means nothing was reserved.
+     */
     public record Snapshot(OptimizeRequestDto request, Map<Long, JobVersion> jobs, FacilityState facility,
-                           String refusal) {}
+                           String refusal, Map<LocalDateTime, CapacityLimit> reserved) {
+        public Map<LocalDateTime, CapacityLimit> reservedOrEmpty() { return reserved == null ? Map.of() : reserved; }
+    }
 
     public static JobState state(Job j) {
         return new JobState(j.getCpuHours(), j.getGpuHours(), j.getOriginalStartTime(), j.getDeadline(),
@@ -49,15 +58,41 @@ public class ScheduleInputs {
             j.getRawConstraints(), j.getConfirmationOutcome());
     }
 
-    private FacilityState facility() {
+    public FacilityState facility() {
         return facilities.findFirstByOrderByIdAsc()
             .map(f -> new FacilityState(f.getSchedulingRevision(), f.getMaxCpuHours(), f.getMaxGpuHours(), f.getLocation()))
             .orElse(new FacilityState(0, 256.0, 64.0, "LZ_NORTH"));
     }
 
+    /**
+     * Locks the shared facility row, creating the row first if there is none. Call it after the owner's row,
+     * never before: an approval takes the owner and then the facility, and a facility change takes the
+     * facility only.
+     */
+    public void lockFacility(String creatorEmail) {
+        if (facilities.findFirstByOrderByIdAsc().isEmpty())
+            facilities.save(Facility.builder().ownerEmail(creatorEmail).build());
+        facilities.lockShared();
+    }
+
+    /**
+     * @param reserved what approved plans use now, by hour. It is stored so the gate can tell later whether
+     *                 capacity was freed or taken.
+     * @throws ConflictException a job in the run is already in an approved plan. Planning it again would
+     *                           end that approval for the plan's other jobs.
+     */
     @Transactional
-    public String capture(OptimizeRequestDto request, String email) {
+    public String capture(OptimizeRequestDto request, String email, Map<LocalDateTime, CapacityLimit> reserved) {
         lock(email);
+        if (request.jobs() != null) {
+            var ids = request.jobs().stream().filter(Objects::nonNull).map(OptimizeRequestDto.JobInput::id)
+                .filter(Objects::nonNull).toList();
+            if (!ids.isEmpty()) {
+                var approved = plans.findApprovedLiveJobIds(ids);
+                if (!approved.isEmpty())
+                    throw new ConflictException("Job " + approved.get(0) + " is already approved. Delete it or revoke its plan first.");
+            }
+        }
         Map<Long, JobVersion> versions = new TreeMap<>();
         String refusal = null;
         if (request.jobs() != null) for (var input : request.jobs()) {
@@ -83,7 +118,7 @@ public class ScheduleInputs {
                 (c.maxGpuHours() != null && c.maxGpuHours() > f.gpu())))
                 refusal = "Submitted capacity override exceeds the facility";
         }
-        try { return json.writeValueAsString(new Snapshot(request, versions, f, refusal)); }
+        try { return json.writeValueAsString(new Snapshot(request, versions, f, refusal, reserved)); }
         catch (Exception ex) { throw new IllegalStateException("Cannot capture schedule inputs", ex); }
     }
 
@@ -119,10 +154,31 @@ public class ScheduleInputs {
         } catch (Exception ex) { return "Unreadable input provenance; generate a new recommendation"; }
     }
 
-    public void invalidate(String email, Long jobId, String reason) {
-        User owner = lock(email);
-        for (var p : plans.findByOwnerIdAndReviewState(owner.getId(), ReviewState.APPROVED))
-            if (jobId == null || p.getJobIds().contains(jobId))
-                p.invalidate(ReviewState.INVALIDATED, reason, clock.instant());
+    /** The revision of each job as the run solved it, from the stored provenance. Empty when unreadable. */
+    public Map<Long, Long> revisions(String provenance) {
+        try {
+            Map<Long, Long> revisions = new TreeMap<>();
+            json.readValue(provenance, Snapshot.class).jobs().forEach((id, version) -> revisions.put(id, version.revision()));
+            return revisions;
+        } catch (Exception ex) { return Map.of(); }
+    }
+
+    /** The revision a stored plan recorded for one job, or null when it recorded none. */
+    public Long revisionIn(String provenance, Long jobId) {
+        return provenance == null ? null : revisions(provenance).get(jobId);
+    }
+
+    /** What approved plans used when this plan was solved, by hour. */
+    public Map<LocalDateTime, CapacityLimit> reservedAtSolve(OptimizationPlan plan) {
+        try { return json.readValue(plan.getInputSnapshot(), Snapshot.class).reservedOrEmpty(); }
+        catch (Exception ex) { return Map.of(); }
+    }
+
+    /** The latest deadline among the jobs this plan was solved for, or null when its provenance is unreadable. */
+    public LocalDateTime latestDeadline(OptimizationPlan plan) {
+        try {
+            return json.readValue(plan.getInputSnapshot(), Snapshot.class).request().jobs().stream()
+                .map(OptimizeRequestDto.JobInput::deadline).filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null);
+        } catch (Exception ex) { return null; }
     }
 }

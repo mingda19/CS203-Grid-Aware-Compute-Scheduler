@@ -45,10 +45,12 @@ public class JobService {
     private final WorkloadScheduleRepository schedules;
     private final AuditEventService audit;
     private final UserRepository users;
+    private final JobStatusResolver statuses;
 
     public JobService(JobRepository jobRepository, ScheduleInputs inputs, Clock clock,
                       OptimizationPlanRepository plans, WorkloadScheduleRepository schedules,
-                      AuditEventService audit, UserRepository users) {
+                      AuditEventService audit, UserRepository users, JobStatusResolver statuses) {
+        this.statuses = statuses;
         this.inputs = inputs;
         this.jobRepository = jobRepository;
         this.clock = clock;
@@ -58,17 +60,13 @@ public class JobService {
         this.users = users;
     }
 
-    /** Run ID of the approved plan each job is in. A job in none of them is not a key. */
-    private Map<Long, String> approvedRuns() {
-        Map<Long, String> byJob = new HashMap<>();
-        for (OptimizationPlan plan : plans.findByReviewState(ReviewState.APPROVED))
-            for (Long jobId : plan.liveJobIds()) byJob.put(jobId, plan.getRunId());
-        return byJob;
-    }
-
-    private static JobResponseDto dto(Job job, Map<Long, String> approved) {
+    /** The job with where it stands now. {@code status} is worked out from its plans, not read from the row. */
+    private static JobResponseDto dto(Job job, Map<Long, JobStatusResolver.Derived> derived) {
         JobResponseDto dto = JobResponseDto.fromEntity(job);
-        dto.setApprovedRunId(approved.get(job.getId()));
+        var state = derived.get(job.getId());
+        dto.setStatus(state.status().name());
+        dto.setStatusReason(state.reason());
+        dto.setApprovedRunId(state.approved() ? state.runId() : null);
         return dto;
     }
 
@@ -77,20 +75,20 @@ public class JobService {
      */
     @Transactional(readOnly = true)
     public List<JobResponseDto> getJobsByOwner(String ownerEmail) {
-        Map<Long, String> approved = approvedRuns();
-        return jobRepository.findByOwnerEmailOrderByOriginalStartTimeAsc(ownerEmail).stream()
-                .map(job -> dto(job, approved))
-                .toList();
+        List<Job> own = jobRepository.findByOwnerEmailOrderByOriginalStartTimeAsc(ownerEmail);
+        Map<Long, JobStatusResolver.Derived> derived = statuses.resolve(own);
+        return own.stream().map(job -> dto(job, derived)).toList();
     }
 
     /** Every owner's jobs with the owner's name, for an admin. */
     @Transactional(readOnly = true)
     public List<JobResponseDto> getAllJobs() {
-        Map<Long, String> approved = approvedRuns();
+        List<Job> all = jobRepository.findAllByOrderByOriginalStartTimeAsc();
+        Map<Long, JobStatusResolver.Derived> derived = statuses.resolve(all);
         Map<String, String> names = new HashMap<>();
         users.findAll().forEach(user -> names.put(user.getEmail(), user.displayName()));
-        return jobRepository.findAllByOrderByOriginalStartTimeAsc().stream().map(job -> {
-            JobResponseDto dto = dto(job, approved);
+        return all.stream().map(job -> {
+            JobResponseDto dto = dto(job, derived);
             dto.setOwnerName(names.getOrDefault(job.getOwnerEmail(), job.getOwnerEmail()));
             return dto;
         }).toList();
@@ -103,7 +101,7 @@ public class JobService {
     public JobResponseDto getJobById(Long id, String ownerEmail) {
         Job job = jobRepository.findByIdAndOwnerEmail(id, ownerEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("Job not found with id: " + id));
-        return dto(job, approvedRuns());
+        return dto(job, statuses.resolve(List.of(job)));
     }
 
     /**
@@ -138,7 +136,7 @@ public class JobService {
 
         applyParseMetadata(job, request);
         Job saved = jobRepository.save(job);
-        return JobResponseDto.fromEntity(saved);
+        return dto(saved, statuses.resolve(List.of(saved)));
     }
 
     /**
@@ -151,7 +149,11 @@ public class JobService {
                 .orElseThrow(() -> new ResourceNotFoundException("Job not found with id: " + id));
 
         // An approved job is locked: every field, name and description included. Delete is the only change.
-        if (approvedRuns().containsKey(id))
+        // So is a finished one: its plan goes stale when its slots end, which would lift the lock.
+        var state = statuses.resolve(List.of(existing)).get(id);
+        if (state.approved() && state.status() == JobStatusResolver.Status.COMPLETED)
+            throw new ConflictException("This job has finished and cannot be edited. You can delete it.");
+        if (state.approved())
             throw new ConflictException("This job is approved and cannot be edited. You can delete it.");
 
         validateJobConstraints(request);
@@ -187,7 +189,7 @@ public class JobService {
             existing.setSchedulingRevision(existing.getSchedulingRevision() + 1);
         }
         Job updated = jobRepository.save(existing);
-        return JobResponseDto.fromEntity(updated);
+        return dto(updated, statuses.resolve(List.of(updated)));
     }
 
     private static String blankToNull(String value) {

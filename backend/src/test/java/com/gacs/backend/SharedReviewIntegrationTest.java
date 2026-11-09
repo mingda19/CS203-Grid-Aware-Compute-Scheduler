@@ -158,8 +158,9 @@ class SharedReviewIntegrationTest {
             .andExpect(jsonPath("$.data.operatorId").value(approver.getId()))
             .andExpect(jsonPath("$.data.reviewState").value("APPROVED"));
         assertThat(stateOf(run)).isEqualTo(ReviewState.APPROVED);
+        // The approval and the dispatch that applies it are both the approver's.
         assertThat(audit.findByRunIdOrderByTimestampDesc(run)).extracting(AuditEvent::getActor)
-            .containsExactly(approver.getEmail());
+            .containsOnly(approver.getEmail());
     }
 
     @Test
@@ -273,7 +274,7 @@ class SharedReviewIntegrationTest {
             mvc.perform(get("/api/audit-events/" + eventId).with(as(who))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scheduleAvailability").value("VISIBLE"));
             mvc.perform(get("/api/audit-events/run/" + run).with(as(who))).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(1));
+                .andExpect(jsonPath("$.data.length()").value(2)); // the approval and the dispatch
         }
         JsonNode strangers = json.readTree(mvc.perform(get("/api/audit-events?size=50").with(as(admin)))
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data").path("content");
@@ -381,7 +382,9 @@ class SharedReviewIntegrationTest {
         decide(approver, first, "approve").andExpect(status().isOk());
 
         assertThat(detail(owner, first).path("removedJobIds")).extracting(JsonNode::asLong).containsExactly(squeezed.getId());
+        // The filler holds the whole cluster for its hour, so the squeezed job moves to the next one.
         var smaller = body(squeezed); smaller.put("cpuHours", 50.0);
+        smaller.put("originalStartTime", start.plusHours(1).toString()); smaller.put("deadline", start.plusHours(2).toString());
         edit(owner, squeezed, smaller).andExpect(status().isOk());
         edit(owner, filler, body(filler)).andExpect(status().isConflict());
 

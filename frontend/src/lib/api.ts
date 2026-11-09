@@ -96,6 +96,10 @@ export const WORKLOAD_CATEGORY_LABELS: Record<WorkloadCategory, string> = {
   GRID_ALERT: "Grid Alert",
 }
 
+/** Worked out by the server from the job's plans and calendar entries. */
+export type JobStatus =
+  | "SCHEDULING" | "AWAITING_APPROVAL" | "SCHEDULED" | "RUNNING" | "COMPLETED" | "REJECTED" | "NEEDS_ATTENTION" | "CANCELLED"
+
 export interface ComputeJob {
   id: number
   ownerEmail?: string
@@ -116,7 +120,9 @@ export interface ComputeJob {
   rawConstraints?: string | null
   parsedAt?: string | null
   confirmationOutcome?: ConfirmationOutcome | null
-  status: string
+  status: JobStatus
+  /** Why the job is Rejected or Needs attention. */
+  statusReason?: string | null
   createdAt?: string
   updatedAt?: string
 }
@@ -664,6 +670,10 @@ export const jobsApi = {
   },
   remove(id: number): Promise<ApiResponse<void>> {
     return fetchJson<ApiResponse<void>>(`/api/jobs/${id}`, { method: "DELETE" })
+  },
+  /** Plans the caller's jobs that have no live plan, and the ones turned away or failed. */
+  recompute(): Promise<ApiResponse<{ runIds: string[]; failed: number }>> {
+    return fetchJson<ApiResponse<{ runIds: string[]; failed: number }>>("/api/schedules/recompute", { method: "POST" })
   },
   /** Admin only: every user's jobs, each with its owner's name. */
   listAll(): Promise<ApiResponse<ComputeJob[]>> {

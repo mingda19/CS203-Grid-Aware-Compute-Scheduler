@@ -150,7 +150,7 @@ public record AllocationResult(List<JobOutcome> outcomes, boolean provenOptimal)
         // Not enough hours left to finish, independently of what anyone else is using: checked against
         // full cluster capacity, so if this fires the cluster could be idle and the job still would
         // not fit. See this method's javadoc for why it must come before the capacity message.
-        if (!new BaselineCalculator(problem.capacity()).runFrom(job, window.firstSlot()).finishesByDeadline()) {
+        if (!new BaselineCalculator(problem.baselineCapacity()).runFrom(job, window.firstSlot()).finishesByDeadline()) {
             return "Not enough time left: only the hours from " + window.firstSlot().format(HOUR)
                     + " to " + lastEnd.format(HOUR) + " UTC remain before this job's deadline, which is "
                     + "less than it needs to finish even alone on the cluster. Extend its deadline, "

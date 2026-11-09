@@ -47,11 +47,19 @@ class JobServiceTest {
     void setUp() {
         var inputs = org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class);
         lenient().when(inputs.lock(anyString())).thenReturn(owningUser);
+        var statuses = org.mockito.Mockito.mock(JobStatusResolver.class);
+        lenient().when(statuses.resolve(org.mockito.ArgumentMatchers.anyCollection())).thenAnswer(call -> {
+            var derived = new java.util.HashMap<Long, JobStatusResolver.Derived>();
+            for (Job job : (java.util.Collection<Job>) call.getArgument(0))
+                derived.put(job.getId(), new JobStatusResolver.Derived(JobStatusResolver.Status.SCHEDULING, null, null, false,
+                    JobStatusResolver.Cause.NONE));
+            return derived;
+        });
         jobService = new JobService(jobRepository, inputs, CLOCK,
                 org.mockito.Mockito.mock(com.gacs.backend.repository.OptimizationPlanRepository.class),
                 org.mockito.Mockito.mock(com.gacs.backend.repository.WorkloadScheduleRepository.class),
                 org.mockito.Mockito.mock(com.gacs.backend.service.AuditEventService.class),
-                org.mockito.Mockito.mock(com.gacs.backend.repository.UserRepository.class));
+                org.mockito.Mockito.mock(com.gacs.backend.repository.UserRepository.class), statuses);
     }
 
     @Test
@@ -159,7 +167,7 @@ class JobServiceTest {
         assertThat(response.isExempt()).isTrue();
         assertThat(response.getOriginalStartTime()).isEqualTo(start);
         assertThat(response.getDeadline()).isEqualTo(deadline);
-        assertThat(response.getStatus()).isEqualTo("PENDING");
+        assertThat(response.getStatus()).isEqualTo("SCHEDULING"); // worked out from plans, not the stored value
 
         ArgumentCaptor<Job> captor = ArgumentCaptor.forClass(Job.class);
         verify(jobRepository).save(captor.capture());
@@ -411,7 +419,7 @@ class JobServiceTest {
         assertThat(updated.isExempt()).isTrue();
         assertThat(updated.getPriority()).isEqualTo(JobPriority.CRITICAL);
         assertThat(updated.getRawConstraints()).isEqualTo("Changed to exempt priority");
-        assertThat(updated.getStatus()).isEqualTo("SCHEDULED");
+        assertThat(updated.getStatus()).isEqualTo("SCHEDULING");
     }
 
     @Test

@@ -129,7 +129,9 @@ class ScheduleDecisionStateMachineTest {
 
         // Revocation lands in REJECTED so every existing execution gate halts the schedule.
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.REJECTED);
-        assertThat(auditEvents.findByRunIdOrderByTimestampDesc(run)).hasSize(2);
+        // Approve, then revoke. The dispatch from approving is not a decision.
+        assertThat(auditEvents.findByRunIdOrderByTimestampDesc(run))
+            .filteredOn(e -> e.getActionType() != com.gacs.backend.model.AuditActionType.DISPATCH).hasSize(2);
     }
 
     @ParameterizedTest
@@ -165,7 +167,9 @@ class ScheduleDecisionStateMachineTest {
 
         decide(run, "revoke").andExpect(status().isConflict())
             .andExpect(jsonPath("$.data.reason").value("ALREADY_DECIDED"));
-        assertThat(auditEvents.findByRunIdOrderByTimestampDesc(run)).hasSize(2);
+        // Approve, then revoke. The dispatch from approving is not a decision.
+        assertThat(auditEvents.findByRunIdOrderByTimestampDesc(run))
+            .filteredOn(e -> e.getActionType() != com.gacs.backend.model.AuditActionType.DISPATCH).hasSize(2);
     }
 
     @Test
