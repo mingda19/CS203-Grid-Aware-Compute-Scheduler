@@ -18,7 +18,7 @@ import java.util.Optional;
  */
 final class GreedyAllocator {
 
-    private static final double DONE_TOLERANCE = 1e-12;
+    static final double DONE_TOLERANCE = 1e-12;
 
     private GreedyAllocator() {
     }
@@ -31,15 +31,18 @@ final class GreedyAllocator {
      * set of hours, because cost is linear in the shares. Ties keep the earlier start, then the
      * shorter run.
      *
+     * @param earliestStart the run's earliest schedulable hour ({@code problem.earliestStart()}); no
+     *                    plan this returns uses an hour before it
      * @param constraints this job's own constraints ({@code problem.constraintsFor(job)}), not every
      *                    constraint in the problem
      * @param placedSoFar every other job already placed, keyed by job id, for the constraints above
      *                    to consult
      */
     static Optional<JobPlan> cheapestPlan(OptimizerJob job, ResidualCapacity free, PriceSeries prices,
-                                          EnergyCostModel costs, List<PlacementConstraint> constraints,
+                                          LocalDateTime earliestStart, EnergyCostModel costs,
+                                          List<PlacementConstraint> constraints,
                                           Map<Long, JobPlan> placedSoFar) {
-        JobWindow window = new JobWindow(job, prices);
+        JobWindow window = new JobWindow(job, prices, earliestStart);
         for (PlacementConstraint constraint : constraints) {
             window = constraint.restrict(job, window, placedSoFar);
         }
@@ -94,8 +97,9 @@ final class GreedyAllocator {
      * before any other constraint on its members would have anything to consult yet.
      */
     static Optional<JobPlan> cheapestPlanEndingAt(OptimizerJob job, LocalDateTime endHour, ResidualCapacity free,
-                                                   PriceSeries prices, EnergyCostModel costs) {
-        JobWindow window = new JobWindow(job, prices);
+                                                   PriceSeries prices, LocalDateTime earliestStart,
+                                                   EnergyCostModel costs) {
+        JobWindow window = new JobWindow(job, prices, earliestStart);
         double kwh = costs.slotCostUsd(job, 1.0, 1.0);
         JobPlan best = null;
         double bestCost = Double.POSITIVE_INFINITY;

@@ -32,8 +32,11 @@ import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import com.gacs.backend.support.FixedClockConfig;
+import org.springframework.context.annotation.Import;
 
 /** Shared committed CRUD assertions, run on H2 and on configured PostgreSQL. */
+@Import(FixedClockConfig.class)
 @SpringBootTest
 @AutoConfigureMockMvc
 @WithMockUser(username = "parse-operator@datacenter.io")

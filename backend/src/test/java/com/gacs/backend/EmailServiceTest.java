@@ -19,6 +19,23 @@ import static org.mockito.Mockito.when;
 class EmailServiceTest {
 
     @Test
+    void recoveryReportsAuthenticationFailureWithoutLeakingProviderMessage() {
+        JavaMailSender sender = mock(JavaMailSender.class);
+        MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));
+        when(sender.createMimeMessage()).thenReturn(message);
+        org.mockito.Mockito.doThrow(new org.springframework.mail.MailAuthenticationException("sensitive provider details"))
+                .when(sender).send(message);
+        EmailService service = new EmailService();
+        ReflectionTestUtils.setField(service, "mailSender", sender);
+        ReflectionTestUtils.setField(service, "fromEmail", "sender@example.com");
+        var error = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> service.sendPasswordResetEmail("recipient@example.com", "secret-code"));
+        org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("SMTP authentication rejected"));
+        org.junit.jupiter.api.Assertions.assertFalse(error.getMessage().contains("sensitive"));
+        org.junit.jupiter.api.Assertions.assertFalse(error.getMessage().contains("secret-code"));
+    }
+
+    @Test
     void sendsLowConfidenceAlertToRecipientWithForecastDetails() throws Exception {
         JavaMailSender mailSender = mock(JavaMailSender.class);
         MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));

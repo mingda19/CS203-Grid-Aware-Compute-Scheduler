@@ -13,6 +13,7 @@ import static com.gacs.backend.service.allocation.Fixtures.job;
 import static com.gacs.backend.service.allocation.Fixtures.prices;
 import static com.gacs.backend.service.allocation.Fixtures.problem;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /** Routing between the exact solver and the heuristic. */
 class HybridAllocationSolverTest {
@@ -57,5 +58,20 @@ class HybridAllocationSolverTest {
     @DisplayName("Size counts each flexible job's hours from its start to its deadline")
     void sizeCountsFlexibleHours() {
         assertThat(HybridAllocationSolver.size(SMALL)).isEqualTo(4 + 4); // the exempt job does not count
+    }
+
+    @Test
+    @DisplayName("A far deadline keeps the size above the threshold, so the heuristic solves it instead of a huge exact model")
+    void farDeadlineSkipsExactSolver() {
+        // A deadline about 11,000 years out. The exact model makes variables for every hour up to it.
+        OptimizationProblem problem = problem(List.of(job(1, 100.0, 0.0, 0, 500, 100_000_000)), prices(10, 20, 30), cpuCapacity(256.0));
+        // Check the guard first: if it fails, the test stops before solve() can build the model.
+        assertThat(HybridAllocationSolver.size(problem)).isEqualTo(100_000_000L);
+
+        AllocationResult result = assertTimeoutPreemptively(Duration.ofSeconds(5), () -> new HybridAllocationSolver(COSTS).solve(problem));
+
+        assertThat(result.provenOptimal()).isFalse();
+        assertThat(result.scheduledCount()).isEqualTo(1);
+        assertThat(ContractRules.violations(problem, result)).isEmpty();
     }
 }

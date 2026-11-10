@@ -16,11 +16,24 @@ import java.util.Map;
 /**
  * Builds the hourly price curve the optimizer runs against.
  *
- * <p>Prefers the latest stored model forecast for the requested location and window.
+ * <p>Prefers the latest stored forecast from one configured model kind
+ * ({@code gacs.optimiser.forecast-model}, default {@code lstm}) for the requested location and
+ * window. Reading a single model matters: LSTM and LEAR run as separate jobs, and taking the
+ * newest row per hour across both would stitch two models into one curve, so the optimizer
+ * would shift jobs on model disagreement rather than price.
  * When no forecast rows cover that window at all, falls back to a 24-hour curve built from
  * stored settlement prices (see {@link #fallbackCurve}) so an optimization run still succeeds
- * instead of failing on absent model output (GRID-124 AC5.2). Partial coverage is not treated
- * as absence: hours that are missing simply are not candidate slots.
+ * instead of failing on absent model output (GRID-124 AC5.2).
+ *
+ * <p>Partial coverage is filled from the same fallback curve, and the filled hours are recorded as
+ * estimated on the returned {@link PriceSeries}. Leaving them unpriced instead - the earlier
+ * behaviour - made the gap fatal rather than merely uncertain: a job whose window reaches past the
+ * forecast could not have its baseline priced, so {@code OptimizationProblemFactory} rejected the
+ * whole request with 422 and the operator got no plan at all. The day-ahead market clears about a day
+ * out while a job may be scheduled days ahead, so that was the normal case, not an edge one. Filling
+ * the gap keeps every slot in the horizon priced, which is what makes a baseline comparable to its
+ * alternatives, and the estimated-slot set is what lets the response mark such a plan provisional
+ * instead of presenting an estimate as a forecast (contract FR-13 and FR-04).
  */
 @Service
 public class PriceSeriesProvider {
@@ -45,15 +58,22 @@ public class PriceSeriesProvider {
     private final PredictedPriceRepository predictions;
     private final ElectricalPriceRepository history;
     private final double recentWeight;
+    private final String forecastModel;
 
     public PriceSeriesProvider(
         PredictedPriceRepository predictions,
         ElectricalPriceRepository history,
-        @Value("${gacs.optimiser.fallback-recent-weight:0.5}") double recentWeight
+        @Value("${gacs.optimiser.fallback-recent-weight:0.5}") double recentWeight,
+        @Value("${gacs.optimiser.forecast-model:lstm}") String forecastModel
     ) {
+        if (!PredictedPriceRepository.MODEL_KINDS.contains(forecastModel)) {
+            throw new IllegalArgumentException("gacs.optimiser.forecast-model must be one of "
+                + PredictedPriceRepository.MODEL_KINDS + ", got: " + forecastModel);
+        }
         this.predictions = predictions;
         this.history = history;
         this.recentWeight = recentWeight;
+        this.forecastModel = forecastModel;
     }
 
     /**
@@ -61,7 +81,8 @@ public class PriceSeriesProvider {
      */
     public PriceSeries load(String location, LocalDateTime horizonStart, int horizonHours) {
         LocalDateTime horizonEnd = horizonStart.plusHours(horizonHours);
-        List<PredictedPrice> rows = predictions.findLatestForecast(location, horizonStart, horizonEnd);
+        List<PredictedPrice> rows = predictions.findLatestForecastForModel(
+            location, forecastModel, horizonStart, horizonEnd);
 
         Map<LocalDateTime, Double> forecast = new LinkedHashMap<>();
         for (PredictedPrice row : rows) {
@@ -72,16 +93,45 @@ public class PriceSeriesProvider {
                 continue;
             }
             LocalDateTime slot = row.getIntervalStartUtc().truncatedTo(ChronoUnit.HOURS);
-            // findLatestForecast already narrows to the newest generatedAt per interval, but two
-            // model versions can share that timestamp. Keep the first and ignore the duplicate so
-            // the curve stays single-valued and the run stays deterministic.
+            // findLatestForecastForModel already narrows to the newest generatedAt per interval, but
+            // two model versions (e.g. y0 and y1) can share that timestamp. Keep the first and ignore
+            // the duplicate so the curve stays single-valued and the run stays deterministic.
             forecast.putIfAbsent(slot, row.getPredictedPrice());
         }
 
-        if (!forecast.isEmpty()) {
+        if (forecast.isEmpty()) {
+            return new PriceSeries(
+                fallbackSlots(fallbackCurve(location, horizonStart), horizonStart, horizonHours), true);
+        }
+        return withGapsFilled(forecast, location, horizonStart, horizonHours);
+    }
+
+    /**
+     * Returns the stored forecast with every uncovered hour of the horizon filled from the fallback
+     * curve, those hours marked estimated. The fallback curve is only computed when there is actually
+     * a gap, so a fully covered horizon costs no extra queries.
+     */
+    private PriceSeries withGapsFilled(Map<LocalDateTime, Double> forecast, String location,
+                                       LocalDateTime horizonStart, int horizonHours) {
+        Map<LocalDateTime, Double> missing = new LinkedHashMap<>();
+        for (int offset = 0; offset < horizonHours; offset++) {
+            LocalDateTime slot = horizonStart.plusHours(offset);
+            if (!forecast.containsKey(slot)) {
+                missing.put(slot, null);
+            }
+        }
+        if (missing.isEmpty()) {
             return new PriceSeries(forecast, false);
         }
-        return new PriceSeries(fallbackSlots(fallbackCurve(location, horizonStart), horizonStart, horizonHours), true);
+
+        double[] curve = fallbackCurve(location, horizonStart);
+        Map<LocalDateTime, Double> combined = new LinkedHashMap<>(forecast);
+        for (LocalDateTime slot : missing.keySet()) {
+            combined.put(slot, curve[slot.getHour()]);
+        }
+        // seeded stays false: a stored forecast did cover part of this window, so the curve as a whole
+        // is not the fallback. usedEstimatedPrices() is what callers check to mark a plan provisional.
+        return new PriceSeries(combined, false, missing.keySet());
     }
 
     /**

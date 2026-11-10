@@ -110,7 +110,7 @@ MIN_CONFIDENCE_SAMPLES = 3  # fewer points make "decay" meaningless - that hour 
 
 # Henry Hub is published on business days with a lag, so a given day's gas
 # price is the last published one carried forward - but never one older than this.
-GAS_MAX_STALE_DAYS = 7
+GAS_MAX_STALE_DAYS = 14
 
 # Physical / assumed constants (same as model/wind_solar_power_features.py - no
 # real farm metadata exists, see model/model.md S3.5).
@@ -415,14 +415,26 @@ def load_exogenous(engine: sa.Engine, start: datetime, end: datetime) -> pd.Data
     start, end = pd.Timestamp(start), pd.Timestamp(end)
     out = pd.DataFrame({"time": pd.date_range(start, end, freq="h")})
 
-    gas = load_single_column(engine, "fuel_price", "period", "henry_hub_price_usd_mmbtu",
-                             start - timedelta(days=5), end)
+    # Floored at a FIXED boundary (start - this much), not at whichever row
+    # the DB happens to return first: henry_hub only has rows on trading
+    # days, so a weekend/holiday gap (observed up to 4 days long) sitting
+    # right at the fetch's lower edge used to push gas.index.min() later
+    # than intended, silently shrinking shift(3)'s lookback margin to zero
+    # and producing a real, reproducible NaN for the oldest day(s) of
+    # whatever window called this (seen in production: update.py's
+    # per-anchor-day build_sequence calls, scattered on specific anchors
+    # whose window edge happened to land on such a gap). GAS_MAX_STALE_DAYS
+    # (the ffill tolerance) + 3 (the deepest shift, lag3d) guarantees a real
+    # trading day still exists before the cutoff shift(3) needs, even in
+    # the worst observed gap.
+    gas_floor = (start - timedelta(days=GAS_MAX_STALE_DAYS + 3)).floor("D")
+    gas = load_single_column(engine, "fuel_price", "period", "henry_hub_price_usd_mmbtu", gas_floor, end)
     gas = gas.set_index("time")["henry_hub_price_usd_mmbtu"]
     if not gas.empty:
         # Extend the daily index through the target day before the ffill:
         # stopping at the last published row would leave every day after it
         # (i.e. any real day-ahead run) without a lag value at all.
-        days = pd.date_range(gas.index.min(), max(gas.index.max(), end.floor("D")), freq="D")
+        days = pd.date_range(gas_floor, max(gas.index.max(), end.floor("D")), freq="D")
         gas = gas.reindex(days).ffill(limit=GAS_MAX_STALE_DAYS)
     out["henry_hub_price_usd_mmbtu_lag2d"] = out["time"].dt.floor("D").map(gas.shift(2))
     out["henry_hub_price_usd_mmbtu_lag3d"] = out["time"].dt.floor("D").map(gas.shift(3))
@@ -618,11 +630,19 @@ def build_sequence(engine: sa.Engine, target_times: pd.DatetimeIndex, location: 
 
 
 def build_lear_frame(engine: sa.Engine, target_times: pd.DatetimeIndex, location: str, artifact: dict) -> pd.DataFrame:
-    """Hourly frame for LEAR's predict_day() (model/lear_model.py): price up
-    to the hour before the anchor day (mirrors build_sequence's cutoff - the
-    target day's own price is never queried at all, let alone handed to the
-    model) plus exogenous inputs through the target day, far enough back to
-    cover the artifact's longest calibration window.
+    """Hourly frame for LEAR's predict_day() (model/lear_model.py): price
+    through the end of the anchor day (lear_model's own module docstring -
+    "Information cutoff: price is only ever read before D-(horizon_days-1)
+    00:00" - the newest price day LEAR's build_design actually uses is
+    D-horizon_days, which lands exactly on the anchor day, not one day
+    before it) plus exogenous inputs through the target day, far enough back
+    to cover the artifact's longest calibration window.
+
+    Fetching through the anchor day's last hour (not stopping one hour
+    before the anchor day starts) is still never a leak: build_design
+    discards anything at/after D-(horizon_days-1) 00:00 itself (one day
+    later than this cutoff) before building any feature, so hands it
+    anchor-day data it's explicitly designed to use, never target-day data.
 
     +7 days of extra lookback past the longest window: the same
     price_day_offsets() tail (D-7, the same-weekday lag) lear_model.build_design's
@@ -633,7 +653,7 @@ def build_lear_frame(engine: sa.Engine, target_times: pd.DatetimeIndex, location
     target_day = target_times.min().normalize()
     lead_hours = artifact["lead_hours"]
     anchor = target_day - timedelta(hours=lead_hours)
-    cutoff = anchor - timedelta(hours=1)
+    cutoff = anchor + timedelta(hours=23)
     history_start = anchor - timedelta(days=max(artifact["windows"]) + 7)
 
     frame = load_exogenous(engine, history_start, target_day + timedelta(hours=23))

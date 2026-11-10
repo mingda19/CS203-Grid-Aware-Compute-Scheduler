@@ -12,7 +12,7 @@ import java.time.LocalDateTime;
  *
  * @param rawConstraints the operator's plain-English constraints
  * @param draft          the job form's current values, all optional; the parser checks its result against them
- * @param timeZone       IANA zone the operator means, e.g. {@code Asia/Singapore}; defaults to
+ * @param timeZone       IANA zone the operator means, e.g. {@code America/Chicago}; defaults to
  *                       {@code gacs.parser.default-zone}
  */
 @Schema(description = "Natural-language constraints to parse into job fields")
@@ -26,7 +26,7 @@ public record ConstraintParseRequestDto(
         @Schema(description = "The job form's current values (UTC), all optional")
         Draft draft,
 
-        @Schema(description = "IANA time zone the text's times are in", example = "Asia/Singapore")
+        @Schema(description = "IANA time zone the text's times are in", example = "America/Chicago")
         @Size(max = 64, message = "timeZone must not exceed 64 characters")
         String timeZone) {
 

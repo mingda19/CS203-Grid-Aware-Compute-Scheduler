@@ -165,13 +165,16 @@ public final class ExactAllocationSolver {
                                      double costScale, PriceSeries prices, ResidualCapacity free,
                                      Map<LocalDateTime, Expression> cpuAt, Map<LocalDateTime, Expression> gpuAt,
                                      Expression count) {
-            JobWindow window = new JobWindow(job, prices);
+            JobWindow window = problem.windowFor(job);
             for (PlacementConstraint constraint : problem.constraintsFor(job)) {
                 window = constraint.restrict(job, window, Map.of());
             }
             Set<LocalDateTime> starts = new HashSet<>(window.startSlots());
             List<LocalDateTime> hours = new ArrayList<>();
-            for (LocalDateTime t = job.originalStartTime(); !t.isAfter(window.lastSlot()); t = t.plusHours(1)) {
+            // From the window's first slot, not the job's original start: an hour that has already
+            // passed can never be used, so it gets no variables at all rather than variables pinned
+            // to zero. Keep this in step with HybridAllocationSolver.size(), which predicts the count.
+            for (LocalDateTime t = window.firstSlot(); !t.isAfter(window.lastSlot()); t = t.plusHours(1)) {
                 hours.add(t);
             }
 

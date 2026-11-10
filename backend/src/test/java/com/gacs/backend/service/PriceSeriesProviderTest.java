@@ -14,6 +14,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /** GRID-126 AC2: forecast rows are mapped to hourly slots, with a seeded fallback when absent. */
@@ -35,9 +38,9 @@ class PriceSeriesProviderTest {
     private ElectricalPriceRepository history;
 
     private PriceSeries load(PredictedPrice... rows) {
-        when(predictions.findLatestForecast(LOCATION, START, START.plusHours(HOURS)))
+        when(predictions.findLatestForecastForModel(LOCATION, "lstm", START, START.plusHours(HOURS)))
             .thenReturn(List.of(rows));
-        return new PriceSeriesProvider(predictions, history, 0.5).load(LOCATION, START, HOURS);
+        return new PriceSeriesProvider(predictions, history, 0.5, "lstm").load(LOCATION, START, HOURS);
     }
 
     private static List<Object[]> hourlyAverages(double... pricesFromHour0) {
@@ -50,7 +53,7 @@ class PriceSeriesProviderTest {
 
     private static PredictedPrice row(LocalDateTime interval, Double price) {
         return PredictedPrice.builder()
-            .intervalStartUtc(interval).location(LOCATION).modelVersion("v1")
+            .intervalStartUtc(interval).location(LOCATION).modelVersion("lstm_y0_v1")
             .generatedAt(START.minusDays(1)).predictedPrice(price).build();
     }
 
@@ -62,6 +65,25 @@ class PriceSeriesProviderTest {
         assertThat(series.isSeeded()).isFalse();
         assertThat(series.priceAt(START)).contains(30.0);
         assertThat(series.priceAt(START.plusHours(1))).contains(40.0);
+    }
+
+    @Test
+    @DisplayName("reads only the configured model's forecast")
+    void readsConfiguredModel() {
+        when(predictions.findLatestForecastForModel(eq(LOCATION), eq("lear"), any(), any()))
+            .thenReturn(List.of(row(START, 61.0)));
+
+        PriceSeries series = new PriceSeriesProvider(predictions, history, 0.5, "lear").load(LOCATION, START, HOURS);
+
+        assertThat(series.priceAt(START)).contains(61.0);
+    }
+
+    @Test
+    @DisplayName("an unknown forecast model is rejected at startup")
+    void unknownModelIsRejected() {
+        assertThatThrownBy(() -> new PriceSeriesProvider(predictions, history, 0.5, "xgboost"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("xgboost");
     }
 
     @Test
@@ -81,7 +103,7 @@ class PriceSeriesProviderTest {
     }
 
     @Test
-    @DisplayName("null and non-finite prices are skipped")
+    @DisplayName("null and non-finite prices never reach the curve; their hours are filled as estimates")
     void invalidPricesAreSkipped() {
         PriceSeries series = load(
             row(START, null),
@@ -89,7 +111,15 @@ class PriceSeriesProviderTest {
             row(START.plusHours(2), Double.POSITIVE_INFINITY),
             row(START.plusHours(3), 55.0));
 
-        assertThat(series.asMap()).containsOnlyKeys(START.plusHours(3));
+        // The unusable values are still rejected - that is this test's point - but an hour with no
+        // usable forecast is now filled from the fallback rather than left absent, since an absent
+        // hour made a job whose baseline touched it impossible to price at all.
+        assertThat(series.asMap().values()).allSatisfy(price ->
+            assertThat(price).isNotNull().isFinite());
+        assertThat(series.priceAt(START.plusHours(3))).contains(55.0);
+        assertThat(series.isEstimatedAt(START.plusHours(3))).isFalse();
+        assertThat(series.estimatedSlots())
+            .containsExactly(START, START.plusHours(1), START.plusHours(2));
     }
 
     @Test
@@ -156,12 +186,48 @@ class PriceSeriesProviderTest {
     }
 
     @Test
-    @DisplayName("partial coverage is not seeded: uncovered hours are simply absent")
-    void partialCoverageLeavesGaps() {
+    @DisplayName("partial coverage fills the uncovered hours from the fallback and marks them estimated")
+    void partialCoverageIsFilledAndMarked() {
         PriceSeries series = load(row(START.plusHours(1), 40.0));
 
+        // Not seeded: a stored forecast did cover part of the window, so the curve as a whole is not
+        // the fallback. The uncovered hours are priced all the same, because leaving them absent is
+        // what made a job reaching past the forecast unpriceable and got the whole request rejected.
         assertThat(series.isSeeded()).isFalse();
-        assertThat(series.priceAt(START)).isEmpty();
         assertThat(series.priceAt(START.plusHours(1))).contains(40.0);
+        assertThat(series.isEstimatedAt(START.plusHours(1))).isFalse();
+
+        assertThat(series.priceAt(START)).contains(PriceSeriesProvider.SEEDED_CURVE_USD_PER_MWH[0]);
+        assertThat(series.estimatedSlots())
+            .containsExactly(START, START.plusHours(2), START.plusHours(3));
+        assertThat(series.usedEstimatedPrices()).isTrue();
+
+        // The invariant the fix rests on: every hour of the horizon carries a price, so no baseline
+        // inside it can be unpriceable and OptimizationProblemFactory's 422 is unreachable.
+        for (int h = 0; h < HOURS; h++) {
+            assertThat(series.priceAt(START.plusHours(h)))
+                .as("hour %d of the horizon is priced", h).isPresent();
+        }
+    }
+
+    @Test
+    @DisplayName("an estimated hour prices a baseline but is not a slot a job may be moved into")
+    void estimatedHoursAreNotCandidates() {
+        PriceSeries series = load(row(START.plusHours(1), 40.0));
+
+        assertThat(series.isCandidateAt(START.plusHours(1))).isTrue();
+        assertThat(series.isCandidateAt(START)).isFalse();
+        // Priced, though - which is the whole point: the baseline can still be costed.
+        assertThat(series.priceAt(START)).isPresent();
+    }
+
+    @Test
+    @DisplayName("a wholly seeded curve keeps every hour a candidate, since there is no forecast to prefer")
+    void seededCurveKeepsEveryHourUsable() {
+        PriceSeries series = load();
+
+        assertThat(series.isSeeded()).isTrue();
+        assertThat(series.asMap().keySet()).allSatisfy(slot ->
+            assertThat(series.isCandidateAt(slot)).isTrue());
     }
 }

@@ -1,6 +1,11 @@
 package com.gacs.backend.service.allocation;
 
+import com.gacs.backend.dto.OptimizeRequestDto;
+import com.gacs.backend.dto.OptimizeRequestDto.CapacityOverrideInput;
+import com.gacs.backend.dto.OptimizeRequestDto.ForecastPointInput;
+import com.gacs.backend.dto.OptimizeRequestDto.JobInput;
 import com.gacs.backend.service.PriceSeries;
+import com.gacs.backend.service.PriceSeriesProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -19,6 +24,7 @@ import static com.gacs.backend.service.allocation.Fixtures.prices;
 import static com.gacs.backend.service.allocation.Fixtures.problem;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
+import static org.mockito.Mockito.mock;
 
 /** The exact solver on the hand-checked cases from {@link BruteForceAllocatorTest}. */
 class ExactAllocationSolverTest {
@@ -118,6 +124,55 @@ class ExactAllocationSolverTest {
         JobOutcome outcome = outcome(result, 2);
         assertThat(outcome.status()).isEqualTo(PerJobStatus.NO_FEASIBLE_SLOT);
         assertThat(outcome.plan()).isNull();
+        assertThat(outcome.reason()).startsWith("Cluster full between 2026-10-20 10:00 and 2026-10-20 11:00 UTC");
+    }
+
+    /** The API path: the problem comes from the factory, which requires every baseline hour to have a price. */
+    private static AllocationResult solveRequest(OptimizeRequestDto request) {
+        OptimizationProblem problem = new OptimizationProblemFactory(mock(PriceSeriesProvider.class),
+                OptimizerProperties.DEFAULTS, Fixtures.CLOCK_BEFORE_T0).build(request);
+        return solve(problem);
+    }
+
+    /** Only hour 0 has a price. An exempt job fills it; the flexible job could only use hours 1-2, which have none. */
+    private static OptimizeRequestDto blockedBaselineRequest(List<CapacityOverrideInput> overrides) {
+        return new OptimizeRequestDto(
+                List.of(new JobInput(1L, "exempt", 256.0, 0.0, T0, at(1), 0, true),
+                        new JobInput(2L, "squeezed", 100.0, 0.0, T0, at(3), 2, false)),
+                null, null, null, List.of(new ForecastPointInput(T0, 10.0)), overrides);
+    }
+
+    @Test
+    @DisplayName("Free capacity only in unpriced hours says there is no forecast price, not that the cluster is full")
+    void unpricedFreeHoursAreNamedInReason() {
+        JobOutcome outcome = outcome(solveRequest(blockedBaselineRequest(null)), 2);
+
+        assertThat(outcome.status()).isEqualTo(PerJobStatus.NO_FEASIBLE_SLOT);
+        assertThat(outcome.reason()).startsWith("No forecast price between 2026-10-20 11:00 and 2026-10-20 12:00 UTC");
+    }
+
+    @Test
+    @DisplayName("Unpriced hours that are also full still say the cluster is full")
+    void fullUnpricedHoursStayClusterFull() {
+        List<CapacityOverrideInput> closed = List.of(new CapacityOverrideInput(at(1), 0.0, 0.0),
+                new CapacityOverrideInput(at(2), 0.0, 0.0));
+
+        JobOutcome outcome = outcome(solveRequest(blockedBaselineRequest(closed)), 2);
+
+        assertThat(outcome.status()).isEqualTo(PerJobStatus.NO_FEASIBLE_SLOT);
+        assertThat(outcome.reason()).startsWith("Cluster full between 2026-10-20 10:00 and 2026-10-20 13:00 UTC");
+    }
+
+    @Test
+    @DisplayName("A window where every hour has a price and other jobs fill it says the cluster is full")
+    void fullyPricedWindowIsClusterFull() {
+        OptimizeRequestDto request = new OptimizeRequestDto(
+                List.of(new JobInput(1L, "exempt", 256.0, 0.0, T0, at(1), 0, true),
+                        new JobInput(2L, "squeezed", 100.0, 0.0, T0, at(1), 0, false)),
+                null, null, null, List.of(new ForecastPointInput(T0, 10.0)), null);
+
+        JobOutcome outcome = outcome(solveRequest(request), 2);
+
         assertThat(outcome.reason()).startsWith("Cluster full between 2026-10-20 10:00 and 2026-10-20 11:00 UTC");
     }
 

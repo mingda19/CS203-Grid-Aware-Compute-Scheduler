@@ -226,7 +226,7 @@ export default function AuditPage() {
             />
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            Searchable, tamper-evident record of operator decisions on optimiser schedules, with the schedule hash each decision was made on.
+            Searchable, tamper-evident record of your own decisions on optimiser schedules, with the schedule hash each decision was made on. Other operators&apos; decisions are not visible here.
           </p>
         </div>
 
@@ -278,18 +278,6 @@ export default function AuditPage() {
                 className="h-9 text-xs"
                 aria-invalid={rangeInverted}
               />
-            </label>
-            <label className="space-y-1 text-[11px] font-medium text-muted-foreground">
-              Operator email
-              <div className="relative">
-                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-                <Input
-                  placeholder="operator@gacs.internal"
-                  value={filters.operator}
-                  onChange={(e) => setFilters((prev) => ({ ...prev, operator: e.target.value }))}
-                  className="pl-8 h-9 text-xs"
-                />
-              </div>
             </label>
             <label className="space-y-1 text-[11px] font-medium text-muted-foreground">
               Decision outcome
@@ -370,11 +358,9 @@ export default function AuditPage() {
                 <tr className="border-b border-border text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                   <th className="pb-3 pl-2">Event ID</th>
                   <th className="pb-3">Timestamp (UTC)</th>
-                  <th className="pb-3">Operator</th>
                   <th className="pb-3">Decision</th>
                   <th className="pb-3">Target Run</th>
                   <th className="pb-3">Rationale</th>
-                  <th className="pb-3 pr-2 text-right">Payload</th>
                 </tr>
               </thead>
               <tbody className={`divide-y divide-border/60 ${isLoading ? "opacity-50" : ""}`}>
@@ -386,9 +372,6 @@ export default function AuditPage() {
                     <td className="py-3 text-xs text-muted-foreground font-mono whitespace-nowrap">
                       {formatAuditTimestamp(log.timestamp)}
                     </td>
-                    <td className="py-3 text-xs text-foreground font-medium">
-                      {log.actor}
-                    </td>
                     <td className="py-3">
                       <OutcomeBadge action={log.actionType} />
                     </td>
@@ -398,21 +381,11 @@ export default function AuditPage() {
                     <td className="py-3 text-xs text-muted-foreground max-w-xs truncate" title={log.operatorRationale}>
                       {log.operatorRationale}
                     </td>
-                    <td className="py-3 pr-2 text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 text-xs gap-1 text-muted-foreground hover:text-foreground"
-                        onClick={() => openEvent(log)}
-                      >
-                        <Eye className="h-3.5 w-3.5" /> Details
-                      </Button>
-                    </td>
                   </tr>
                 ))}
                 {!isLoading && !error && events.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-10 text-center text-xs text-muted-foreground">
+                    <td colSpan={5} className="py-10 text-center text-xs text-muted-foreground">
                       {hasActiveFilters(appliedFilters)
                         ? "No audit events match these filters."
                         : "No audit events have been recorded yet."}
@@ -421,7 +394,7 @@ export default function AuditPage() {
                 )}
                 {isLoading && events.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-10 text-center text-xs text-muted-foreground">
+                    <td colSpan={5} className="py-10 text-center text-xs text-muted-foreground">
                       <RefreshCw className="mx-auto mb-2 h-4 w-4 animate-spin text-emerald-500" />
                       Loading audit events…
                     </td>

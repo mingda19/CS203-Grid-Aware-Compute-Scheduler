@@ -14,6 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DataStatusBadge } from "@/components/ui/data-status-badge"
+import { Skeleton } from "@/components/ui/skeleton"
 import { priceApi, type PricePoint } from "@/lib/api"
 import {
   ChartContainer,
@@ -22,7 +23,7 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart"
 import { UnifiedPriceTimeline, type ForecastTelemetry } from "@/components/forecasts/UnifiedPriceTimeline"
-import { formatSgtChartTick, sgtDateToUtcIso } from "@/lib/date-utils"
+import { formatMarketChartTick, marketDateToUtcIso, MARKET_TIMEZONE, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 
 const chartConfig = {
   price: {
@@ -36,7 +37,7 @@ export default function ForecastsPage() {
   const [showAdvancedHistory, setShowAdvancedHistory] = React.useState(false)
   const [telemetry, setTelemetry] = React.useState<ForecastTelemetry | null>(null)
 
-  // Custom historical date query state in SGT
+  // Custom historical date query state in market local time
   const [dateRange, setDateRange] = React.useState(() => {
     const end = new Date()
     const start = new Date(end)
@@ -60,9 +61,9 @@ export default function ForecastsPage() {
 
     let cancelled = false
 
-    // Convert SGT date range boundaries to UTC ISO strings for backend
-    const startUtc = sgtDateToUtcIso(dateRange.startDate, false).slice(0, 10)
-    const endUtc = sgtDateToUtcIso(dateRange.endDate, true).slice(0, 10)
+    // Convert market-local date range boundaries to UTC ISO strings for backend
+    const startUtc = marketDateToUtcIso(dateRange.startDate, false).slice(0, 10)
+    const endUtc = marketDateToUtcIso(dateRange.endDate, true).slice(0, 10)
 
     priceApi
       .getHistory({
@@ -89,14 +90,11 @@ export default function ForecastsPage() {
   }, [showAdvancedHistory, dateRange, hubLocation, historyQuery])
 
   const chartCustomPricePoints = React.useMemo(() => {
-    return pricePoints.map((point) => {
-      const rawUtc = `${point.intervalStartUtc}Z`
-      return {
-        ...point,
-        price: point.sppUsdMwh,
-        time: formatSgtChartTick(rawUtc, true),
-      }
-    })
+    return pricePoints.map((point) => ({
+      ...point,
+      price: point.sppUsdMwh,
+      time: formatMarketChartTick(point.intervalStartUtc, true),
+    }))
   }, [pricePoints])
 
   const dateRangeInvalid = dateRange.startDate > dateRange.endDate
@@ -110,14 +108,18 @@ export default function ForecastsPage() {
             <h1 className="text-2xl font-bold tracking-tight text-foreground">
               Electricity Price & LMP Forecast
             </h1>
-            <DataStatusBadge
-              size="sm"
-              status={telemetry?.isLoading ? "cached" : telemetry?.avgLmp != null ? "live" : "unavailable"}
-              source={`ERCOT settlements and stored model predictions (${hubLocation})`}
-            />
+            {telemetry?.isLoading ? (
+              <Skeleton className="h-6 w-24 rounded-full" />
+            ) : (
+              <DataStatusBadge
+                size="sm"
+                status={telemetry?.avgLmp != null ? "live" : "unavailable"}
+                source={`ERCOT settlements and stored model predictions (${hubLocation})`}
+              />
+            )}
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            Continuous LMP timeline bridging historical settlement actuals and upcoming ML forecasts in standardized <strong>Singapore Time (SGT / UTC+8)</strong>.
+            Continuous LMP timeline bridging historical settlement actuals and upcoming ML forecasts in <strong>ERCOT market local time (Central)</strong>.
           </p>
         </div>
 
@@ -147,11 +149,15 @@ export default function ForecastsPage() {
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Average Interval LMP
             </CardTitle>
-            <DataStatusBadge
-              size="sm"
-              status={telemetry?.isLoading ? "cached" : telemetry?.avgLmp != null ? "live" : "unavailable"}
-              source={`ERCOT SPP (${hubLocation})`}
-            />
+            {telemetry?.isLoading ? (
+              <Skeleton className="h-6 w-24 rounded-full" />
+            ) : (
+              <DataStatusBadge
+                size="sm"
+                status={telemetry?.avgLmp != null ? "live" : "unavailable"}
+                source={`ERCOT SPP (${hubLocation})`}
+              />
+            )}
           </CardHeader>
           <CardContent>
             {telemetry?.isLoading && telemetry.avgLmp == null ? (
@@ -170,7 +176,7 @@ export default function ForecastsPage() {
           </CardContent>
         </Card>
 
-        {/* Card 2: Peak Spike in SGT */}
+        {/* Card 2: Peak Spike in market local time */}
         <Card className="hover:border-amber-500/40 transition-colors">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
@@ -196,7 +202,7 @@ export default function ForecastsPage() {
           </CardContent>
         </Card>
 
-        {/* Card 3: Opportunity Valley in SGT */}
+        {/* Card 3: Opportunity Valley in market local time */}
         <Card className="hover:border-emerald-500/40 transition-colors">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
@@ -242,10 +248,10 @@ export default function ForecastsPage() {
             className="text-xs gap-1.5"
           >
             <Search className="h-3.5 w-3.5" />
-            {showAdvancedHistory ? "Hide Custom Date Inspector" : "Inspect Custom Historical Date Range (SGT)"}
+            {showAdvancedHistory ? "Hide Custom Date Inspector" : `Inspect Custom Historical Date Range (${MARKET_ZONE_LABEL})`}
           </Button>
           <span className="text-xs text-muted-foreground font-mono">
-            Timezone standard: Asia/Singapore (UTC+8)
+            Timezone standard: {MARKET_TIMEZONE}
           </span>
         </div>
 
@@ -259,13 +265,13 @@ export default function ForecastsPage() {
                     Custom Historical Settlement Range Inspector
                   </CardTitle>
                   <CardDescription className="text-xs mt-0.5">
-                    Query historical 15-minute settlement intervals by Singapore calendar date.
+                    Query historical 15-minute settlement intervals by market calendar date.
                   </CardDescription>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 sm:w-auto">
                   <label className="space-y-1 text-xs text-muted-foreground">
-                    <span>Start date (SGT)</span>
+                    <span>Start date ({MARKET_ZONE_LABEL})</span>
                     <Input
                       type="date"
                       value={dateRange.startDate}
@@ -277,7 +283,7 @@ export default function ForecastsPage() {
                     />
                   </label>
                   <label className="space-y-1 text-xs text-muted-foreground">
-                    <span>End date (SGT)</span>
+                    <span>End date ({MARKET_ZONE_LABEL})</span>
                     <Input
                       type="date"
                       value={dateRange.endDate}

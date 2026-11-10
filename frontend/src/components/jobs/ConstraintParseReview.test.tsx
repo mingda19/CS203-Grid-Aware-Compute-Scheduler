@@ -7,14 +7,14 @@ import type { ConstraintParseResponse } from "../../lib/api"
 const result: ConstraintParseResponse = {
   status: "PARSED", fields: { originalStartTime: "2026-11-01T18:00:00", deadline: null, flexibilityWindowHours: 4, priority: "HIGH", isExempt: false },
   evidence: [{ field: "flexibilityWindowHours", value: "4", phrase: "can wait 4 hours", start: 0, end: 16 }],
-  ambiguities: [], conflicts: [], unsupported: [], validationError: null, parsedAt: "2026-11-01T10:00:00", timeZone: "Asia/Singapore",
+  ambiguities: [], conflicts: [], unsupported: [], validationError: null, parsedAt: "2026-11-01T10:00:00", timeZone: "America/Chicago",
 }
 
 describe("constraint review UI", () => {
-  it("shows raw text and proposed fields together with source phrases and SGT times", () => {
+  it("shows raw text and proposed fields together with source phrases and market times", () => {
     const html = renderToStaticMarkup(<ConstraintComparison raw="can wait 4 hours <script>bad()</script>" result={result} />)
     expect(html).toContain("md:grid-cols-2")
-    for (const text of ["Original text", "Proposed values", "4 hours", "HIGH", "Original start (SGT)", "02:00", "Kept from current form", "can wait 4 hours"]) expect(html).toContain(text)
+    for (const text of ["Original text", "Proposed values", "4 hours", "HIGH", "Original start (CT)", "01 Nov 2026, 12:00 CST", "Kept from current form", "can wait 4 hours"]) expect(html).toContain(text)
     expect(html).toContain("&lt;script&gt;")
     expect(html).not.toContain("<script>")
   })

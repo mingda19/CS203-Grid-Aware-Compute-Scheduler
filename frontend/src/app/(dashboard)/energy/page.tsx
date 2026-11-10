@@ -7,7 +7,7 @@ export default function EnergyPage() {
   const router = useRouter()
 
   React.useEffect(() => {
-    router.replace("/overview")
+    router.replace("/home")
   }, [router])
 
   return null

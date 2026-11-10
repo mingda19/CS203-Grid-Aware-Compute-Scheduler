@@ -86,7 +86,7 @@ class ApprovedScheduleJsonSerializerTest {
                 + "{\"jobId\":101,\"jobName\":\"LLM Fine-Tuning Run #42\",\"perJobStatus\":\"OPTIMISED\",\"reason\":null,"
                 + "\"baselineStart\":\"2026-10-20T10:00:00Z\",\"scheduledStart\":\"2026-10-21T01:00:00Z\","
                 + "\"scheduledEnd\":\"2026-10-21T03:00:00Z\",\"allocatedCpuHours\":64.0000,\"allocatedGpuHours\":16.0000,"
-                + "\"baselineCostUsd\":1.0752,\"optimizedCostUsd\":0.2304,\"savingsUsd\":0.8448,\"slots\":["
+                + "\"baselineCostUsd\":1.0752,\"optimizedCostUsd\":0.2304,\"savingsUsd\":0.8448,\"rescheduledFromElapsedStart\":false,\"slots\":["
                 + "{\"intervalStartUtc\":\"2026-10-21T01:00:00Z\",\"intervalEndUtc\":\"2026-10-21T02:00:00Z\","
                 + "\"cpuHours\":21.3333,\"gpuHours\":5.3333},"
                 + "{\"intervalStartUtc\":\"2026-10-21T02:00:00Z\",\"intervalEndUtc\":\"2026-10-21T03:00:00Z\","
@@ -94,11 +94,11 @@ class ApprovedScheduleJsonSerializerTest {
                 + "{\"jobId\":150,\"jobName\":\"Render batch\",\"perJobStatus\":\"NO_FEASIBLE_SLOT\","
                 + "\"reason\":\"cluster full between 10:00 and 18:00\",\"baselineStart\":\"2026-10-20T12:00:00Z\","
                 + "\"scheduledStart\":null,\"scheduledEnd\":null,\"allocatedCpuHours\":0.0000,\"allocatedGpuHours\":0.0000,"
-                + "\"baselineCostUsd\":null,\"optimizedCostUsd\":null,\"savingsUsd\":null,\"slots\":[]},"
+                + "\"baselineCostUsd\":null,\"optimizedCostUsd\":null,\"savingsUsd\":null,\"rescheduledFromElapsedStart\":false,\"slots\":[]},"
                 + "{\"jobId\":205,\"jobName\":\"Nightly ETL\",\"perJobStatus\":\"UNCHANGED_EXEMPT\",\"reason\":null,"
                 + "\"baselineStart\":\"2026-10-20T10:00:00Z\",\"scheduledStart\":\"2026-10-20T10:00:00Z\","
                 + "\"scheduledEnd\":\"2026-10-20T11:00:00Z\",\"allocatedCpuHours\":8.0000,\"allocatedGpuHours\":0.0000,"
-                + "\"baselineCostUsd\":0.5000,\"optimizedCostUsd\":0.5000,\"savingsUsd\":0.0000,\"slots\":["
+                + "\"baselineCostUsd\":0.5000,\"optimizedCostUsd\":0.5000,\"savingsUsd\":0.0000,\"rescheduledFromElapsedStart\":false,\"slots\":["
                 + "{\"intervalStartUtc\":\"2026-10-20T10:00:00Z\",\"intervalEndUtc\":\"2026-10-20T11:00:00Z\","
                 + "\"cpuHours\":8.0000,\"gpuHours\":0.0000}]}"
                 + "]}";
@@ -224,7 +224,9 @@ class ApprovedScheduleJsonSerializerTest {
         JsonNode unscheduled = root.get("jobs").get(1);
 
         assertThat(fieldNames(root)).containsExactly("formatVersion", "run", "approval", "jobs");
-        assertThat(fieldNames(unscheduled)).hasSize(13);
+        // 14, not 13, since a job gained rescheduledFromElapsedStart. The count is the shape of the
+        // document, which document_JobFieldsComplete requires to mirror ScheduleItem field for field.
+        assertThat(fieldNames(unscheduled)).hasSize(14);
         assertThat(unscheduled.get("scheduledStart").isNull()).isTrue();
         assertThat(unscheduled.get("savingsUsd").isNull()).isTrue();
         assertThat(unscheduled.get("slots").isArray()).isTrue();

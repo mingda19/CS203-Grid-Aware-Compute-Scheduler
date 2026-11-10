@@ -112,6 +112,38 @@ public class AuditEventService {
     }
 
     /**
+     * True when {@code event} is the viewer's to see: they performed it, or they own the run it
+     * concerns. Both are checked because ownership and authorship are separate facts, even though in
+     * today's flows only a run's owner can decide on it.
+     */
+    private boolean isViewersOwnEvent(AuditEventResponseDto event, Long id, String viewerEmail) {
+        if (viewerEmail == null) {
+            return false;
+        }
+        String viewer = viewerEmail.trim().toLowerCase(Locale.ROOT);
+        if (event.actor() != null && event.actor().trim().toLowerCase(Locale.ROOT).equals(viewer)) {
+            return true;
+        }
+        return planRepository.findById(event.runId())
+                .map(plan -> isOwnedByViewer(plan, viewerEmail))
+                .orElse(false);
+    }
+
+    /**
+     * {@link #getEventsByRunId} restricted to {@code actorEmail}'s own events on that run. An empty
+     * list is returned for a run the caller never acted on, which is also what a nonexistent run
+     * gives - deliberately, so the endpoint does not confirm that someone else's run exists.
+     */
+    public List<AuditEventResponseDto> getEventsByRunIdForActor(String runId, String actorEmail) {
+        String wanted = actorEmail == null ? "" : actorEmail.trim().toLowerCase(Locale.ROOT);
+        return auditEventRepository.findByRunIdOrderByTimestampDesc(runId).stream()
+                .filter(event -> event.getActor() != null
+                        && event.getActor().trim().toLowerCase(Locale.ROOT).equals(wanted))
+                .map(AuditEventResponseDto::fromEntity)
+                .toList();
+    }
+
+    /**
      * Queries the audit log by date range, operator, action and run (GRID-134 AC6.1a).
      * Results are newest first unless the caller asks for another sort.
      *
@@ -153,6 +185,13 @@ public class AuditEventService {
     @Transactional(readOnly = true)
     public AuditEventDetailDto getEventDetail(Long id, String viewerEmail) {
         AuditEventResponseDto event = getEventById(id);
+        // Withholding only the schedule body was not enough: the event itself carries the actor, the
+        // action, the run id, the hash and the rationale, and ids are sequential, so anyone could walk
+        // /api/audit-events/{id} and read every operator's decisions. An event that is not the
+        // viewer's own is reported as absent, which also avoids confirming that it exists.
+        if (!isViewersOwnEvent(event, id, viewerEmail)) {
+            throw new ResourceNotFoundException("Audit event not found with id: " + id);
+        }
         ScheduleRun scheduleRun = scheduleRunRepository.findByRunId(event.runId()).orElse(null);
         RunSnapshot run = optimizerRunRepository.findById(event.runId())
                 .map(optimizerRun -> RunSnapshot.fromEntity(optimizerRun, scheduleRun))
@@ -187,6 +226,11 @@ public class AuditEventService {
             }
             if (filter.actionType() != null) {
                 predicates.add(cb.equal(root.get("actionType"), filter.actionType()));
+            }
+            if (filter.onlyActor() != null && !filter.onlyActor().isBlank()) {
+                // Exact match, not a substring: see AuditEventFilter#onlyActor for why that matters.
+                predicates.add(cb.equal(cb.lower(root.<String>get("actor")),
+                        filter.onlyActor().trim().toLowerCase(Locale.ROOT)));
             }
             if (filter.actor() != null && !filter.actor().isBlank()) {
                 predicates.add(cb.like(cb.lower(root.<String>get("actor")), containsPattern(filter.actor()), '\\'));

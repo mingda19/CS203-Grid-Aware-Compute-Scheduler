@@ -20,3 +20,6 @@ model/*.csv
 model/models/folds/*
 model/reports/*
 references/
+
+# Personal gitignores
+.agents/

@@ -6,11 +6,15 @@ import com.gacs.backend.dto.JobResponseDto;
 import com.gacs.backend.exception.ResourceNotFoundException;
 import com.gacs.backend.model.Job;
 import com.gacs.backend.model.JobPriority;
+import com.gacs.backend.model.WorkloadCategory;
 import com.gacs.backend.repository.JobRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -24,10 +28,12 @@ public class JobService {
 
     private final JobRepository jobRepository;
     private final ScheduleInputs inputs;
+    private final Clock clock;
 
-    public JobService(JobRepository jobRepository, ScheduleInputs inputs) {
+    public JobService(JobRepository jobRepository, ScheduleInputs inputs, Clock clock) {
         this.inputs = inputs;
         this.jobRepository = jobRepository;
+        this.clock = clock;
     }
 
     /**
@@ -56,16 +62,19 @@ public class JobService {
     @Transactional
     public JobResponseDto createJob(JobRequestDto request, String ownerEmail) {
         validateJobConstraints(request);
+        validateNotInThePast(request.getOriginalStartTime(), request.getDeadline());
 
         String status = (request.getStatus() != null && !request.getStatus().isBlank())
                 ? request.getStatus().trim().toUpperCase()
                 : "PENDING";
 
         JobPriority priority = JobPriority.fromString(request.getPriority());
+        WorkloadCategory workloadCategory = WorkloadCategory.fromString(request.getWorkloadCategory());
 
         Job job = Job.builder()
                 .ownerEmail(ownerEmail)
                 .name(request.getName().trim())
+                .description(blankToNull(request.getDescription()))
                 .cpuHours(request.getCpuHours() != null ? request.getCpuHours() : 0.0)
                 .gpuHours(request.getGpuHours() != null ? request.getGpuHours() : 0.0)
                 .originalStartTime(request.getOriginalStartTime())
@@ -75,6 +84,7 @@ public class JobService {
                 .rawConstraints(request.getRawConstraints())
                 .status(status)
                 .priority(priority)
+                .workloadCategory(workloadCategory)
                 .build();
 
         applyParseMetadata(job, request);
@@ -92,11 +102,20 @@ public class JobService {
                 .orElseThrow(() -> new ResourceNotFoundException("Job not found with id: " + id));
 
         validateJobConstraints(request);
+        // Only a time the edit changes is checked: a job whose start has passed stays editable (Lock
+        // switch, title, hours), as long as the edit does not move a time into the past.
+        validateNotInThePast(
+                request.getOriginalStartTime().equals(existing.getOriginalStartTime()) ? null : request.getOriginalStartTime(),
+                request.getDeadline().equals(existing.getDeadline()) ? null : request.getDeadline());
 
         var before = ScheduleInputs.state(existing);
         applyParseMetadata(existing, request);
 
         existing.setName(request.getName().trim());
+        // Not a scheduling input, so it is outside the ScheduleInputs comparison below.
+        if (request.getDescription() != null) {
+            existing.setDescription(blankToNull(request.getDescription()));
+        }
         existing.setCpuHours(request.getCpuHours() != null ? request.getCpuHours() : 0.0);
         existing.setGpuHours(request.getGpuHours() != null ? request.getGpuHours() : 0.0);
         existing.setOriginalStartTime(request.getOriginalStartTime());
@@ -112,12 +131,20 @@ public class JobService {
             existing.setPriority(JobPriority.fromString(request.getPriority()));
         }
 
+        if (request.getWorkloadCategory() != null && !request.getWorkloadCategory().isBlank()) {
+            existing.setWorkloadCategory(WorkloadCategory.fromString(request.getWorkloadCategory()));
+        }
+
         if (!before.equals(ScheduleInputs.state(existing))) {
             existing.setSchedulingRevision(existing.getSchedulingRevision() + 1);
             inputs.invalidate(ownerEmail, id, "Scheduling inputs changed for job " + id);
         }
         Job updated = jobRepository.save(existing);
         return JobResponseDto.fromEntity(updated);
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     /** Resolve and validate provenance before changing the managed entity. */
@@ -201,6 +228,7 @@ public class JobService {
         }
 
         validatePriority(request.getPriority());
+        validateWorkloadCategory(request.getWorkloadCategory());
     }
 
     /**
@@ -217,10 +245,48 @@ public class JobService {
         }
     }
 
+    /**
+     * Rejects a job whose scheduling window has already elapsed. Nothing can be run in an hour that
+     * has passed, so a job starting before the current hour is not schedulable the moment it is saved:
+     * the optimiser would report it {@code NO_FEASIBLE_SLOT} and the operator could not act on the
+     * plan it produced.
+     *
+     * <p>The current hour itself is allowed. Starts are on the hour, so excluding it would leave an
+     * operator unable to schedule anything in the hour they are working in.
+     *
+     * <p>Applies to updates as well as creates, but an update passes only the times it changes, so a
+     * past start cannot be introduced by editing while a job whose start has already passed can still
+     * be edited in other ways. A {@code null} argument is not checked.
+     *
+     * <p>Deliberately not part of {@link #validateTiming}: the constraint parser shares that method
+     * and only proposes values for the operator to review, so it must still be able to parse "6pm
+     * yesterday" and show it as a reviewable field rather than throw.
+     */
+    public void validateNotInThePast(LocalDateTime originalStartTime, LocalDateTime deadline) {
+        LocalDateTime currentHour = LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC)
+                .truncatedTo(ChronoUnit.HOURS);
+        if (originalStartTime != null && originalStartTime.isBefore(currentHour)) {
+            throw new IllegalArgumentException("originalStartTime " + originalStartTime
+                    + " is in the past; it must be at or after the current hour " + currentHour
+                    + " UTC, because a job cannot be run in an hour that has already passed");
+        }
+        if (deadline != null && !deadline.isAfter(currentHour)) {
+            throw new IllegalArgumentException("deadline " + deadline
+                    + " is in the past; it must be after the current hour " + currentHour + " UTC");
+        }
+    }
+
     /** Priority rule shared by the job API and the constraint parser. Blank means the default. */
     public void validatePriority(String priority) {
         if (priority != null && !priority.isBlank()) {
             JobPriority.fromString(priority);
+        }
+    }
+
+    /** Workload category rule for the job API. Blank means the default (ML_TRAINING). */
+    public void validateWorkloadCategory(String workloadCategory) {
+        if (workloadCategory != null && !workloadCategory.isBlank()) {
+            WorkloadCategory.fromString(workloadCategory);
         }
     }
 }

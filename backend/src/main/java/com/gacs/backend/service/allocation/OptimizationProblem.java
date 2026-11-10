@@ -28,6 +28,13 @@ import java.util.stream.Collectors;
  * @param synchronizedGroups every {@link SynchronizedFinishConstraint} declared for this run, kept
  *                         separate from {@code constraints} since it is not a {@link
  *                         PlacementConstraint} (see that interface's javadoc for why)
+ * @param earliestStart    the earliest hour this run may schedule work into: the current hour,
+ *                         truncated, as {@link OptimizationProblemFactory} reads it from the clock.
+ *                         Nothing can be run in an hour that has already passed, so no solver may
+ *                         place a job before it - see {@link JobWindow}, which enforces it for every
+ *                         solver and for the plan checker at once. Baselines are deliberately *not*
+ *                         bounded by it: a baseline is a reference cost describing what would have
+ *                         happened without optimising, so it legitimately covers elapsed hours.
  */
 public record OptimizationProblem(
         List<OptimizerJob> jobs,
@@ -35,18 +42,36 @@ public record OptimizationProblem(
         SlotCapacity capacity,
         Map<OptimizerJob, JobPlan> baselines,
         List<PlacementConstraint> constraints,
-        List<SynchronizedFinishConstraint> synchronizedGroups) {
+        List<SynchronizedFinishConstraint> synchronizedGroups,
+        LocalDateTime earliestStart) {
 
-    /** Convenience for the common case of no constraints or synchronized-finish groups. */
+    /**
+     * Convenience for the common case of no constraints or synchronized-finish groups, and no
+     * horizon bound. {@link LocalDateTime#MIN} leaves every priced hour schedulable, which is what
+     * tests of capacity, cost and precedence want; the production path builds problems through
+     * {@link OptimizationProblemFactory}, which always supplies the real earliest hour.
+     */
     public OptimizationProblem(List<OptimizerJob> jobs, PriceSeries prices, SlotCapacity capacity,
                                Map<OptimizerJob, JobPlan> baselines) {
-        this(jobs, prices, capacity, baselines, List.of(), List.of());
+        this(jobs, prices, capacity, baselines, List.of(), List.of(), LocalDateTime.MIN);
     }
 
-    /** Convenience for runs with placement constraints but no synchronized-finish groups. */
+    /** Convenience for runs with placement constraints but no synchronized-finish groups or horizon bound. */
     public OptimizationProblem(List<OptimizerJob> jobs, PriceSeries prices, SlotCapacity capacity,
                                Map<OptimizerJob, JobPlan> baselines, List<PlacementConstraint> constraints) {
-        this(jobs, prices, capacity, baselines, constraints, List.of());
+        this(jobs, prices, capacity, baselines, constraints, List.of(), LocalDateTime.MIN);
+    }
+
+    /** Convenience for runs with constraints and synchronized-finish groups but no horizon bound. */
+    public OptimizationProblem(List<OptimizerJob> jobs, PriceSeries prices, SlotCapacity capacity,
+                               Map<OptimizerJob, JobPlan> baselines, List<PlacementConstraint> constraints,
+                               List<SynchronizedFinishConstraint> synchronizedGroups) {
+        this(jobs, prices, capacity, baselines, constraints, synchronizedGroups, LocalDateTime.MIN);
+    }
+
+    /** This run's window for {@code job}: its own bounds, narrowed by the run's earliest hour. */
+    public JobWindow windowFor(OptimizerJob job) {
+        return new JobWindow(job, prices, earliestStart);
     }
 
     /**
@@ -75,6 +100,7 @@ public record OptimizationProblem(
     }
 
     public OptimizationProblem {
+        Objects.requireNonNull(earliestStart, "earliestStart");
         jobs = List.copyOf(jobs);
         baselines = Map.copyOf(baselines);
         constraints = List.copyOf(constraints);
@@ -97,6 +123,11 @@ public record OptimizationProblem(
      * detected (GRID-141). Line 1: the jobs, sorted by id, name left out (see {@link #jobEntry}).
      * Line 2: the price of every priced slot. Line 3: the capacity limit of those same slots, the
      * only slots the solver can use.
+     *
+     * <p>{@link #earliestStart()} is deliberately left out. It moves with the clock, so including it
+     * would make every re-run hash differently and invalidate a pending approval on nothing but the
+     * passage of time. Whether an approved plan has gone stale is {@link
+     * com.gacs.backend.service.ScheduleExpiryService}'s job, not this hash's.
      */
     public String snapshot() {
         String jobLine = jobs.stream()

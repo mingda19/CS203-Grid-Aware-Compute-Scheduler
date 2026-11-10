@@ -56,6 +56,32 @@ class SchedulePlanQueryIntegrationTest {
             .andExpect(jsonPath("$.data.content[0].runId").value(older));
     }
 
+    @Test void stateFilterKeepsOnlyThatStateNewestFirstAndCountsOnlyThem() throws Exception {
+        var owner = owner();
+        var other = owner();
+        String oldPending = plan(owner, Instant.parse("2026-10-30T10:00:00Z"), null);
+        plan(owner, Instant.parse("2026-10-31T10:00:00Z"), AuditActionType.REJECT);
+        String newPending = plan(owner, Instant.parse("2026-11-01T10:00:00Z"), null);
+        plan(other, Instant.parse("2026-11-02T10:00:00Z"), null);
+        mvc.perform(get("/api/schedules?state=PENDING").with(user(owner.getEmail())))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.totalElements").value(2))
+            .andExpect(jsonPath("$.data.content.length()").value(2))
+            .andExpect(jsonPath("$.data.content[0].runId").value(newPending))
+            .andExpect(jsonPath("$.data.content[1].runId").value(oldPending))
+            .andExpect(jsonPath("$.data.content[0].reviewState").value("PENDING"))
+            .andExpect(jsonPath("$.data.content[1].reviewState").value("PENDING"));
+        // No filter: all three of the owner's plans, as before.
+        mvc.perform(get("/api/schedules").with(user(owner.getEmail())))
+            .andExpect(jsonPath("$.data.totalElements").value(3));
+    }
+
+    @Test void rejectsUnknownStateFilter() throws Exception {
+        var owner = owner();
+        mvc.perform(get("/api/schedules?state=NOPE").with(user(owner.getEmail())))
+            .andExpect(status().isBadRequest());
+    }
+
     @Test void returnsEmptyPageForOperatorWithNoPlans() throws Exception {
         var owner = owner();
         mvc.perform(get("/api/schedules").with(user(owner.getEmail())))

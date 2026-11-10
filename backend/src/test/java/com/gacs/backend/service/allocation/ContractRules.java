@@ -29,7 +29,7 @@ final class ContractRules {
 
     /** {@code plans} maps each scheduled job to its plan; a job missing from it is not scheduled. */
     static List<String> violations(List<OptimizerJob> jobs, Map<OptimizerJob, JobPlan> plans, PriceSeries prices,
-                                   SlotCapacity capacity) {
+                                   LocalDateTime earliestStart, SlotCapacity capacity) {
         List<String> problems = new ArrayList<>();
         BaselineCalculator baselines = new BaselineCalculator(capacity);
         Map<LocalDateTime, double[]> exemptUse = new HashMap<>();
@@ -50,7 +50,7 @@ final class ContractRules {
             if (plan == null) {
                 continue;
             }
-            if (!new JobWindow(job, prices).allows(plan)) {
+            if (!new JobWindow(job, prices, earliestStart).allows(plan)) {
                 problems.add("job " + job.label() + " runs outside its window, past its deadline or in an unpriced slot");
             }
             addUse(flexibleUse, plan);
@@ -69,7 +69,7 @@ final class ContractRules {
 
     static List<String> violations(OptimizationProblem problem, AllocationResult result) {
         List<String> problems = new ArrayList<>(violations(problem.jobs(), result.plans(), problem.prices(),
-                problem.capacity()));
+                problem.earliestStart(), problem.capacity()));
         Map<Long, JobPlan> plansById = new HashMap<>();
         result.plans().forEach((job, plan) -> plansById.put(job.id(), plan));
         for (PlacementConstraint constraint : problem.constraints()) {

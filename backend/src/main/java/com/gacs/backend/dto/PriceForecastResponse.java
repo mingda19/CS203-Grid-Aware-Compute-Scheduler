@@ -5,7 +5,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import java.time.LocalDateTime;
 import java.util.List;
 
-public record PriceForecastResponse(List<ForecastPoint> points, int horizonHours) {
+public record PriceForecastResponse(List<ForecastPoint> points, int horizonHours, String modelKind) {
     // confidenceScore is normalized from the stored forecast error ratio and
     // omitted while unavailable.
     @JsonInclude(JsonInclude.Include.NON_NULL)

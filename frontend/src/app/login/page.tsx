@@ -25,7 +25,9 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { authApi, getStoredUser, setStoredUser, removeStoredUser } from "@/lib/api"
 
-type AuthMode = "login" | "register" | "verify-otp"
+import { PASSWORD_HINT, passwordError } from "@/lib/password-policy"
+
+type AuthMode = "login" | "register" | "verify-otp" | "forgot-password" | "reset-password"
 export default function LoginPage() {
   const router = useRouter()
 
@@ -36,6 +38,8 @@ export default function LoginPage() {
   const [password, setPassword] = React.useState("")
   const [showPassword, setShowPassword] = React.useState(false)
   const [otpCode, setOtpCode] = React.useState("")
+  const [recoveryCode, setRecoveryCode] = React.useState("")
+  const [confirmPassword, setConfirmPassword] = React.useState("")
   const [rememberMe, setRememberMe] = React.useState(true)
 
   const [isLoading, setIsLoading] = React.useState(false)
@@ -94,6 +98,8 @@ export default function LoginPage() {
   // Handle Registration
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()
+    const issue = passwordError(password)
+    if (issue) { setErrorMessage(issue); setSuccessMessage(null); return }
     setIsLoading(true)
     setErrorMessage(null)
     setSuccessMessage(null)
@@ -145,13 +151,55 @@ export default function LoginPage() {
 
     try {
       const response = await authApi.resendOtp({ email })
-      setSuccessMessage(response.message || "A fresh OTP code has been dispatched to your email.")
+      if (!response.success) throw new Error(response.message || "Could not resend code.")
+      setSuccessMessage("A new code has been sent to your email.")
       setResendCooldown(60)
     } catch (err: unknown) {
       setErrorMessage((err instanceof Error ? err.message : "") || "Failed to resend OTP. Please try again.")
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const requestRecovery = async () => {
+    setIsLoading(true)
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    try {
+      const response = await authApi.forgotPassword({ email })
+      if (!response.success) throw new Error(response.message || "Could not request recovery code.")
+      setMode("reset-password")
+      setRecoveryCode("")
+      setResendCooldown(60)
+      setSuccessMessage("If this email has a verified account, you’ll receive a recovery code. Check your spam folder too.")
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Please try again.")
+    } finally { setIsLoading(false) }
+  }
+
+  const handleResetPassword = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    const issue = passwordError(password)
+    if (issue) { setErrorMessage(issue); return }
+    if (password !== confirmPassword) {
+      setErrorMessage("Passwords do not match.")
+      return
+    }
+    setIsLoading(true)
+    try {
+      const response = await authApi.resetPassword({ email, token: recoveryCode.trim(), password })
+      if (!response.success) throw new Error(response.message || "Could not reset password.")
+      setPassword("")
+      setConfirmPassword("")
+      setRecoveryCode("")
+      setShowPassword(false)
+      setMode("login")
+      setSuccessMessage("Password updated. Sign in with your new password.")
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Please try again.")
+    } finally { setIsLoading(false) }
   }
 
   return (
@@ -192,11 +240,19 @@ export default function LoginPage() {
                 {mode === "login" && "Enter Account Credentials"}
                 {mode === "register" && "Create an Account"}
                 {mode === "verify-otp" && "Verify Email with OTP"}
+                {mode === "forgot-password" && "Forgot password?"}
+                {mode === "reset-password" && "Set a new password"}
               </CardTitle>
               {mode !== "login" && (
                 <button
                   type="button"
+                  disabled={isLoading}
                   onClick={() => {
+                    setOtpCode("")
+                    setPassword("")
+                    setRecoveryCode("")
+                    setConfirmPassword("")
+                    setShowPassword(false)
                     setMode("login")
                     setErrorMessage(null)
                     setSuccessMessage(null)
@@ -210,8 +266,10 @@ export default function LoginPage() {
             <CardDescription className="text-xs">
               {mode === "login" && "Sign in to manage compute jobs, price forecasts, and schedule approvals."}
               {mode === "register" &&
-                "Enter your work credentials to register. A 6-digit OTP will be dispatched."}
+                "We’ll email you a code to verify your account."}
               {mode === "verify-otp" && `Enter the 6-digit code sent to ${email}.`}
+              {mode === "forgot-password" && "Enter your account email to request a recovery code."}
+              {mode === "reset-password" && `Paste the recovery code emailed to ${email}. It expires in 10 minutes.`}
             </CardDescription>
           </CardHeader>
 
@@ -269,7 +327,12 @@ export default function LoginPage() {
                     <button
                       type="button"
                       onClick={() => {
-                        setSuccessMessage("For password reset assistance, contact your administrator.")
+                        setMode("forgot-password")
+                        setErrorMessage(null)
+                        setSuccessMessage(null)
+                        setPassword("")
+                        setConfirmPassword("")
+                        setRecoveryCode("")
                       }}
                       className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
                     >
@@ -321,7 +384,7 @@ export default function LoginPage() {
 
                 <Button
                   type="submit"
-                  className="w-full h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  className="w-full h-10 font-semibold text-sm shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
                   disabled={isLoading}
                 >
                   {isLoading ? (
@@ -353,6 +416,47 @@ export default function LoginPage() {
                     </button>
                   </p>
                 </div>
+              </form>
+            )}
+
+            {mode === "forgot-password" && (
+              <form onSubmit={(event) => { event.preventDefault(); void requestRecovery() }} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="recovery-email">Account email</Label>
+                  <Input id="recovery-email" type="email" autoComplete="email" required autoFocus
+                    value={email} onChange={(event) => setEmail(event.target.value)} disabled={isLoading} />
+                </div>
+                <Button type="submit" className="w-full" disabled={isLoading}>
+                  {isLoading ? "Sending…" : "Send recovery code"}
+                </Button>
+              </form>
+            )}
+
+            {mode === "reset-password" && (
+              <form onSubmit={handleResetPassword} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="recovery-code">Recovery code</Label>
+                  <Input id="recovery-code" autoComplete="one-time-code" autoCapitalize="none" spellCheck={false}
+                    required autoFocus minLength={43} maxLength={43} pattern="[A-Za-z0-9_-]{43}" title="Paste the complete 43-character code from your email" value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="new-password">New password</Label>
+                  <Input id="new-password" type="password" autoComplete="new-password" required minLength={15} maxLength={72}
+                    value={password} onChange={(event) => setPassword(event.target.value)} aria-describedby="password-hint" />
+                  <p id="password-hint" className="text-xs text-muted-foreground">{PASSWORD_HINT}</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="confirm-password">Confirm new password</Label>
+                  <Input id="confirm-password" type="password" autoComplete="new-password" required minLength={15} maxLength={72}
+                    value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+                </div>
+                <Button type="submit" className="w-full" disabled={isLoading}>
+                  {isLoading ? "Updating…" : "Update password"}
+                </Button>
+                <button type="button" onClick={() => void requestRecovery()} disabled={isLoading || resendCooldown > 0}
+                  className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50">
+                  {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : "Send a new recovery code"}
+                </button>
               </form>
             )}
 
@@ -404,19 +508,23 @@ export default function LoginPage() {
                     <Input
                       id="reg-password"
                       type="password"
-                      placeholder="At least 6 characters"
+                      placeholder="At least 15 characters"
+                      autoComplete="new-password"
+                      maxLength={72}
+                      aria-describedby="register-password-hint"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       required
-                      minLength={6}
+                      minLength={15}
                       className="pl-9 h-10 text-sm"
                     />
                   </div>
+                  <p id="register-password-hint" className="text-xs text-muted-foreground">{PASSWORD_HINT}</p>
                 </div>
 
                 <Button
                   type="submit"
-                  className="w-full h-10 mt-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  className="w-full h-10 mt-2 font-semibold text-sm shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
                   disabled={isLoading}
                 >
                   {isLoading ? (
@@ -446,23 +554,26 @@ export default function LoginPage() {
                     <Input
                       id="otp-input"
                       type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      pattern="[0-9]{6}"
                       maxLength={6}
                       placeholder="123456"
                       value={otpCode}
                       onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
                       required
-                      className="pl-9 h-11 text-center font-mono text-xl tracking-widest"
+                      className="pl-9 h-11 text-center font-mono text-xl tracking-widest tabular-nums"
                       autoFocus
                     />
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    A code was sent to <strong className="text-foreground">{email}</strong>. Valid for 10 minutes.
+                    Your code is valid for 10 minutes. Check your spam folder if it hasn’t arrived.
                   </p>
                 </div>
 
                 <Button
                   type="submit"
-                  className="w-full h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  className="w-full h-10 font-semibold text-sm shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
                   disabled={isLoading || otpCode.length !== 6}
                 >
                   {isLoading ? (
@@ -472,7 +583,7 @@ export default function LoginPage() {
                     </span>
                   ) : (
                     <>
-                      <span>Verify & Enter Dashboard</span>
+                      <span>Verify email</span>
                       <ArrowRight className="h-4 w-4" />
                     </>
                   )}
@@ -491,7 +602,9 @@ export default function LoginPage() {
 
                   <button
                     type="button"
+                    disabled={isLoading}
                     onClick={() => {
+                      setOtpCode("")
                       setMode("login")
                       setErrorMessage(null)
                       setSuccessMessage(null)

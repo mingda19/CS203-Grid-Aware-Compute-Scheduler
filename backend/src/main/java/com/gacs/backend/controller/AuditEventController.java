@@ -50,7 +50,7 @@ public class AuditEventController {
 
     @Operation(
         summary = "Record an audit event",
-        description = "Records an immutable audit event for an operator action (APPROVE, REJECT, REVISE, etc.). "
+        description = "Records an immutable audit event for an operator action (APPROVE, REJECT, REVISE, REVOKE, etc.). "
             + "Schedule decisions use the same ownership, validity and transactional checks as /api/schedules/{runId}/{action}; "
             + "their schedule hash is computed server-side. Requires ROLE_USER or ROLE_ADMIN. "
             + "Actor identity is extracted from the authenticated security context."
@@ -79,8 +79,15 @@ public class AuditEventController {
     public ResponseEntity<ApiResponse<AuditEventResponseDto>> recordEvent(
             @Valid @RequestBody AuditEventRequestDto request, Principal principal
     ) {
+        // REVOKE belongs with the other three, not in the default branch. Left there it recorded a
+        // governance action straight into the audit log through auditEventService.recordEvent, which
+        // checks neither that the caller owns the run nor that the run is in a state a revocation is
+        // legal from - so anyone authenticated could append a REVOKE event naming someone else's run,
+        // and a run's own owner could "revoke" a plan that was never approved. Every state and
+        // ownership rule for a decision lives in ScheduleReviewService.decide; routing REVOKE through
+        // it is what makes this endpoint and POST /api/schedules/{runId}/revoke enforce the same gate.
         AuditEventResponseDto event = switch (request.actionType()) {
-            case APPROVE, REJECT, REVISE -> {
+            case APPROVE, REJECT, REVISE, REVOKE -> {
                 var decision = scheduleReviewService.decide(UUID.fromString(request.runId().trim()),
                         request.actionType(), request.operatorRationale(), principal.getName());
                 yield auditEventService.getEventById(decision.decisionId());
@@ -101,9 +108,13 @@ public class AuditEventController {
     @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
     @GetMapping("/run/{runId}")
     public ResponseEntity<ApiResponse<List<AuditEventResponseDto>>> getEventsByRunId(
-            @Parameter(description = "Optimization run ID", required = true) @PathVariable String runId
+            @Parameter(description = "Optimization run ID", required = true) @PathVariable String runId,
+            Principal principal
     ) {
-        List<AuditEventResponseDto> events = auditEventService.getEventsByRunId(runId);
+        // Scoped for the same reason as the query endpoint above: a run id is guessable and was
+        // enough on its own to read another operator's decision history.
+        List<AuditEventResponseDto> events =
+                auditEventService.getEventsByRunIdForActor(runId, principal.getName());
         return ResponseEntity.ok(ApiResponse.ok("Audit events retrieved", events));
     }
 
@@ -137,12 +148,20 @@ public class AuditEventController {
             @RequestParam(required = false) String runId,
             @Parameter(description = "Target job ID; events on runs whose stored plan includes the job", example = "101")
             @RequestParam(required = false) Long jobId,
-            @PageableDefault(size = 20) Pageable pageable
+            @PageableDefault(size = 20) Pageable pageable,
+            Principal principal
     ) {
-        AuditEventFilter filter = new AuditEventFilter(from, to, actor, actionType, runId, jobId);
-        Page<AuditEventResponseDto> events = auditEventService.getEvents(filter, pageable);
+        AuditEventFilter filter = new AuditEventFilter(from, to, actor, actionType, runId, jobId, null);
+        // An operator sees only their own trail. Previously this query was unscoped, so any
+        // authenticated user could read every other operator's decisions just by calling it - the
+        // jobs API has always scoped by owner, this one never did. Scoping is unconditional: an
+        // auditor view for FR-34 should be its own explicitly-authorised endpoint, not a role check
+        // quietly widening the one every operator already uses.
+        Page<AuditEventResponseDto> events = auditEventService.getEvents(
+                filter.scopedTo(principal.getName()), pageable);
         return ResponseEntity.ok(ApiResponse.ok("Audit events retrieved", events));
     }
+
 
     @Operation(
         summary = "Get audit event by ID",

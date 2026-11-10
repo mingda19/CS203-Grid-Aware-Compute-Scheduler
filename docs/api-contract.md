@@ -124,7 +124,8 @@ Returned when request parameters fail validation (HTTP 400 Bad Request):
 | **401 Unauthorized** | Unauthenticated | Missing, expired, or malformed JWT Bearer token; or invalid login credentials. |
 | **403 Forbidden** | Access Denied | Authenticated user lacks sufficient role privileges (e.g., non-admin accessing `/api/admin/*`). |
 | **404 Not Found** | Resource Missing | Requested user, workload, forecast run, or schedule ID does not exist. |
-| **409 Conflict** | State Conflict | Duplicate entity creation (e.g., registering an email that already exists). |
+| **405 Method Not Allowed** | Wrong Method | Known path called with an HTTP method it does not accept. |
+| **409 Conflict** | State Conflict | Duplicate entity creation (e.g., registering an email that already exists); a terminal decision already recorded; or concurrent lock contention on the same record. |
 | **422 Unprocessable Entity** | Semantic Error | Syntactically valid request that violates domain rules (e.g., impossible job deadline). |
 | **500 Internal Error** | Server Error | Unhandled server exception or downstream dependency failure. |
 
@@ -635,10 +636,11 @@ This section details the contractual schemas and interfaces for upcoming sprint 
 ### 6.1 Market Forecasts & Grid Signals
 
 #### `GET /api/prices/forecast`
-Returns the latest stored model prediction for each upcoming interval at a settlement location. This endpoint reads `predicted_price`; it does not generate a new forecast.
+Returns the latest stored prediction from one model kind for each upcoming interval at a settlement location. This endpoint reads `predicted_price`; it does not generate a new forecast.
 * **Query Parameters**:
   * `location` (string, optional, default: `"LZ_NORTH"`)
   * `hours` (integer, optional, default: `48`, range: 1–168)
+  * `model` (string, optional, default: `"lstm"`, one of `lstm`, `lear`, case-insensitive). Selects rows whose `model_version` starts with `<model>_` (`data_scripts/predict_lstm.py` / `predict_lear.py`). "Latest" is resolved within that model only, so a newer run of one model never hides the other.
 * **Success Response (200 OK)**:
   ```json
   {
@@ -646,11 +648,12 @@ Returns the latest stored model prediction for each upcoming interval at a settl
     "message": "Price forecast retrieved",
     "data": {
       "horizonHours": 48,
+      "modelKind": "lstm",
       "points": [
         {
           "intervalStartUtc": "2026-10-10T00:00:00",
           "predictedPrice": 32.5,
-          "modelVersion": "xgboost-baseline",
+          "modelVersion": "lstm_y0_2026-10-05",
           "generatedAt": "2026-10-09T21:00:00"
         }
       ]
@@ -658,7 +661,7 @@ Returns the latest stored model prediction for each upcoming interval at a settl
   }
   ```
 * `confidenceScore` (0-100, higher = more confident) is omitted when unavailable. `data_scripts/predictions.py` computes the final score itself (a normalized recent-error ratio mapped through `100 / (1 + ratio)`) before writing it to `predicted_price.confidence_score`; the API returns that stored value directly, with no further conversion. A backend check runs every minute and detects newly generated low-confidence forecasts without waiting for a page request. It creates unread alerts in the existing data-freshness notification feed and sends one email per recipient, location, and forecast run. Configure the threshold with `FORECAST_CONFIDENCE_THRESHOLD` (0-100 scale, default `40`); SMTP must be configured for email delivery.
-* **Empty window**: `200` with `"points": []`. **Errors**: `400` for blank `location` or `hours` outside 1-168; `403` without a valid token.
+* **Empty window**: `200` with `"points": []`. **Errors**: `400` for blank `location`, `hours` outside 1-168, or an unknown `model`; `403` without a valid token.
 
 #### `GET /api/forecasts/ercot`
 Retrieves forecasted electricity prices and uncertainty intervals for the selected horizon.
@@ -856,9 +859,10 @@ Priority never overrides a job's `deadline` or `isExempt`: an exempt job always 
 | `jobs[].isExempt` | boolean | Yes | `true` = never moved |
 | `jobs[].priority` | string | No | Priority level (`CRITICAL`, `HIGH`, `NORMAL`, `LOW`; default `NORMAL`). See *Objective and tie-break order* above (GRID-155 AC1/AC3). Unknown values are rejected with `400`. |
 | `forecast[]` | array | One of `forecast` / `forecastLocation` | Explicit price per slot (`predictedPrice` in $/MWh). Makes the run fully reproducible. |
-| `forecastLocation`, `horizonHours` | string, integer | One of `forecast` / `forecastLocation` | Server resolves per-slot prices for that location from the forecast service (same data as `GET /api/prices/forecast`), starting at the earliest `originalStartTime`. `horizonHours` defaults to `48`. |
+| `forecastLocation`, `horizonHours` | string, integer | One of `forecast` / `forecastLocation` | Server resolves per-slot prices for that location from the forecast service (same data as `GET /api/prices/forecast?model=<m>`, where `<m>` is `gacs.optimiser.forecast-model` / env `OPTIMISER_FORECAST_MODEL`, default `lstm`), starting at the earliest `originalStartTime`. Only that one model is read, so a newer run of the other model never changes the prices. `horizonHours` (1-168) is optional and defaults to `48`. It is a minimum: the priced span always reaches the latest job `deadline`, capped at `168`. Hours with no stored forecast stay unpriced, and a job that cannot be placed because of them gets a `NO_FEASIBLE_SLOT` reason that names the unpriced hours. |
 | `clusterCapacity` | object | No | Capacity applied to every slot. Falls back to the defaults below. |
 | `capacityOverrides[]` | array | No | Per-slot capacity; takes precedence over `clusterCapacity` for that slot |
+| `rescheduleElapsedJobs` | boolean | No | Default `false`. When `true`, a job whose `originalStartTime` has already passed may start anywhere in `[current hour, last slot that still finishes by its deadline]` instead of being reported `NO_FEASIBLE_SLOT`. See *Jobs whose start time has passed* below. |
 
 If both `forecast` and `forecastLocation` are sent, `forecast` wins. If neither is sent the request is a `400`. Either way the optimiser works on the same resolved list of per-slot prices. Other Job fields (`rawConstraints`, `status`, `ownerEmail`, timestamps) are not optimiser inputs and are ignored if sent.
 
@@ -931,12 +935,26 @@ The **baseline** of a job is its cost if it started at `originalStartTime` and, 
 * `optimizedCostUsd` (run level) is the total cost of the proposed schedule. `scheduledStart` is the start of the job's first slot and `scheduledEnd` the end of its last.
 * `items[].allocations[]`: the slots the job uses and the CPU/GPU hours it takes in each. Their sum equals `allocatedCpuHours` / `allocatedGpuHours`.
 * `items[].reason`: `null`, except for `NO_FEASIBLE_SLOT`, where it is a short human-readable cause (for example "cluster full between 10:00 and 18:00").
+* `items[].rescheduledFromElapsedStart`: `true` only for a job placed because this run opted in to `rescheduleElapsedJobs` and that job's `originalStartTime` had actually passed. Such a job moved because its start had elapsed, not (or not only) to find a cheaper hour, and its `savingsUsd` is measured against a baseline that itself already partly elapsed - so clients should label it rather than present it beside ordinary cost optimisation. `false` for every job in a run that did not opt in.
 * `plainEnglishExplanation`: optional text summarising the run; may be `null`.
 * `items[]` lists every input job exactly once.
 * `perJobStatus`:
   - `OPTIMISED`: not exempt and feasible; placed on its cheapest feasible plan. The plan may or may not start at `originalStartTime`; compare the two fields if that matters.
   - `UNCHANGED_EXEMPT`: kept at `originalStartTime` because `isExempt` is `true`.
   - `NO_FEASIBLE_SLOT`: no plan satisfies window, deadline, forecast coverage and capacity; the job is not scheduled (see below).
+
+**Jobs whose start time has passed (2026-11-04).** A job's start window is `[originalStartTime, originalStartTime + flexibilityWindowHours]`, anchored to its start. Nothing may be scheduled into an hour that has already begun, so once `originalStartTime` is behind the current hour that whole window can be too, and the job is reported `NO_FEASIBLE_SLOT` with the reason `Window elapsed: ...` even though its deadline may be hours away. The only thing wrong with such a job is that nobody got to it in time.
+
+Sending `rescheduleElapsedJobs: true` re-anchors those jobs to their deadline instead: each may then start anywhere from the current hour up to the last slot that still lets it finish by its deadline. The rules this does **not** change:
+
+* **No slot may begin before the current hour**, flag or not. Only the window's upper bound moves; the lower bound is unchanged, and is enforced in the one predicate every solver and the plan checker read.
+* **Exempt jobs are never re-anchored.** An exempt job runs at its original time by definition.
+* **A job whose deadline has also passed stays infeasible.** There is no window left to widen; its reason remains `Deadline ... has passed`.
+* **`flexibilityWindowHours` itself is not rewritten**, and the flag is not part of the run's input snapshot (§6.8), so opting in does not make a re-run hash differently or invalidate a pending approval.
+
+The flag is applied per job and only where the start has genuinely elapsed, so each affected job comes back with `items[].rescheduledFromElapsedStart: true`, and `plainEnglishExplanation` says how many jobs moved for this reason. Because such a job is deliberately placed outside the window its `jobs` row still carries, the approval gate (§6.8) skips **only** the upper-bound check for items carrying that marker; the lower bound and the deadline check still apply, so an approved plan of this kind can be applied and exported like any other.
+
+This widens placement beyond what the operator specified, so clients must obtain explicit confirmation before sending it, naming the affected jobs, and must never infer it from the data. A third `NO_FEASIBLE_SLOT` reason accompanies it: `Not enough time left: ...`, for a job with start slots remaining but too few hours before its deadline to finish even alone on the cluster. Admission only ever proved a job fits from its *original* start, so once that start has passed the job can be unplaceable with the cluster completely idle, and reporting that as `Cluster full` would send the operator to free capacity that is not the problem.
 
 **No feasible slot (AC5; changed 2026-10-20).** The input is valid but the cluster has no room for the job in any allowed hour. The job is listed in `items` with `perJobStatus = NO_FEASIBLE_SLOT`, `scheduledStart = null`, `scheduledEnd = null`, no `allocations` and a `reason`. No time is invented for it. The response is still `200`, the run `status` is `NEEDS_ATTENTION`, and the job is excluded from the cost totals. Queuing such jobs for a later run needs stored state and is planned for Sprint 4.
 
@@ -997,6 +1015,8 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 | 2026-11-01 | §6.4: added *Objective and tie-break order*, documenting the rule `priority` had been reserved for but did not yet affect - the optimiser now orders competing jobs by `priority`, breaks remaining ties by `deadline`, then total resource-hours, then the original `originalStartTime`/`id` fallback (GRID-155). | - |
 | 2026-11-01 | §6.4: added run `status` `INFEASIBLE` (nothing placeable; never approvable or exportable) and `503` with `runId` when the solver fails, recorded as a `FAILED` run with no plan (GRID-142 AC1.3). | - |
 | 2026-11-01 | Added §6.8: automatic material-input invalidation, shared backend execution gating, approved-run application, and plan detail (GRID-11 AC2.3). | - |
+| 2026-11-04 | §6.5: a plan now holds exactly one terminal decision. Once APPROVED, REJECTED, or REVISION_REQUESTED, every further `approve`/`reject`/`revise` call for that run returns `409` with `data.reason = "ALREADY_DECIDED"`, superseding the "repeated requests ... create additional history entries" text below, which described the previous (reversible) behavior (usability bug 3). An operator who wants to retract an approval must generate a new recommendation rather than reject/revise the same run. | - |
+| 2026-11-08 | §6.4: the priced span now always reaches the latest job `deadline` (capped at 168), so `horizonHours` (default 48) is a minimum. A job left out because of hours with no stored forecast price gets a `NO_FEASIBLE_SLOT` reason that names those hours, instead of "Cluster full". | - |
 
 ### 6.5 Operator decisions (GRID-11 AC2 / AC2.2)
 
@@ -1034,6 +1054,14 @@ All routes require JWT authentication and ownership of the persisted optimizatio
 | `POST /api/schedules/{runId}/approve` | `APPROVE` | `APPROVED` |
 | `POST /api/schedules/{runId}/reject` | `REJECT` | `REJECTED` |
 | `POST /api/schedules/{runId}/revise` | `REVISE` | `REVISION_REQUESTED` |
+| `POST /api/schedules/{runId}/revoke` | `REVOKE` | `REJECTED` |
+
+`revoke` withdraws an approval that has already been given, and is allowed **only** from `APPROVED`.
+It is deliberately not `reject`: rejecting is a first decision on a pending recommendation, revoking
+undoes a decision already made and may halt work already dispatched, so it is named and audited as
+its own action. The run lands in `REJECTED`, which every execution gate already refuses to apply,
+start or export, so nothing had to learn a new state. Revoking a run that is not `APPROVED` returns
+**409** with `data.reason = "ALREADY_DECIDED"`.
 
 Each route requires a JSON object with a nonblank string `comment`, limited to 2,000 characters before trimming. Missing, null, empty, whitespace-only, and non-string comments return `400` before plan lookup or locking. This follows the approved audit log requirement for operator rationale. Identity fields are ignored. Example:
 
@@ -1041,7 +1069,7 @@ Each route requires a JSON object with a nonblank string `comment`, limited to 2
 {"comment":"Approved schedule after verifying cooling margin."}
 ```
 
-All three return **200 OK** in the standard envelope:
+All four return **200 OK** in the standard envelope:
 
 ```json
 {
@@ -1059,9 +1087,13 @@ All three return **200 OK** in the standard envelope:
 }
 ```
 
-Decisions use `audit_events` as their only immutable history; there is no separate `schedule_decisions` table. `decisionId` is the audit event ID. The audit actor comes from the authenticated security context, and `operatorRationale` stores the trimmed comment. `scheduleHash` is the lowercase SHA-256 hex digest of the stored `resultJson` encoded as UTF-8. Each audit event insert and review-state update commits atomically under an operator-row lock followed by a plan write lock; decisions and automatic invalidation determine current review state. Repeated requests, including retries, create additional history entries. The original optimizer result never changes.
+Decisions use `audit_events` as their only immutable history; there is no separate `schedule_decisions` table. `decisionId` is the audit event ID. The audit actor comes from the authenticated security context, and `operatorRationale` stores the trimmed comment. `scheduleHash` is the lowercase SHA-256 hex digest of the stored `resultJson` encoded as UTF-8. Each audit event insert and review-state update commits atomically under an operator-row lock followed by a plan write lock; decisions and automatic invalidation determine current review state. The original optimizer result never changes.
 
-Errors: **400** for malformed UUIDs/JSON, a missing or non-object body, missing, null, blank, non-string, or oversized comments; **403** for missing/invalid JWTs (existing security behavior); **401** for an authenticated email without a database user; **404** with `Optimization plan not found` for both missing and unowned plans.
+**One terminal decision per run (2026-11-04, usability bug 3).** `APPROVE`, `REJECT`, and `REVISION_REQUESTED` are terminal: once a run's `reviewState` is one of these, every further call to any of the three decision routes for that run - including retrying or repeating the same action - returns **409** with `data.reason = "ALREADY_DECIDED"` and writes no new audit event. Only `PENDING` plans, and plans the system (not an operator) moves to `STALE`/`INVALIDATED`, can still be decided.
+
+Exactly one transition survives that rule: `APPROVED` + `REVOKE` -> `REJECTED`. An approval may already have dispatched work, so it has to stay reversible or there is no way to halt a running schedule at all; a `REJECTED` or `REVISION_REQUESTED` run dispatched nothing and stays final. Revocation is therefore the only retraction of a terminal decision, and it is itself terminal - a revoked run cannot be approved again, and a new recommendation (a fresh `runId`) must be generated instead.
+
+Errors: **400** for malformed UUIDs/JSON, a missing or non-object body, missing, null, blank, non-string, or oversized comments; **403** for missing/invalid JWTs (existing security behavior); **401** for an authenticated email without a database user; **404** with `Optimization plan not found` for both missing and unowned plans; **409** with `data.reason = "ALREADY_DECIDED"` for a run whose `reviewState` already holds a terminal decision (see above), or for a `revoke` on a run that is not `APPROVED`; **409** without a `data.reason` when the plan row is locked by a concurrent decision or application (retry), or when a database constraint refuses the write; **404** when a record the decision depends on (such as the plan's owner row) has been deleted concurrently; **405** for a decision path called with the wrong HTTP method. Every one of these is returned in the standard `ApiResponse` envelope, including for an unmapped path, so a client that reads `message` off every response always has something accurate to show - a client calling an endpoint its server does not have (for example a browser newer than the deployment) gets a **404** envelope naming the path rather than a container error page.
 
 Audit history can be read through the existing audit log endpoints.
 
@@ -1121,6 +1153,8 @@ Other errors: **400** for a malformed run ID; **401** for an authenticated email
 | `cpuHours` | `items[].allocations[].cpuHours` | Exactly 4 decimal places, half-up, `.` separator, no exponent |
 | `gpuHours` | `items[].allocations[].gpuHours` | As `cpuHours` |
 | `reason` | `items[].reason` | Text; empty unless `NO_FEASIBLE_SLOT` |
+
+The CSV column list is deliberately unchanged by `rescheduledFromElapsedStart` (§6.4): the JSON export carries it because that format mirrors the optimise response field for field, while these columns are a published format for execution adapters and the marker is advisory provenance, not data an adapter needs in order to dispatch.
 
 **Rows.** One row per job per slot it uses. A `NO_FEASIBLE_SLOT` job has no slots, so it gets one row with `intervalStartUtc`, `intervalEndUtc`, `cpuHours` and `gpuHours` empty and the `reason` filled in; adapters must not dispatch rows without a slot. A schedule with no items is the header row alone.
 
@@ -1192,6 +1226,7 @@ The export endpoints always fill `run.createdAt`, `run.solver` and `approval`; t
 | `baselineCostUsd` | number \| null | 4 decimal places; `null` for `NO_FEASIBLE_SLOT` |
 | `optimizedCostUsd` | number \| null | 4 decimal places; `null` for `NO_FEASIBLE_SLOT` |
 | `savingsUsd` | number \| null | 4 decimal places; may be negative; `null` for `NO_FEASIBLE_SLOT` |
+| `rescheduledFromElapsedStart` | boolean | `true` when the job was placed outside the flexibility window its job record carries, because the run opted in to rescheduling jobs whose start had passed (§6.4). Provenance for an adapter reconciling the plan against the job; the slots are still the approved ones and still end by the deadline. |
 | `slots` | array | Approved slots sorted by start; `[]` for `NO_FEASIBLE_SLOT` |
 
 **`jobs[].slots[]`**
@@ -1266,8 +1301,12 @@ Example (the schedule from the CSV example; shown indented here for reading, but
 
 Both routes require `ROLE_USER` or `ROLE_ADMIN`; every such user can read every audit event.
 
-`POST /api/audit-events` remains a compatibility entry point for decisions. `APPROVE`, `REJECT`, and
-`REVISE` use the same owner-scoped transaction and validity checks as the schedule decision endpoints.
+`POST /api/audit-events` remains a compatibility entry point for decisions. `APPROVE`, `REJECT`,
+`REVISE` and `REVOKE` use the same owner-scoped transaction and validity checks as the schedule
+decision endpoints. `REVOKE` was previously not among them: it fell through to the plain audit-event
+writer, which checks neither ownership nor review state, so it could append a revocation naming an
+unowned run or a run that was never approved. It is now routed through the same gate as the other
+three, and therefore returns that gate's 404/409 rather than recording an event.
 The run ID must be a UUID; missing or unowned plans return 404. The recorded hash is computed from
 the stored schedule, rather than trusting the supplied `scheduleHash`. Prefer the schedule decision
 endpoints for new clients.
@@ -1354,7 +1393,9 @@ A successful approval permanently transitions other approved plans containing ov
 
 Both routes require JWT authentication and ownership. Missing/unowned plans return **404** `Optimization plan not found`; an authenticated email without a database user returns **401**. Administrator privileges do not bypass ownership.
 
-`PlanDetail` contains `runId`, `reviewState` (`PENDING`, `APPROVED`, `REJECTED`, `REVISION_REQUESTED`, `INVALIDATED`, `STALE`), `invalidationReason` (string/null), `invalidatedAt` (UTC instant/null), and `recommendation` (the §6.4 optimizer response; null only if the stored result is unreadable). Detail requests succeed for unapproved/terminal plans so clients can explain the state.
+`PlanDetail` contains `runId`, `reviewState` (`PENDING`, `APPROVED`, `REJECTED`, `REVISION_REQUESTED`, `INVALIDATED`, `STALE`), `invalidationReason` (string/null), `invalidatedAt` (UTC instant/null), `appliedAt` (UTC instant/null), and `recommendation` (the §6.4 optimizer response; null only if the stored result is unreadable). Detail requests succeed for unapproved/terminal plans so clients can explain the state.
+
+`appliedAt` is when `POST /api/schedules/{runId}/apply` wrote this plan to the workload calendar, or null if it never has been. The plan has recorded it since application became gated (it is what makes application idempotent), but until 2026-11-04 it was exposed on no DTO, so a client could not distinguish an approved plan still waiting to be applied from one applied an hour ago. Clients must treat a non-null `appliedAt` as "already on the calendar" and present the action as done rather than available; tracking it in client-side state instead is what caused the review panel to re-offer "Add approved schedule to calendar" after the operator navigated away and back.
 
 Application accepts only a run ID: allocations, job identities, and timings come from the stored result. Jobs without executable slots are skipped; a run with no executable entries returns **400**. Entries retain existing calendar display fields and add nullable `runId` and `jobId` fields. `(run_id, job_id)` is unique; application is idempotent, with a persisted application timestamp preventing recreation even after entries are deleted. A successful first application appends one `DISPATCH` audit event atomically with all entries. Retries add no events. The run remains `APPROVED` and can still be invalidated or rejected afterward.
 

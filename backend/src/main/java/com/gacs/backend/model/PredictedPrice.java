@@ -44,9 +44,10 @@ public class PredictedPrice {
     @Column(name = "predicted_price")
     private Double predictedPrice;
 
-    // Stored normalized error ratio for this prediction's model/horizon/hour
-    // slot. The public API converts it to confidence in [0, 1]; null means the
-    // model lacks enough settled history to estimate it.
+    // Confidence percentage (0-100] for this prediction's model/horizon/hour
+    // slot, computed by data_scripts/predictions.py as 100 / (1 + error ratio).
+    // The API returns it as stored; null means the model lacks enough settled
+    // history to estimate it.
     @Column(name = "confidence_score")
     private Double confidenceScore;
 }

@@ -52,11 +52,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import com.gacs.backend.support.MutableClock;
+import com.gacs.backend.support.MutableClockConfig;
+import org.springframework.context.annotation.Import;
 
 /**
  * GRID-135 AC3 / AC4.3 — the export approval gate, end to end: real jobs, optimiser runs and decisions
  * (docs/api-contract.md section 6.6).
  */
+// This class dates its fixtures from the real clock rather than from fixed constants, so it must not
+// be pinned to a constant like the other integration tests. It takes a movable clock started at the
+// real instant instead, so elapsedPlan_Stale can let time pass.
+@Import(MutableClockConfig.class)
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
@@ -73,6 +80,7 @@ class ScheduleExportIntegrationTest {
     @Autowired ApprovedScheduleCsvSerializer csvSerializer;
     @Autowired ApprovedScheduleJsonSerializer jsonSerializer;
     @Autowired JdbcTemplate jdbc;
+    @Autowired MutableClock clock;
 
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
@@ -90,6 +98,7 @@ class ScheduleExportIntegrationTest {
 
     @AfterEach
     void cleanup() {
+        clock.set(Instant.now());
         // Audit records remain append-only; each test uses fresh run IDs.
         for (String runId : createdRuns) {
             plans.deleteById(runId);
@@ -212,22 +221,35 @@ class ScheduleExportIntegrationTest {
     }
 
     @Test
-    @DisplayName("AC4.3 — pending, rejected and revision-requested plans are refused with 403 until approved again")
+    @DisplayName("AC4.3 — pending, rejected and revision-requested plans are all refused with 403")
     void unapprovedPlans_Forbidden() throws Exception {
-        String runId = optimize(start, job("Train", start));
-        expectRejected(runId, 403, "NOT_APPROVED", "is PENDING, not APPROVED");
+        // A run now holds one decision for life, so each state needs its own run rather than being
+        // walked through on a single one. Only an approved run can change state again, by revocation.
+        String pending = optimize(start, job("Pending", start));
+        expectRejected(pending, 403, "NOT_APPROVED", "is PENDING, not APPROVED");
 
+        String rejected = optimize(start, job("Rejected", start));
+        decide(rejected, "reject");
+        expectRejected(rejected, 403, "NOT_APPROVED", "is REJECTED");
+
+        String revised = optimize(start, job("Revised", start));
+        decide(revised, "revise");
+        expectRejected(revised, 403, "NOT_APPROVED", "is REVISION_REQUESTED");
+
+        String approved = optimize(start, job("Approved", start));
+        decide(approved, "approve");
+        export(approved, "csv").andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("A revoked approval stops being exportable")
+    void revokedPlan_Forbidden() throws Exception {
+        String runId = optimize(start, job("Train", start));
         decide(runId, "approve");
         export(runId, "csv").andExpect(status().isOk());
 
-        decide(runId, "reject");
+        decide(runId, "revoke");
         expectRejected(runId, 403, "NOT_APPROVED", "is REJECTED");
-
-        decide(runId, "revise");
-        expectRejected(runId, 403, "NOT_APPROVED", "is REVISION_REQUESTED");
-
-        decide(runId, "approve");
-        export(runId, "json").andExpect(status().isOk());
     }
 
     @Test
@@ -276,19 +298,24 @@ class ScheduleExportIntegrationTest {
         expectRejected(older, 409, "STALE", "Superseded by approved run " + newer);
         export(newer, "csv").andExpect(status().isOk());
 
-        decide(newer, "reject");
+        decide(newer, "revoke");
         expectRejected(older, 409, "STALE", "Superseded by approved run " + newer);
     }
 
     @Test
     @DisplayName("AC4.3 — a plan whose slots have all ended is stale (409)")
     void elapsedPlan_Stale() throws Exception {
-        LocalDateTime past = start.minusDays(5);
-        String runId = optimize(past, job("Yesterday", past));
+        // Make a real, feasible plan, then let time pass beyond its last slot. Back-dating the job
+        // instead no longer reaches this state: the optimiser will not place work in elapsed hours, so
+        // a past-dated job comes back INFEASIBLE and is rejected as NOT_APPROVED long before the
+        // staleness check. Moving the clock is also the only version of this that matches production,
+        // where a plan goes stale because it was approved and then sat too long.
+        String runId = optimize(start, job("Train", start));
+        clock.set(start.plusHours(3).toInstant(ZoneOffset.UTC));
         mvc.perform(post("/api/schedules/" + runId + "/approve").with(user(owner.getEmail()))
             .contentType(APPLICATION_JSON).content("{\"comment\":\"reviewed\"}"))
             .andExpect(status().isConflict());
-        expectRejected(runId, 409, "STALE", "all of its slots ended by " + UTC.format(past.plusHours(2)));
+        expectRejected(runId, 409, "STALE", "all of its slots ended by " + UTC.format(start.plusHours(2)));
     }
 
     @Test

@@ -43,8 +43,17 @@ import static com.gacs.backend.service.ApprovedScheduleExport.utc;
 @Service
 public class ScheduleGate {
 
-    private static final Set<AuditActionType> DECISIONS =
-            EnumSet.of(AuditActionType.APPROVE, AuditActionType.REJECT, AuditActionType.REVISE);
+    /**
+     * The action types that count as "a decision the operator made" when this gate asks the audit log
+     * for a run's latest one. REVOKE belongs here with the other three: it is a decision, recorded by
+     * the same {@code ScheduleReviewService#decide} path, and leaving it out meant a revoked run's
+     * latest decision still read as the APPROVE it withdrew. Nothing reachable today depends on that
+     * (a revoked plan is REJECTED, so {@link #requireApproved} refuses it before the audit log is
+     * consulted), but an execution gate that would read a withdrawn approval as current is the wrong
+     * default to leave in place for whichever caller asks next.
+     */
+    private static final Set<AuditActionType> DECISIONS = EnumSet.of(AuditActionType.APPROVE,
+            AuditActionType.REJECT, AuditActionType.REVISE, AuditActionType.REVOKE);
     private static final double HOURS_TOLERANCE = 1e-9;
 
     private final OptimizationPlanRepository plans;
@@ -187,7 +196,19 @@ public class ScheduleGate {
             }
             LocalDateTime earliest = job.earliestAllowedStart();
             LocalDateTime latest = job.latestAllowedStart();
-            if (item.scheduledStart().isBefore(earliest) || item.scheduledStart().isAfter(latest)) {
+            if (item.scheduledStart().isBefore(earliest)) {
+                throw invalidated(runId, "job " + id + " must now start at or after " + utc(earliest)
+                        + ", but the schedule starts it at " + utc(item.scheduledStart()));
+            }
+            // A job the run re-anchored to its deadline was deliberately placed outside the
+            // flexibility window the job record still carries: that is the whole point of the
+            // operator opting in to rescheduling jobs whose start had passed. Re-deriving
+            // latestAllowedStart() from the entity here would therefore invalidate exactly the plans
+            // that option exists to produce, at approve/apply/export time, with a message about a
+            // window the operator consciously set aside. The lower bound above and the deadline check
+            // below are not relaxed, so the two rules that matter still hold: the job does not start
+            // before its own original start, and it still finishes by its deadline.
+            if (!item.rescheduledFromElapsedStart() && item.scheduledStart().isAfter(latest)) {
                 throw invalidated(runId, "job " + id + " must now start between " + utc(earliest) + " and "
                         + utc(latest) + ", but the schedule starts it at " + utc(item.scheduledStart()));
             }

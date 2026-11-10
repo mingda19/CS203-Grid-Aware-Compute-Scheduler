@@ -52,10 +52,14 @@ public class ScheduleReviewService {
     private final ScheduleGate gate;
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
 
+    private final com.gacs.backend.repository.WorkloadScheduleRepository schedules;
+
     public ScheduleReviewService(ScheduleOptimizationService optimizer,
                                  OptimizationPlanRecorder planRecorder, AuditEventService audit,
                                  AllocationSolver solver, OptimizerProperties properties,
-                                 UserRepository users, Clock clock, ScheduleInputs inputs, ScheduleGate gate) {
+                                 UserRepository users, Clock clock, ScheduleInputs inputs, ScheduleGate gate,
+                                 com.gacs.backend.repository.WorkloadScheduleRepository schedules) {
+        this.schedules = schedules;
         this.optimizer = optimizer;
         this.planRecorder = planRecorder;
         this.audit = audit;
@@ -95,16 +99,78 @@ public class ScheduleReviewService {
         }
     }
 
+    /**
+     * Review states a plan reaches only by a user's own decision, as opposed to STALE/INVALIDATED
+     * which the system imposes automatically (see {@link OptimizationPlan#invalidate}). Bug 3: once
+     * a plan holds one of these, it is terminal - every further decide() call, including repeating
+     * the same action, is refused so an operator cannot flip an approval to a rejection (or back)
+     * after the fact. This intentionally narrows the contract previously documented in
+     * docs/api-contract.md ("repeated requests ... create additional history entries"); see REPORT.md.
+     */
+    private static final java.util.Set<com.gacs.backend.model.ReviewState> TERMINAL_DECISIONS = java.util.EnumSet.of(
+        com.gacs.backend.model.ReviewState.APPROVED, com.gacs.backend.model.ReviewState.REJECTED,
+        com.gacs.backend.model.ReviewState.REVISION_REQUESTED);
+
+    /**
+     * Removes the calendar entries this run dispatched.
+     *
+     * <p>Flipping the review state alone was not enough. It makes every execution gate refuse to
+     * start or resume the work, but the {@code WorkloadSchedule} rows stay at {@code Scheduled} and
+     * keep rendering on the timetable indefinitely - so to an operator the revocation looked like it
+     * had silently failed. There is no cancelled status to move them to ({@code
+     * ScheduleApplicationService} only ever writes Scheduled, Running, Throttled and Completed), and
+     * the decision is to drop the rows rather than invent one: the audit log already records the
+     * APPROVE, the DISPATCH and the REVOKE, so what happened stays reconstructable without keeping a
+     * dead row on the calendar. Completed rows stay, since they record work that already ran and
+     * a revocation cannot undo it.
+     *
+     * <p>Runs in the same transaction as the decision, so a failure here rolls the revocation back
+     * rather than leaving a revoked plan whose work is still on the timetable.
+     */
+    private void discardCalendarEntries(UUID runId) {
+        schedules.deleteByRunIdAndStatusNot(runId.toString(), "Completed");
+    }
+
+    /**
+     * The one move still open on a run that already holds a decision: withdrawing an approval.
+     *
+     * <p>A first decision is terminal - that is what stops a plan being approved twice, or approved
+     * and then rejected as though both were open choices. But an approval that has already dispatched
+     * work has to stay reversible, or there is no way to halt a running schedule at all, which in a
+     * product whose whole premise is human control would be the more serious defect. So exactly one
+     * transition survives: {@code APPROVED -> REVOKE}. A rejected or revision-requested run is final,
+     * since nothing was dispatched from it and there is nothing to halt.
+     */
+    private static boolean isRevocationOfApproval(com.gacs.backend.model.ReviewState state,
+                                                  AuditActionType action) {
+        return state == com.gacs.backend.model.ReviewState.APPROVED && action == AuditActionType.REVOKE;
+    }
+
     @Transactional(noRollbackFor = com.gacs.backend.exception.ScheduleExportRejectedException.class)
     public ScheduleDecisionDto decide(UUID runId, AuditActionType action, String comment, String email) {
         OptimizationPlan plan = gate.owned(runId, email);
         User operator = plan.getOwner();
+        if (TERMINAL_DECISIONS.contains(plan.getReviewState())
+            && !isRevocationOfApproval(plan.getReviewState(), action))
+            throw new com.gacs.backend.exception.ScheduleExportRejectedException(
+                com.gacs.backend.exception.ScheduleExportRejectedException.Reason.ALREADY_DECIDED,
+                "Schedule run " + runId + " is already " + plan.getReviewState().name().toLowerCase(java.util.Locale.ROOT).replace('_', ' ')
+                    + " and cannot be decided again"
+                    + (plan.getReviewState() == com.gacs.backend.model.ReviewState.APPROVED
+                        ? ". Revoke the approval instead to halt it." : ""));
+        if (action == AuditActionType.REVOKE
+            && plan.getReviewState() != com.gacs.backend.model.ReviewState.APPROVED)
+            throw new com.gacs.backend.exception.ScheduleExportRejectedException(
+                com.gacs.backend.exception.ScheduleExportRejectedException.Reason.ALREADY_DECIDED,
+                "Schedule run " + runId + " is " + plan.getReviewState().name().toLowerCase(java.util.Locale.ROOT).replace('_', ' ')
+                    + ", not approved, so there is no approval to revoke");
         if (action == AuditActionType.APPROVE || plan.getReviewState() == com.gacs.backend.model.ReviewState.INVALIDATED
             || plan.getReviewState() == com.gacs.backend.model.ReviewState.STALE) gate.check(plan, email, false);
         plan.recordDecision(action);
         AuditEventResponseDto event = audit.recordEvent(new AuditEventRequestDto(action,
             runId.toString(), ScheduleHashUtil.computeSha256(plan.getResultJson()), comment));
         if (action == AuditActionType.APPROVE) gate.supersede(plan);
+        if (action == AuditActionType.REVOKE) discardCalendarEntries(runId);
         return new ScheduleDecisionDto(event.id(), runId, event.actionType(), operator.getId(),
             event.operatorRationale(), event.timestamp(), plan.getReviewState());
     }

@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 import static com.gacs.backend.service.allocation.Fixtures.COSTS;
+import static com.gacs.backend.service.allocation.Fixtures.NO_HORIZON;
 import static com.gacs.backend.service.allocation.Fixtures.at;
 import static com.gacs.backend.service.allocation.Fixtures.cpuCapacity;
 import static com.gacs.backend.service.allocation.Fixtures.exempt;
@@ -31,7 +32,7 @@ class SynchronizedFinishConstraintTest {
         // costs strictly more than the single-hour plan starting right at hour 1.
         OptimizerJob theJob = job(1, 200.0, 0.0, 0, 1, 2);
         ResidualCapacity free = new ResidualCapacity(cpuCapacity(256.0));
-        var plan = GreedyAllocator.cheapestPlanEndingAt(theJob, at(1), free, prices(100, 1), COSTS);
+        var plan = GreedyAllocator.cheapestPlanEndingAt(theJob, at(1), free, prices(100, 1), NO_HORIZON, COSTS);
 
         assertThat(plan).isPresent();
         assertThat(plan.get().start()).isEqualTo(at(1));
@@ -43,7 +44,7 @@ class SynchronizedFinishConstraintTest {
     void cheapestPlanEndingAtEmptyWhenUnreachable() {
         OptimizerJob theJob = job(1, 20.0, 0.0, 0, 0, 1); // only candidate start is hour 0, 1-hour window
         ResidualCapacity free = new ResidualCapacity(cpuCapacity(256.0));
-        var plan = GreedyAllocator.cheapestPlanEndingAt(theJob, at(3), free, prices(10, 10, 10, 10), COSTS);
+        var plan = GreedyAllocator.cheapestPlanEndingAt(theJob, at(3), free, prices(10, 10, 10, 10), NO_HORIZON, COSTS);
 
         assertThat(plan).isEmpty();
     }

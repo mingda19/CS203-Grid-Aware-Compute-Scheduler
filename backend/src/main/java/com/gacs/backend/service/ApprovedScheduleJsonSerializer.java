@@ -140,6 +140,7 @@ public class ApprovedScheduleJsonSerializer {
                 decimal(item.baselineCostUsd(), USD_SCALE),
                 decimal(item.optimizedCostUsd(), USD_SCALE),
                 decimal(item.savingsUsd(), USD_SCALE),
+                item.rescheduledFromElapsedStart(),
                 slots);
     }
 

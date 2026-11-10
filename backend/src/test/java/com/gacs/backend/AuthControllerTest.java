@@ -37,6 +37,23 @@ class AuthControllerTest {
     private AuthService authService;
 
     @Test
+    void recoveryEndpointsAllowAnonymousRequestsAndValidatePayloads() throws Exception {
+        when(authService.forgotPassword(any())).thenReturn(ApiResponse.ok("Check your email"));
+        when(authService.resetPassword(any())).thenReturn(ApiResponse.ok("Password updated"));
+        for (String prefix : new String[]{"", "/api/auth"}) {
+            mockMvc.perform(post(prefix + "/forgot-password").contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"email\":\"user@example.com\"}"))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.success").value(true));
+            mockMvc.perform(post(prefix + "/reset-password").contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"email\":\"user@example.com\",\"token\":\"" + "a".repeat(43) + "\",\"password\":\"river lantern orbit meadow\"}"))
+                    .andExpect(status().isOk());
+        }
+        mockMvc.perform(post("/reset-password").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"email\":\"user@example.com\",\"token\":\"123456\",\"password\":\"short\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void register_ShouldReturn200_WhenRequestValid() throws Exception {
         when(authService.register(any(RegisterRequest.class)))
                 .thenReturn(AuthResponse.otpRequired("OTP sent", "elena@datacenter.io"));
@@ -44,7 +61,7 @@ class AuthControllerTest {
         String payload = """
                 {
                     "email": "elena@datacenter.io",
-                    "password": "Password123!",
+                    "password": "river lantern orbit meadow!",
                     "fullName": "Elena Vance"
                 }
                 """;
@@ -63,7 +80,7 @@ class AuthControllerTest {
         String payload = """
                 {
                     "email": "not-an-email",
-                    "password": "Password123!",
+                    "password": "river lantern orbit meadow!",
                     "fullName": "Elena Vance"
                 }
                 """;
@@ -108,7 +125,7 @@ class AuthControllerTest {
         String payload = """
                 {
                     "email": "elena@datacenter.io",
-                    "password": "Password123!",
+                    "password": "river lantern orbit meadow!",
                     "rememberMe": true
                 }
                 """;

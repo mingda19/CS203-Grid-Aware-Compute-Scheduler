@@ -49,12 +49,12 @@ class SolverComparisonTest {
                 withMultiHourRun++;
             }
             BruteForceAllocator.Result reference = BruteForceAllocator.solve(
-                    problem.jobs(), problem.prices(), problem.capacity(), COSTS, 4);
+                    problem.jobs(), problem.prices(), problem.earliestStart(), problem.capacity(), COSTS, 4);
 
             assertThat(result.provenOptimal()).as("case %d proven optimal", c.index()).isTrue();
             assertThat(ContractRules.violations(problem, result)).as("case %d exact rules", c.index()).isEmpty();
             assertThat(ContractRules.violations(problem.jobs(), ContractRules.plansOf(reference), problem.prices(),
-                    problem.capacity())).as("case %d checker rules", c.index()).isEmpty();
+                    problem.earliestStart(), problem.capacity())).as("case %d checker rules", c.index()).isEmpty();
             assertThat(result.scheduledCount()).as("case %d scheduled", c.index())
                     .isGreaterThanOrEqualTo(reference.placedCount());
             if (result.scheduledCount() == reference.placedCount()) {

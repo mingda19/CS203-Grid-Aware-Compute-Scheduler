@@ -25,12 +25,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import com.gacs.backend.support.FixedClockConfig;
+import org.springframework.context.annotation.Import;
 
 /**
  * End-to-end API Integration tests for verifying acceptance criteria AC4 of GRID-86 / GRID-24:
  * "The exempt flag (default off) is defined in the job schema (GRID-112) and exposed by the CRUD endpoints (GRID-113).
  * A test confirms the flag is stored, returned by the job API and editable through create and edit."
  */
+@Import(FixedClockConfig.class)
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")

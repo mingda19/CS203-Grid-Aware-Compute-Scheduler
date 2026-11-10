@@ -42,11 +42,14 @@ import static org.mockito.Mockito.when;
 class ScheduleOptimizationServiceTest {
 
     private static final LocalDateTime T0 = LocalDateTime.of(2026, 10, 20, 10, 0);
+    /** One hour before {@link #T0}, so every fixture slot is still ahead of the run. */
+    private static final java.time.Clock CLOCK =
+            java.time.Clock.fixed(java.time.Instant.parse("2026-10-20T09:00:00Z"), java.time.ZoneOffset.UTC);
     private static final String OWNER = "operator@example.com";
     private static final EnergyCostModel COSTS = new EnergyCostModel(OptimizerProperties.DEFAULTS);
 
     private final PriceSeriesProvider provider = mock(PriceSeriesProvider.class);
-    private final OptimizationProblemFactory factory = new OptimizationProblemFactory(provider, OptimizerProperties.DEFAULTS);
+    private final OptimizationProblemFactory factory = new OptimizationProblemFactory(provider, OptimizerProperties.DEFAULTS, CLOCK);
     private final ScheduleRunRecorder recorder = mock(ScheduleRunRecorder.class);
     private final ScheduleRunRepository scheduleRuns = mock(ScheduleRunRepository.class);
     private final ScheduleExplanationRepository scheduleExplanations = mock(ScheduleExplanationRepository.class);
@@ -178,7 +181,8 @@ class ScheduleOptimizationServiceTest {
         // Totals cover only the exempt job: 256 CPU-hours = 12.8 kWh at $10/MWh.
         assertThat(response.baselineCostUsd()).isEqualTo(0.128);
         assertThat(response.optimizedCostUsd()).isEqualTo(0.128);
-        assertThat(response.plainEnglishExplanation()).contains("1 job(s) could not be placed");
+        assertThat(response.plainEnglishExplanation())
+                .contains("- 1 job could not be scheduled: other jobs hold the capacity they need");
     }
 
     @Test
@@ -193,7 +197,8 @@ class ScheduleOptimizationServiceTest {
         assertThat(response.optimizedCostUsd()).isEqualTo(0.55);
         assertThat(response.projectedSavingsUsd()).isEqualTo(-0.15);
         assertThat(response.projectedSavingsPercent()).isEqualTo(-37.5);
-        assertThat(response.plainEnglishExplanation()).contains("more than the $0.4000 baseline");
+        assertThat(response.plainEnglishExplanation())
+                .contains("- Projected energy cost is $0.5500 against $0.4000 at the original times, $0.1500 more");
     }
 
     @Test
@@ -221,7 +226,7 @@ class ScheduleOptimizationServiceTest {
                 List.of(job(1, 20.0, 0.0, 0, 2, 5, false)), null, "LZ_NORTH", null, null, null), OWNER, (ignored, snapshot) -> { });
 
         assertThat(response.usedSeededFallbackPrices()).isTrue();
-        assertThat(response.plainEnglishExplanation()).contains("seeded fallback");
+        assertThat(response.plainEnglishExplanation()).contains("history-based fallback price curve");
     }
 
     @Test
