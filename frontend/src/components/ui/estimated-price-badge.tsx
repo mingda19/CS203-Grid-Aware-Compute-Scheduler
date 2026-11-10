@@ -13,7 +13,7 @@ export function EstimatedPriceBadge({ compact = false }: { compact?: boolean }) 
       <TooltipProvider>
         <Tooltip delayDuration={0}>
           <TooltipTrigger asChild>
-            <button type="button" className="inline-flex shrink-0 text-amber-600 dark:text-amber-300">
+            <button type="button" className="inline-flex shrink-0 text-warning-foreground">
               <Info className="h-4 w-4" aria-hidden="true" />
               <span className="sr-only">Estimated prices</span>
             </button>
@@ -26,7 +26,7 @@ export function EstimatedPriceBadge({ compact = false }: { compact?: boolean }) 
   return (
     <span
       title={NOTE}
-      className="inline-flex shrink-0 items-center whitespace-nowrap gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
+      className="inline-flex shrink-0 items-center whitespace-nowrap gap-1 rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning-foreground"
     >
       <Info className="h-3 w-3" aria-hidden="true" />
       Estimated prices

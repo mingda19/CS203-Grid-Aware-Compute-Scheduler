@@ -2,10 +2,11 @@
 
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
-import { MARKET_ZONE_LABEL } from "@/lib/date-utils"
-import { formatDayTime, formatLength, hasEnded, runLengthHours, type CalendarEvent } from "./calendar-model"
+import { formatShortDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
+import { entryStatus } from "@/lib/job-status"
+import { formatLength, hasEnded, runLengthHours, type CalendarEvent } from "./calendar-model"
 
 interface Props {
   event: CalendarEvent | null
@@ -28,7 +29,7 @@ export function EntryDialog({ event, saving, onClose, onStatus }: Props) {
               <DialogDescription asChild>
                 <div className="flex flex-wrap items-center gap-2">
                   <span>{mine ? "Your job" : `Submitted by ${event.ownerName ?? "another user"}`}</span>
-                  <Badge variant="secondary">{event.status}</Badge>
+                  <StatusBadge {...entryStatus(event.status)} />
                 </div>
               </DialogDescription>
             </div>
@@ -37,10 +38,10 @@ export function EntryDialog({ event, saving, onClose, onStatus }: Props) {
                 midnight is drawn as one segment per day, so a segment would understate it. */}
             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
               <dt className="text-muted-foreground">When</dt>
-              <dd className="min-w-0">{formatDayTime(event.startUtc)} → {formatDayTime(event.endUtc)} {MARKET_ZONE_LABEL}</dd>
+              <dd className="min-w-0">{formatShortDateTime(event.startUtc)} → {formatShortDateTime(event.endUtc)} {MARKET_ZONE_LABEL}</dd>
               <dt className="text-muted-foreground">Length</dt>
               <dd className="tabular-nums">{formatLength(runLengthHours(event))}</dd>
-              <dt className="text-muted-foreground">Category</dt>
+              <dt className="text-muted-foreground">Job type</dt>
               <dd className="min-w-0 break-words">{event.type}</dd>
               {event.savings && (
                 <>

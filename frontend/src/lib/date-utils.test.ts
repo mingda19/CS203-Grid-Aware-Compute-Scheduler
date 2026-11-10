@@ -11,6 +11,7 @@ import {
   marketZoneAbbrev,
   marketZoneDescriptor,
   formatRelativeAgo,
+  formatShortDateTime,
   formatMarketWindow,
   marketDateStringFromParts,
   addMarketDays,
@@ -211,5 +212,28 @@ describe("market-date-string calendar arithmetic (bug 5)", () => {
     // exact same day the anchor was built for - this is the invariant the schedule calendar
     // relies on to avoid the bug 5 off-by-one (a UTC-midnight anchor would fail this).
     expect(getMarketDateString(anchor)).toBe("2026-11-04")
+  })
+})
+
+describe("formatShortDateTime", () => {
+  const now = Date.UTC(2026, 10, 10, 12)
+
+  it("reads weekday, day, month and 24-hour market time, without the zone or the year", () => {
+    // 15:00Z on 11 Nov is 09:00 CST.
+    expect(formatShortDateTime("2026-11-11T15:00:00Z", now)).toBe("Wed 11 Nov, 09:00")
+  })
+
+  it("uses the market day, not the UTC day", () => {
+    // 03:00Z on 12 Nov is 21:00 CST on the 11th.
+    expect(formatShortDateTime("2026-11-12T03:00:00Z", now)).toBe("Wed 11 Nov, 21:00")
+  })
+
+  it("adds the year only when it is not the current one", () => {
+    expect(formatShortDateTime("2027-11-11T15:00:00Z", now)).toBe("Thu 11 Nov 2027, 09:00")
+    expect(formatShortDateTime("2025-11-11T15:00:00Z", now)).toBe("Tue 11 Nov 2025, 09:00")
+  })
+
+  it("shows a dash for an unusable value", () => {
+    expect(formatShortDateTime("not a date", now)).toBe("—")
   })
 })

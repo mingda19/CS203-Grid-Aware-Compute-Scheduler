@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useRouter, useSearchParams } from "next/navigation"
-import { BriefcaseBusiness, Clock, Ellipsis, Lock, LockOpen, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react"
+import { Clock, Ellipsis, Lock, LockOpen, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react"
 import {
   jobsApi,
   priceApi,
@@ -17,10 +17,14 @@ import {
   PRIORITY_LABELS,
   type FacilityConfig,
 } from "@/lib/api"
-import { currentMarketHourInput, formatMarketDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
+import { currentMarketHourInput, formatShortDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Card, CardContent } from "@/components/ui/card"
+import { Segmented } from "@/components/ui/segmented"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
@@ -35,6 +39,7 @@ import { EstimatedPriceBadge } from "@/components/ui/estimated-price-badge"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
 import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, forecastEndMs, maxJobHours, usesEstimatedPrices, type ScheduleMode, toInputDate, toApiUtcDate, windowHours } from "@/lib/job-form-utils"
 import { canRecompute, isPlanning, jobStatus } from "@/lib/job-status"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
 
 type FormState = {
@@ -66,8 +71,8 @@ const blankForm = (): FormState => ({
   workloadCategory: "ML_TRAINING",
 })
 
-// The table headers already name the zone, so rows leave it off to save width.
-const displayDate = (value?: string, zone = true) => (value ? formatMarketDateTime(value, zone) : "—")
+// The column headers and detail labels name the zone, so values leave it off.
+const displayDate = (value?: string) => (value ? formatShortDateTime(value) : "—")
 
 const getWindowDurationText = (start: string, end: string) => {
   const diffHours = windowHours(start, end)
@@ -374,16 +379,6 @@ export default function JobsPage() {
   const canEdit = (job: ComputeJob) => !job.approvedRunId && (scope === "mine" || job.ownerEmail?.toLowerCase() === me?.email?.toLowerCase())
 
   const selectedJobs = jobs.filter((job) => selectedIds.has(job.id))
-  // Rows have no divider lines. A run of ticked rows is one rounded block: only its outer corners are round.
-  // Cells carry the tint and the corners because border-radius does not work on rows or collapsed borders.
-  const isTicked = (i: number) => i >= 0 && i < jobs.length && selectedIds.has(jobs[i].id)
-  const rowClass = (i: number) => {
-    const ticked = isTicked(i)
-    const parts = [ticked ? "[&>td]:bg-primary/10 [&:hover>td]:bg-primary/15" : "hover:bg-muted/30"]
-    if (ticked && !isTicked(i - 1)) parts.push("[&>td:first-child]:rounded-tl-lg [&>td:last-child]:rounded-tr-lg")
-    if (ticked && !isTicked(i + 1)) parts.push("[&>td:first-child]:rounded-bl-lg [&>td:last-child]:rounded-br-lg")
-    return parts.join(" ")
-  }
   const toggleJob = (id: number, checked: boolean) =>
     setSelectedIds((current) => {
       const next = new Set(current)
@@ -439,103 +434,96 @@ export default function JobsPage() {
     <div className="space-y-6" id="jobs-root">
       <React.Suspense fallback={null}><OpenCreateOnParam onOpen={openCreate} /></React.Suspense>
       <React.Suspense fallback={null}><OpenJobOnParam onOpen={(id) => void openViewById(id)} /></React.Suspense>
-      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">{scope === "all" ? "All jobs" : "My jobs"}</h1>
+      {/* No visible title: the sidebar already says where you are. The heading stays for screen readers. */}
+      <h1 className="sr-only">Jobs</h1>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex items-center gap-2">
           {isAdmin && (
-            <div role="group" aria-label="Jobs to show" className="flex rounded-md border">
-              {(["mine", "all"] as const).map((value) => (
-                <Button
-                  key={value}
-                  size="sm"
-                  variant={scope === value ? "secondary" : "ghost"}
-                  aria-pressed={scope === value}
-                  onClick={() => { if (scope !== value) { setScope(value); setSelectedIds(new Set()); setLoading(true) } }}
-                >
-                  {value === "mine" ? "Mine" : "All"}
-                </Button>
-              ))}
-            </div>
+            <Segmented
+              label="Jobs to show"
+              value={scope}
+              options={[{ value: "mine", label: "Mine" }, { value: "all", label: "All" }]}
+              onChange={(value) => { if (value !== scope) { setScope(value); setSelectedIds(new Set()); setLoading(true) } }}
+            />
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2">
           {/* The system plans new jobs by itself. This is the manual fallback. */}
           {canRecompute(ownJobs) && (
-            <Button variant="outline" onClick={() => void recompute()} disabled={recomputing || loading}>
-              <RefreshCw className={`mr-2 h-4 w-4 ${recomputing ? "animate-spin" : ""}`} />
+            <Button variant="outline" size="sm" onClick={() => void recompute()} disabled={recomputing || loading}>
+              <RefreshCw className={`mr-2 size-4 ${recomputing ? "animate-spin" : ""}`} />
               {recomputing ? "Planning…" : "Recompute"}
             </Button>
           )}
-          <Button variant="ghost" size="icon" aria-label="Refresh jobs" title="Refresh jobs" onClick={() => void refreshClick()} disabled={refreshing || loading}>
-            <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+          <Button variant="ghost" size="icon" className="size-9" aria-label="Refresh jobs" title="Refresh jobs" onClick={() => void refreshClick()} disabled={refreshing || loading}>
+            <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
           </Button>
-          <Button onClick={openCreate}>
-            <Plus className="mr-2 h-4 w-4" />
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="mr-2 size-4" />
             New job
           </Button>
         </div>
       </div>
 
-      {facilityError && <p role="alert" className="text-sm text-destructive">{facilityError}. The form is using default limits. Reload the page to load the real ones.</p>}
+      {facilityError && (
+        <Alert variant="warning">
+          <AlertDescription>{facilityError}. The form is using default limits. Reload the page to load the real ones.</AlertDescription>
+        </Alert>
+      )}
 
       {error && (
-        <div
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-        >
-          {error}
-        </div>
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
       )}
 
       <Card>
-        <CardContent className="pb-3">
+        <CardContent className="p-0">
           {loading ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">Loading jobs…</p>
+            <div className="space-y-2 p-4 sm:p-5" role="status" aria-label="Loading jobs">
+              {Array.from({ length: 5 }, (_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+            </div>
           ) : jobs.length === 0 ? (
-            <div className="py-10 text-center">
-              <BriefcaseBusiness className="h-10 w-10 mx-auto text-muted-foreground/40 mb-3" />
-              <p className="font-medium text-foreground">No compute jobs yet</p>
-              <Button onClick={openCreate} className="mt-4">
-                <Plus className="mr-2 h-4 w-4" />
-                Create your first job
+            <div className="flex flex-col items-start gap-3 p-4 sm:p-5">
+              <p className="text-sm text-muted-foreground">No jobs yet.</p>
+              <Button size="sm" onClick={openCreate}>
+                <Plus className="mr-2 size-4" />
+                New job
               </Button>
             </div>
           ) : (
-            <table className="w-full border-separate border-spacing-0 text-left text-xs">
-              <thead>
-                <tr className="text-xs text-muted-foreground [&>th]:border-b">
-                  <th className="w-10 px-2 pb-3 pt-4 sm:px-3"><span className="sr-only">Select</span></th>
-                  <th className="hidden whitespace-nowrap px-2 pb-3 pt-4 sm:px-3 2xl:table-cell">ID</th>
-                  <th className="w-full px-2 pb-3 pt-4 sm:px-3">Name</th>
-                  <th className="hidden whitespace-nowrap px-2 pb-3 pt-4 sm:px-3 2xl:table-cell">CPU hours</th>
-                  <th className="hidden whitespace-nowrap px-2 pb-3 pt-4 sm:px-3 2xl:table-cell">GPU hours</th>
-                  <th className="hidden whitespace-nowrap px-2 pb-3 pt-4 sm:px-3 md:table-cell">Start ({MARKET_ZONE_LABEL})</th>
-                  <th className="whitespace-nowrap px-2 pb-3 pt-4 sm:px-3">Deadline ({MARKET_ZONE_LABEL})</th>
-                  <th className="hidden whitespace-nowrap px-2 pb-3 pt-4 sm:px-3 xl:table-cell">Priority</th>
-                  <th className="hidden whitespace-nowrap px-2 pb-3 pt-4 sm:px-3 xl:table-cell">Job type</th>
-                  <th className="whitespace-nowrap px-2 pb-3 pt-4 sm:px-3">Status</th>
-                  <th className="w-10 px-2 pb-3 pt-4 sm:px-3"><span className="sr-only">Actions</span></th>
-                </tr>
-                {/* Gap between the header line and the first row, outside the row so hover does not cover it. */}
-                <tr aria-hidden="true"><th colSpan={11} className="h-3 p-0" /></tr>
-              </thead>
-              <tbody>
-                {jobs.map((job, i) => (
-                  <tr
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="h-10 w-10 px-4"><span className="sr-only">Select</span></TableHead>
+                  <TableHead className="h-10 w-full px-4 text-xs font-medium">Name</TableHead>
+                  <TableHead className="hidden h-10 whitespace-nowrap px-4 text-right text-xs font-medium 2xl:table-cell">CPU hours</TableHead>
+                  <TableHead className="hidden h-10 whitespace-nowrap px-4 text-right text-xs font-medium 2xl:table-cell">GPU hours</TableHead>
+                  <TableHead className="hidden h-10 whitespace-nowrap px-4 text-xs font-medium md:table-cell">Start ({MARKET_ZONE_LABEL})</TableHead>
+                  <TableHead className="h-10 whitespace-nowrap px-4 text-xs font-medium">Deadline ({MARKET_ZONE_LABEL})</TableHead>
+                  <TableHead className="hidden h-10 whitespace-nowrap px-4 text-xs font-medium xl:table-cell">Priority</TableHead>
+                  <TableHead className="hidden h-10 whitespace-nowrap px-4 text-xs font-medium xl:table-cell">Job type</TableHead>
+                  <TableHead className="h-10 whitespace-nowrap px-4 text-xs font-medium">Status</TableHead>
+                  <TableHead className="h-10 w-10 px-4"><span className="sr-only">Actions</span></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {jobs.map((job) => (
+                  <TableRow
                     key={job.id}
-                    className={`group/row cursor-pointer ${rowClass(i)}`}
+                    data-state={selectedIds.has(job.id) ? "selected" : undefined}
+                    className="group/row cursor-pointer data-[state=selected]:bg-primary/10 data-[state=selected]:hover:bg-primary/15"
                     onClick={() => void openView(job)}
                   >
-                    <td className="px-2 py-2 sm:px-3" onClick={(e) => e.stopPropagation()}>
+                    <TableCell className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <Checkbox
                         checked={selectedIds.has(job.id)}
                         className={revealClass(selectedJobs.length > 0)}
                         onCheckedChange={(checked) => toggleJob(job.id, checked)}
                         aria-label={`Select ${job.name}`}
                       />
-                    </td>
-                    <td className="hidden whitespace-nowrap px-2 py-2 font-mono text-muted-foreground sm:px-3 2xl:table-cell">#{job.id}</td>
-                    <td className="max-w-0 px-2 py-2 font-medium text-foreground sm:px-3">
+                    </TableCell>
+                    <TableCell className="max-w-0 px-4 py-3 font-medium text-foreground">
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
@@ -547,18 +535,18 @@ export default function JobsPage() {
                         </button>
                         {usesEstimatedPrices(job.deadline, forecastEnd) && <EstimatedPriceBadge compact />}
                       </div>
-                    </td>
-                    <td className="hidden whitespace-nowrap px-2 py-2 sm:px-3 2xl:table-cell">{job.cpuHours}</td>
-                    <td className="hidden whitespace-nowrap px-2 py-2 sm:px-3 2xl:table-cell">{job.gpuHours}</td>
-                    <td className="hidden whitespace-nowrap px-2 py-2 sm:px-3 md:table-cell">{displayDate(job.originalStartTime, false)}</td>
-                    <td className="whitespace-nowrap px-2 py-2 sm:px-3">{displayDate(job.deadline, false)}</td>
-                    <td className="hidden whitespace-nowrap px-2 py-2 sm:px-3 xl:table-cell">{PRIORITY_LABELS[job.priority ?? "NORMAL"]}</td>
-                    <td className="hidden whitespace-nowrap px-2 py-2 sm:px-3 xl:table-cell">{WORKLOAD_CATEGORY_LABELS[job.workloadCategory ?? "ML_TRAINING"]}</td>
-                    <td className="whitespace-nowrap px-2 py-2 sm:px-3">
-                      <StatusBadge status={job.status} />
-                    </td>
+                    </TableCell>
+                    <TableCell className="hidden whitespace-nowrap px-4 py-3 text-right tabular-nums 2xl:table-cell">{job.cpuHours}</TableCell>
+                    <TableCell className="hidden whitespace-nowrap px-4 py-3 text-right tabular-nums 2xl:table-cell">{job.gpuHours}</TableCell>
+                    <TableCell className="hidden whitespace-nowrap px-4 py-3 tabular-nums md:table-cell">{displayDate(job.originalStartTime)}</TableCell>
+                    <TableCell className="whitespace-nowrap px-4 py-3 tabular-nums">{displayDate(job.deadline)}</TableCell>
+                    <TableCell className="hidden whitespace-nowrap px-4 py-3 xl:table-cell">{PRIORITY_LABELS[job.priority ?? "NORMAL"]}</TableCell>
+                    <TableCell className="hidden whitespace-nowrap px-4 py-3 xl:table-cell">{WORKLOAD_CATEGORY_LABELS[job.workloadCategory ?? "ML_TRAINING"]}</TableCell>
+                    <TableCell className="whitespace-nowrap px-4 py-3">
+                      <StatusBadge {...jobStatus(job.status)} />
+                    </TableCell>
                     {/* Popover content is portaled, but React events still bubble to this cell, so the row click stays out. */}
-                    <td className="px-2 py-2 sm:px-3" onClick={(e) => e.stopPropagation()}>
+                    <TableCell className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <Popover open={menuJobId === job.id} onOpenChange={(open) => setMenuJobId(open ? job.id : null)}>
                         <PopoverTrigger asChild>
                           <Button
@@ -588,11 +576,11 @@ export default function JobsPage() {
                           </MenuItem>
                         </PopoverContent>
                       </Popover>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           )}
         </CardContent>
       </Card>
@@ -616,7 +604,7 @@ export default function JobsPage() {
         <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
           <form onSubmit={submit}>
             <DialogHeader>
-              <DialogTitle>{editing ? "Edit compute job" : "Create compute job"}</DialogTitle>
+              <DialogTitle>{editing ? "Edit job" : "New job"}</DialogTitle>
               <DialogDescription>
                 Enter resource requirements and allowed scheduling window. Times are shown in ERCOT market local time (Central).
               </DialogDescription>
@@ -731,10 +719,10 @@ export default function JobsPage() {
                 </Field>
                 <div className="mt-2 rounded-md bg-muted/50 p-2 text-xs flex min-h-10 items-center justify-between border border-border/60">
                   <span className="text-muted-foreground flex items-center gap-2">
-                    <Clock className="h-3.5 w-3.5 text-emerald-500" />
-                    <span>Scheduling Window:</span>
+                    <Clock className="h-3.5 w-3.5" />
+                    <span>Scheduling window</span>
                   </span>
-                  <span className={`font-mono font-medium ${form.deadline && form.deadline < form.originalStartTime ? "text-destructive font-semibold" : "text-foreground"}`}>
+                  <span className={`font-medium tabular-nums ${form.deadline && form.deadline < form.originalStartTime ? "text-destructive font-semibold" : "text-foreground"}`}>
                     {getWindowDurationText(form.originalStartTime, form.deadline) || "—"}
                   </span>
                 </div>
@@ -823,29 +811,29 @@ export default function JobsPage() {
 
       {/* Detail dialog: Edit, Delete and the lock live here, not in the table. */}
       <Dialog open={viewOpen} onOpenChange={setViewOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>{viewing?.name ?? "Job details"}</DialogTitle>
             <DialogDescription className="sr-only">Job details</DialogDescription>
           </DialogHeader>
           {viewing && (
             <>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 py-3 text-sm">
-                <Detail label="Job ID" value={String(viewing.id)} />
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
                 {viewing.ownerName && <Detail label="Owner" value={viewing.ownerName} />}
                 {viewing.description && <Detail label="Description" value={viewing.description} />}
-                {usesEstimatedPrices(viewing.deadline, forecastEnd) && <EstimatedPriceBadge />}
                 <Detail label="Status" value={jobStatus(viewing.status).label} />
                 {viewing.statusReason && <Detail label="Reason" value={viewing.statusReason} />}
                 <Detail label="CPU hours" value={String(viewing.cpuHours)} />
                 <Detail label="GPU hours" value={String(viewing.gpuHours)} />
-                <Detail label="Start" value={displayDate(viewing.originalStartTime)} />
-                <Detail label="Deadline" value={displayDate(viewing.deadline)} />
+                <Detail label={`Start (${MARKET_ZONE_LABEL})`} value={displayDate(viewing.originalStartTime)} />
+                <Detail label={`Deadline (${MARKET_ZONE_LABEL})`} value={displayDate(viewing.deadline)} />
                 <Detail label="Priority" value={PRIORITY_LABELS[viewing.priority ?? "NORMAL"]} />
                 <Detail label="Job type" value={WORKLOAD_CATEGORY_LABELS[viewing.workloadCategory ?? "ML_TRAINING"]} />
                 <Detail label="Scheduling" value={viewing.isExempt ? "Locked" : "Flexible"} />
                 {viewing.approvedRunId && <Detail label="Plan" value="Approved" />}
+                <Detail label="Job ID" value={String(viewing.id)} mono />
               </dl>
+              {usesEstimatedPrices(viewing.deadline, forecastEnd) && <div><EstimatedPriceBadge /></div>}
               {canEdit(viewing) && (
                 <label className="flex items-center gap-2 text-sm font-medium">
                   <Checkbox
@@ -868,7 +856,6 @@ export default function JobsPage() {
               Delete
             </Button>
             <div className="flex flex-col-reverse gap-2 sm:flex-row">
-              <Button variant="outline" onClick={() => setViewOpen(false)}>Close</Button>
               {viewing && canEdit(viewing) && (
                 <Button onClick={() => { setViewOpen(false); openEdit(viewing) }}>
                   <Pencil className="mr-2 h-4 w-4" />
@@ -934,16 +921,6 @@ function MenuItem({ className = "", ...props }: React.ButtonHTMLAttributes<HTMLB
   )
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const { label, icon: Icon, tone } = jobStatus(status)
-  return (
-    <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-1 text-xs ${tone}`}>
-      <Icon className="h-3 w-3" aria-hidden="true" />
-      {label}
-    </span>
-  )
-}
-
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="space-y-2 text-sm">
@@ -953,11 +930,11 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-function Detail({ label, value }: { label: string; value: string }) {
+function Detail({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div>
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="mt-1 font-medium">{value}</dd>
-    </div>
+    <>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className={mono ? "min-w-0 break-words font-mono text-xs text-muted-foreground" : "min-w-0 break-words"}>{value}</dd>
+    </>
   )
 }

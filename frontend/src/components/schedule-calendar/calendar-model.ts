@@ -1,6 +1,5 @@
 import {
   getMarketHoursMinutes, getMarketDateString, addMarketDays, marketDateToUtcIso, parseIsoDate,
-  formatMarketTime, MARKET_TIMEZONE,
 } from "@/lib/date-utils"
 import type { WorkloadSchedule } from "@/lib/api"
 
@@ -210,15 +209,6 @@ export function collapseLanes(laid: LaidOutEvent[]): { shown: LaidOutEvent[]; mo
     return { group, count: items.length, startMin, endMin }
   })
   return { shown, more }
-}
-
-/** "Tue 11 Nov, 09:00" in market time, 24-hour, no zone (the zone is labelled once in the view). */
-export function formatDayTime(iso: string): string {
-  const d = parseIsoDate(iso)
-  if (isNaN(d.getTime())) return "—"
-  const day = new Intl.DateTimeFormat("en-GB", { timeZone: MARKET_TIMEZONE, weekday: "short", day: "numeric", month: "short" })
-    .format(d).replace(",", "")
-  return `${day}, ${formatMarketTime(d, false)}`
 }
 
 /** "09:00–13:00" for the part of a run a segment draws. */

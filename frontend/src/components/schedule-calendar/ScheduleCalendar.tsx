@@ -4,13 +4,15 @@ import * as React from "react"
 import { CalendarDays, ChevronLeft, ChevronRight, RefreshCw, Search, User } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Badge } from "@/components/ui/badge"
+import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Toggle } from "@/components/ui/toggle"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { Segmented } from "@/components/ui/segmented"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { useIsMobile } from "@/components/ui/use-mobile"
 import { workloadScheduleApi } from "@/lib/api"
+import { entryStatus } from "@/lib/job-status"
 import {
   addMarketDays, addMarketMonths, getMarketDateString, getMarketHoursMinutes, marketDateLabelAnchor, marketDayOfWeek, MARKET_ZONE_LABEL,
 } from "@/lib/date-utils"
@@ -170,7 +172,7 @@ export function ScheduleCalendar() {
   const columns = `3rem repeat(${days.length}, minmax(0, 1fr))`
 
   return (
-    <div className="isolate flex h-[calc(100dvh-6rem)] min-h-[480px] flex-col overflow-hidden rounded-xl border border-border bg-background sm:h-[calc(100dvh-7rem)] lg:h-[calc(100dvh-8rem)]">
+    <Card className="isolate flex h-[calc(100dvh-6rem)] min-h-[480px] flex-col overflow-hidden sm:h-[calc(100dvh-7rem)] lg:h-[calc(100dvh-8rem)]">
       <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border px-3 py-2">
         <div className="flex min-w-0 flex-1 basis-72 items-center gap-1">
           <Button variant="ghost" size="icon" className="size-9 shrink-0" aria-label="Today" title="Today" onClick={() => setAnchor(todayStr)}>
@@ -226,25 +228,16 @@ export function ScheduleCalendar() {
           >
             <User />
           </Toggle>
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            size="sm"
-            className="gap-0"
+          <Segmented<View>
+            label="View"
             value={effective}
-            onValueChange={(next) => { if (next) setView(next as View) }}
-            aria-label="View"
-          >
-            {(isMobile ? ["month", "list"] : ["week", "month", "list"]).map((v) => (
-              <ToggleGroupItem
-                key={v}
-                value={v}
-                className="rounded-none capitalize first:rounded-l-md last:rounded-r-md [&:not(:first-child)]:-ml-px data-[state=on]:bg-primary/15 data-[state=on]:text-foreground"
-              >
-                {v}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
+            onChange={setView}
+            options={[
+              ...(isMobile ? [] : [{ value: "week" as const, label: "Week" }]),
+              { value: "month", label: "Month" },
+              { value: "list", label: "List" },
+            ]}
+          />
           <Button variant="ghost" size="icon" className="size-9" aria-label="Refresh" onClick={refresh} disabled={loading}>
             <RefreshCw className={cn("size-4", loading && "animate-spin")} />
           </Button>
@@ -260,7 +253,7 @@ export function ScheduleCalendar() {
 
       {isGrid ? (
         <div ref={scrollRef} className="relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-          <div className="sticky top-0 z-20 grid border-b border-border bg-background" style={{ gridTemplateColumns: columns }}>
+          <div className="sticky top-0 z-20 grid border-b border-border bg-card" style={{ gridTemplateColumns: columns }}>
             <div className="px-2 py-2 text-right text-xs text-muted-foreground">{MARKET_ZONE_LABEL}</div>
             {days.map((day) => (
               <div key={day.dateStr} className="flex min-w-0 flex-col items-center gap-0.5 border-l border-border/60 py-1.5">
@@ -343,7 +336,7 @@ export function ScheduleCalendar() {
                           {event.title}
                           {!event.mine && event.ownerName && <span className="text-muted-foreground"> · {event.ownerName}</span>}
                         </span>
-                        <Badge variant="secondary" className="shrink-0">{event.status}</Badge>
+                        <StatusBadge {...entryStatus(event.status)} />
                       </button>
                     </li>
                   ))}
@@ -355,7 +348,7 @@ export function ScheduleCalendar() {
       )}
 
       <EntryDialog event={selected} saving={saving} onClose={() => setSelected(null)} onStatus={(e, s) => void changeStatus(e, s)} />
-    </div>
+    </Card>
   )
 }
 

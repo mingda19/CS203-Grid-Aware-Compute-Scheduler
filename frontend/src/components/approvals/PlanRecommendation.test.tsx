@@ -30,9 +30,11 @@ describe("live recommendation display", () => {
     expect(html).toContain("Submitted by Ada")
     expect(html).toContain("Deleted")
   })
-  it("gives the time zone once and shows exempt jobs without a moved time", () => {
+  it("names the time zone in the time column headers and shows exempt jobs without a moved time", () => {
     const html = renderToStaticMarkup(<PlanRecommendation plan={{ ...plan, recommendation: { ...plan.recommendation!, items: [{ ...placed, perJobStatus: "UNCHANGED_EXEMPT" }] } }} />)
-    expect(html.match(/Times are in/g)).toHaveLength(1)
+    expect(html).toContain("Runs (CT)")
+    expect(html).toContain("Was (CT)")
+    expect(html).not.toContain("Times are in")
     expect(html).toContain("Not moved (exempt)")
   })
   it("titles the plan with its job names", () => {
