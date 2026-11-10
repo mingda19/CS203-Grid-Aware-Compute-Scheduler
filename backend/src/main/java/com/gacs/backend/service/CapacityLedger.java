@@ -13,7 +13,9 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -47,18 +49,31 @@ public class CapacityLedger {
         for (OptimizationPlan plan : plans.findByReviewState(ReviewState.APPROVED)) {
             var schedule = reader.read(plan.getResultJson());
             if (schedule.isEmpty() || schedule.get().items() == null) continue;
-            for (ScheduleItem item : schedule.get().items()) {
-                if (item.allocations() == null || plan.getRemovedJobIds().contains(item.jobId())) continue;
-                for (Allocation slot : item.allocations()) {
-                    if (slot.intervalStartUtc().isBefore(from)) continue;
-                    double[] sum = sums.computeIfAbsent(slot.intervalStartUtc(), k -> new double[2]);
-                    sum[0] += slot.cpuHours();
-                    sum[1] += slot.gpuHours();
-                }
-            }
+            addHours(sums, schedule.get().items(), plan.getRemovedJobIds(), from);
         }
         Map<LocalDateTime, CapacityLimit> reserved = new TreeMap<>();
         sums.forEach((slot, sum) -> reserved.put(slot, new CapacityLimit(sum[0], sum[1])));
         return reserved;
+    }
+
+    /** The CPU and GPU hours {@code items} use in each hour, as {cpu, gpu}. */
+    public static Map<LocalDateTime, double[]> hoursBySlot(List<ScheduleItem> items) {
+        Map<LocalDateTime, double[]> sums = new TreeMap<>();
+        addHours(sums, items, Set.of(), null);
+        return sums;
+    }
+
+    /** Adds the hours of {@code items} to {@code sums}, skipping the given jobs and any hour before {@code from} (null: none). */
+    private static void addHours(Map<LocalDateTime, double[]> sums, List<ScheduleItem> items,
+                                 Set<Long> skipJobIds, LocalDateTime from) {
+        for (ScheduleItem item : items) {
+            if (item.allocations() == null || skipJobIds.contains(item.jobId())) continue;
+            for (Allocation slot : item.allocations()) {
+                if (from != null && slot.intervalStartUtc().isBefore(from)) continue;
+                double[] sum = sums.computeIfAbsent(slot.intervalStartUtc(), k -> new double[2]);
+                sum[0] += slot.cpuHours();
+                sum[1] += slot.gpuHours();
+            }
+        }
     }
 }
