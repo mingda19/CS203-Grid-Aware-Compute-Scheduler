@@ -90,6 +90,20 @@ function OpenCreateOnParam({ onOpen }: { onOpen: () => void }) {
   return null
 }
 
+// The Schedule page's "Open job" link arrives as ?job={id}. Same Suspense and clear-the-param rules as ?new=1.
+function OpenJobOnParam({ onOpen }: { onOpen: (id: number) => void }) {
+  const raw = useSearchParams().get("job")
+  const id = raw !== null && /^\d+$/.test(raw) ? Number(raw) : null
+  const router = useRouter()
+  React.useEffect(() => {
+    if (id === null) return
+    onOpen(id)
+    router.replace("/jobs")
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id])
+  return null
+}
+
 export default function JobsPage() {
   const [jobs, setJobs] = React.useState<ComputeJob[]>([])
   // An admin can list every user's jobs. Everyone else sees their own.
@@ -220,16 +234,19 @@ export default function JobsPage() {
     setFormOpen(true)
   }
 
-  const openView = async (job: ComputeJob) => {
+  const openViewById = async (id: number, fallback?: ComputeJob) => {
     setError("")
     try {
-      const response = await jobsApi.get(job.id)
-      setViewing(response.data ?? job)
+      const response = await jobsApi.get(id)
+      const job = response.data ?? fallback
+      if (!job) throw new Error("Could not load job details")
+      setViewing(job)
       setViewOpen(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load job details")
     }
   }
+  const openView = (job: ComputeJob) => openViewById(job.id, job)
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -387,6 +404,13 @@ export default function JobsPage() {
     }
   }, [scope])
 
+  const [refreshing, setRefreshing] = React.useState(false)
+  const refreshClick = async () => {
+    setRefreshing(true)
+    await refreshJobs()
+    setRefreshing(false)
+  }
+
   // The system plans new jobs within a minute, so keep looking while one is still Scheduling.
   const planning = isPlanning(jobs)
   React.useEffect(() => {
@@ -414,6 +438,7 @@ export default function JobsPage() {
   return (
     <div className="space-y-6" id="jobs-root">
       <React.Suspense fallback={null}><OpenCreateOnParam onOpen={openCreate} /></React.Suspense>
+      <React.Suspense fallback={null}><OpenJobOnParam onOpen={(id) => void openViewById(id)} /></React.Suspense>
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <h1 className="text-2xl font-bold tracking-tight text-foreground">{scope === "all" ? "All jobs" : "My jobs"}</h1>
@@ -441,6 +466,9 @@ export default function JobsPage() {
               {recomputing ? "Planning…" : "Recompute"}
             </Button>
           )}
+          <Button variant="ghost" size="icon" aria-label="Refresh jobs" title="Refresh jobs" onClick={() => void refreshClick()} disabled={refreshing || loading}>
+            <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+          </Button>
           <Button onClick={openCreate}>
             <Plus className="mr-2 h-4 w-4" />
             New job

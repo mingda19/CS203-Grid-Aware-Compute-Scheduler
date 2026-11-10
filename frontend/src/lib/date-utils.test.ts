@@ -208,7 +208,7 @@ describe("market-date-string calendar arithmetic (bug 5)", () => {
     expect(anchor.getUTCMonth()).toBe(10) // 0-indexed
     expect(anchor.getUTCDate()).toBe(4)
     // getMarketDateString (America/Chicago, UTC-6 in November) must read back the
-    // exact same day the anchor was built for - this is the invariant GoogleCalendarView
+    // exact same day the anchor was built for - this is the invariant the schedule calendar
     // relies on to avoid the bug 5 off-by-one (a UTC-midnight anchor would fail this).
     expect(getMarketDateString(anchor)).toBe("2026-11-04")
   })
