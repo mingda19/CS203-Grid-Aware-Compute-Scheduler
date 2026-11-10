@@ -11,9 +11,11 @@ import com.gacs.backend.model.Job;
 import com.gacs.backend.model.OptimizationPlan;
 import com.gacs.backend.model.ReviewState;
 import com.gacs.backend.model.WorkloadCategory;
+import com.gacs.backend.model.User;
 import com.gacs.backend.model.WorkloadSchedule;
 import com.gacs.backend.repository.FacilityRepository;
 import com.gacs.backend.repository.JobRepository;
+import com.gacs.backend.repository.OptimizationPlanRepository;
 import com.gacs.backend.repository.UserRepository;
 import com.gacs.backend.repository.WorkloadScheduleRepository;
 import com.gacs.backend.util.ScheduleHashUtil;
@@ -40,10 +42,12 @@ public class ScheduleApplicationService {
     private final StoredScheduleReader reader;
     private final UserRepository users;
     private final AppSettingsService settings;
+    private final OptimizationPlanRepository plans;
     public ScheduleApplicationService(ScheduleGate gate, WorkloadScheduleRepository schedules,
                                       FacilityRepository facilities, JobRepository jobs, AuditEventService audit,
                                       java.time.Clock clock, StoredScheduleReader reader, UserRepository users,
-                                      AppSettingsService settings) {
+                                      AppSettingsService settings, OptimizationPlanRepository plans) {
+        this.plans = plans;
         this.users = users;
         this.settings = settings;
         this.gate = gate;
@@ -58,17 +62,38 @@ public class ScheduleApplicationService {
     @Transactional(noRollbackFor = ScheduleExportRejectedException.class)
     public List<WorkloadScheduleDto> apply(UUID runId, String email) {
         OptimizationPlan plan = gate.owned(runId, email);
-        return applyChecked(plan, gate.check(plan, true).schedule());
+        String name = plan.getOwner().displayName();
+        return applyChecked(plan, gate.check(plan, true).schedule()).stream().map(s -> dto(s, name, true)).toList();
+    }
+
+    /**
+     * Every user's calendar entries, soonest first. An entry of a plan that is no longer approved is hidden
+     * (a stale or invalidated plan keeps its rows), unless its slot has already ended: that work ran, or
+     * should have. Legacy entries with no run are kept. {@code mine} marks the caller's own entries, the only
+     * ones the caller may change.
+     */
+    @Transactional(readOnly = true)
+    public List<WorkloadScheduleDto> visible(String email) {
+        var all = schedules.findAllByOrderByStartUtcAsc();
+        var runIds = all.stream().map(WorkloadSchedule::getRunId).filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+        Set<String> approved = runIds.isEmpty() ? Set.of() : Set.copyOf(plans.findRunIdsInState(runIds, ReviewState.APPROVED));
+        var now = java.time.LocalDateTime.ofInstant(clock.instant(), java.time.ZoneOffset.UTC);
+        var shown = all.stream()
+            .filter(s -> s.getRunId() == null || approved.contains(s.getRunId()) || !s.getEndUtc().isAfter(now)).toList();
+        Map<String, String> names = users.findByEmailIn(shown.stream().map(WorkloadSchedule::getOwnerEmail).collect(Collectors.toSet()))
+            .stream().collect(Collectors.toMap(User::getEmail, User::displayName));
+        return shown.stream().map(s -> dto(s, names.getOrDefault(s.getOwnerEmail(), s.getOwnerEmail()),
+            s.getOwnerEmail().equalsIgnoreCase(email))).toList();
     }
 
     /**
      * Writes an approved plan to the calendar. {@code schedule} is what {@code gate.check} returned for
      * this plan, and no second check runs here. Calendar rows belong to the plan's owner.
      */
-    public List<WorkloadScheduleDto> applyChecked(OptimizationPlan plan, OptimizeResponseDto schedule) {
+    public List<WorkloadSchedule> applyChecked(OptimizationPlan plan, OptimizeResponseDto schedule) {
         String email = plan.getOwner().getEmail();
         var existing = schedules.findByRunIdOrderByIdAsc(plan.getRunId());
-        if (plan.getAppliedAt() != null) return existing.stream().map(ScheduleApplicationService::dto).toList();
+        if (plan.getAppliedAt() != null) return existing;
         String cluster = facilities.findFirstByOrderByIdAsc().map(Facility::getName).orElse("Primary Compute Cluster");
         // The job's own chosen category (bug 6) replaces the old GPU-hours guess ("any GPU hours at
         // all" implied ML Training, everything else implied HPC Batch) - a category the operator
@@ -111,7 +136,7 @@ public class ScheduleApplicationService {
         audit.recordEvent(new AuditEventRequestDto(AuditActionType.DISPATCH, plan.getRunId(),
             ScheduleHashUtil.computeSha256(plan.getResultJson()), "Applied approved schedule to calendar"));
         plan.markApplied(clock.instant());
-        return entries.stream().map(ScheduleApplicationService::dto).toList();
+        return entries;
     }
 
     @Transactional(noRollbackFor = ScheduleExportRejectedException.class)
@@ -130,7 +155,7 @@ public class ScheduleApplicationService {
             gate.check(plan, true);
         }
         entry.setStatus(status);
-        return dto(schedules.save(entry));
+        return dto(schedules.save(entry), nameOf(email), true);
     }
 
     @Transactional(noRollbackFor = ScheduleExportRejectedException.class)
@@ -162,8 +187,13 @@ public class ScheduleApplicationService {
                              Instant invalidatedAt, Instant appliedAt, OptimizeResponseDto recommendation,
                              String ownerName, boolean canApprove, Set<Long> removedJobIds) {}
 
-    public static WorkloadScheduleDto dto(WorkloadSchedule s) {
+    private String nameOf(String email) {
+        return users.findByEmail(email).map(User::displayName).orElse(email);
+    }
+
+    public static WorkloadScheduleDto dto(WorkloadSchedule s, String ownerName, boolean mine) {
         return new WorkloadScheduleDto(s.getId(), s.getTitle(), s.getType(), s.getCluster(), s.getPowerKw(),
-            s.getSavings(), s.getStatus(), s.getStartUtc(), s.getEndUtc(), s.getNotes(), s.getRunId(), s.getJobId());
+            s.getSavings(), s.getStatus(), s.getStartUtc(), s.getEndUtc(), s.getNotes(), s.getRunId(), s.getJobId(),
+            ownerName, mine);
     }
 }

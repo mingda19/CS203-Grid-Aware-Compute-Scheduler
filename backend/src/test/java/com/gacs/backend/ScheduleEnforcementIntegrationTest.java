@@ -307,6 +307,51 @@ class ScheduleEnforcementIntegrationTest {
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
     }
 
+    /** The calendar entries for one run, as the given user sees them. */
+    private List<JsonNode> calendarFor(String run, String email) throws Exception {
+        String body = mvc.perform(get("/api/workload-schedules").with(user(email))).andExpect(status().isOk())
+            .andReturn().getResponse().getContentAsString();
+        List<JsonNode> out = new ArrayList<>();
+        for (JsonNode node : json.readTree(body).path("data")) if (run.equals(node.path("runId").asText())) out.add(node);
+        return out;
+    }
+
+    @Test void theCalendarShowsEveryOwnersEntriesAndMarksOnlyTheCallersAsMine() throws Exception {
+        String run = optimize(); decide(run, "approve").andExpect(status().isOk()); apply(run).andExpect(status().isOk());
+        User other = users.save(new User(UUID.randomUUID() + "@test.io", "pw", "Other", "ROLE_USER"));
+        try {
+            var seenByOther = calendarFor(run, other.getEmail());
+            assertThat(seenByOther).hasSize(1);
+            assertThat(seenByOther.getFirst().path("ownerName").asText()).isEqualTo("Operator");
+            assertThat(seenByOther.getFirst().path("mine").asBoolean()).isFalse();
+            assertThat(calendarFor(run, owner.getEmail()).getFirst().path("mine").asBoolean()).isTrue();
+            // Only the owner changes an entry's status: to anyone else it does not exist.
+            long id = seenByOther.getFirst().path("id").asLong();
+            mvc.perform(patch("/api/workload-schedules/" + id + "/status").with(user(other.getEmail()))
+                .contentType(APPLICATION_JSON).content("{\"status\":\"Running\"}")).andExpect(status().isNotFound());
+        } finally { users.deleteById(other.getId()); }
+    }
+
+    @Test void entriesOfAPlanThatLostItsApprovalAreHiddenUntilTheirSlotHasEnded() throws Exception {
+        String run = optimize(); decide(run, "approve").andExpect(status().isOk()); apply(run).andExpect(status().isOk());
+        assertThat(calendarFor(run, owner.getEmail())).hasSize(1);
+        changeFacility(); // ends every approval; the rows stay in the table
+        assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.INVALIDATED);
+        assertThat(schedules.findByRunIdOrderByIdAsc(run)).hasSize(1);
+        assertThat(calendarFor(run, owner.getEmail())).isEmpty();
+        // Once the slot is over, the entry shows again: that work ran, or should have.
+        jdbc.update("update workload_schedules set start_utc = ?, end_utc = ? where run_id = ?",
+            java.sql.Timestamp.valueOf(start.minusDays(5)), java.sql.Timestamp.valueOf(start.minusDays(5).plusHours(1)), run);
+        assertThat(calendarFor(run, owner.getEmail())).hasSize(1);
+    }
+
+    @Test void aCalendarEntryCannotBeDeletedThroughTheApi() throws Exception {
+        String run = optimize(); decide(run, "approve").andExpect(status().isOk()); apply(run).andExpect(status().isOk());
+        long id = schedules.findByRunIdOrderByIdAsc(run).getFirst().getId();
+        mvc.perform(delete("/api/workload-schedules/" + id).with(user(owner.getEmail()))).andExpect(status().is4xxClientError());
+        assertThat(schedules.findById(id)).isPresent();
+    }
+
     @Test void onlyTheOwnerCanApplyOrEditAPlansJobs() throws Exception {
         String run=optimize();User other=users.save(new User(UUID.randomUUID()+"@test.io","pw","Other","ROLE_ADMIN"));
         try {

@@ -72,6 +72,10 @@ export interface WorkloadSchedule {
   startUtc: string
   endUtc: string
   notes: string | null
+  /** Whose job this is. The calendar shows every user's entries. */
+  ownerName: string
+  /** True for the signed-in user's own entries, the only ones they may change. */
+  mine: boolean
 }
 
 export type JobPriority = "CRITICAL" | "HIGH" | "NORMAL" | "LOW"
@@ -676,10 +680,6 @@ export const workloadScheduleApi = {
       method: "PATCH",
       body: JSON.stringify({ status }),
     })
-  },
-
-  remove(id: number): Promise<ApiResponse<void>> {
-    return fetchJson<ApiResponse<void>>(`/api/workload-schedules/${id}`, { method: "DELETE" })
   },
 }
 

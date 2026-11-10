@@ -5,8 +5,8 @@ import Link from "next/link"
 import { RefreshCw } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { useScheduleReview } from "@/hooks/use-schedule-review"
-import { reviewLabels, decisionUnavailable, calendarUnavailable, planUnavailable } from "@/lib/schedule-review-utils"
+import { useScheduleReview, type ReviewTab } from "@/hooks/use-schedule-review"
+import { reviewLabels, decisionUnavailable, planUnavailable } from "@/lib/schedule-review-utils"
 import { ExplanationSummary } from "@/components/ui/explanation-summary"
 import { formatMarketDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import type { ScheduleDecisionAction, SchedulePlanDetail } from "@/lib/api"
@@ -19,7 +19,7 @@ export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
   // including a terminal decision; the "disabled" gate for the picker/refresh/calendar controls
   // only reflects whether the plan itself is usable at all, not which decision it already holds -
   // otherwise an APPROVED plan (which rejects/revises as "already decided") would also disable
-  // the surrounding controls, including "Add approved schedule to calendar".
+  // the surrounding controls.
   const unavailable = decisionUnavailable(review.plan, "reject")
   // Why Approve is off for this plan, shown only while it is still waiting for a decision.
   const approveBlocked = review.plan?.reviewState === "PENDING" ? decisionUnavailable(review.plan, "approve") : null
@@ -27,24 +27,37 @@ export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
   return <Card id="approvals">
     <CardHeader>
       <div className="flex items-center justify-between gap-3">
-        <CardTitle>Schedule recommendations</CardTitle>
+        <CardTitle>Plans</CardTitle>
         <Button type="button" variant="outline" size="sm" disabled={review.submitting || review.listLoading || review.detailLoading || !!action} onClick={review.refresh}>
           <RefreshCw className="mr-2 h-4 w-4" />Refresh plans
         </Button>
       </div>
-      <CardDescription>Review recommendations and record an approval, rejection, or request for revision. Decisions do not dispatch workloads.</CardDescription>
+      <CardDescription>The system plans every new job. Anyone except the person who submitted a plan can approve it. Approving also adds the plan to the Schedule calendar.</CardDescription>
     </CardHeader>
     <CardContent className="space-y-4">
       {review.listLoading && <p role="status">Loading schedule plans…</p>}
       {review.listError && <p role="alert" className="text-sm text-destructive">{review.listError} Use “Refresh plans” to retry.</p>}
-      {!review.listLoading && !review.listError && !review.plans.length && !review.selected && <p className="text-sm text-muted-foreground">No recommendations found. <Link className="underline" href="/jobs">Generate a schedule from Jobs</Link> to review it here.</p>}
-      {(!!review.plans.length || !!review.selected) && <div className="space-y-2">
-        <label htmlFor="schedule-plan-select" className="text-sm font-medium">Recommendation</label>
-        <select id="schedule-plan-select" className="w-full rounded-md border bg-background p-2 text-sm" value={review.selected} disabled={review.submitting || !!action}
-          onChange={event => review.select(event.target.value)}>
-          {review.selected && !review.plans.some(plan => plan.runId === review.selected) && <option value={review.selected}>Selected recommendation — {review.selected}</option>}
-          {review.plans.map(plan => <option key={plan.runId} value={plan.runId}>{plan.ownerName} — {formatMarketDateTime(plan.createdAt)} — {reviewLabels[plan.runId === review.plan?.runId ? review.plan.reviewState : plan.reviewState]} — {plan.runId}</option>)}
-        </select>
+      {!review.listLoading && !review.listError && !review.plans.length && <p className="text-sm text-muted-foreground">{review.tab === "PENDING" ? "No plans are waiting for a decision." : "No plans are approved."} <Link className="underline" href="/jobs">Add a job</Link> and the system plans it.</p>}
+      <div role="tablist" aria-label="Plans to show" className="flex w-fit rounded-md border">
+        {(["PENDING", "APPROVED"] as ReviewTab[]).map(value => (
+          <Button key={value} type="button" role="tab" size="sm" aria-selected={review.tab === value} variant={review.tab === value ? "secondary" : "ghost"}
+            disabled={review.submitting || !!action} onClick={() => review.changeTab(value)}>{value === "PENDING" ? "Pending" : "Approved"}</Button>
+        ))}
+      </div>
+      {!!review.plans.length && <div className="space-y-2">
+        <ul aria-label={review.tab === "PENDING" ? "Pending plans" : "Approved plans"} className="divide-y rounded-md border">
+          {review.plans.map(plan => {
+            const state = plan.runId === review.plan?.runId ? review.plan.reviewState : plan.reviewState
+            return <li key={plan.runId}>
+              <button type="button" aria-current={plan.runId === review.selected} disabled={review.submitting || !!action}
+                className={`flex w-full flex-wrap items-center justify-between gap-x-4 gap-y-1 px-3 py-2 text-left text-sm hover:bg-muted/50 ${plan.runId === review.selected ? "bg-muted" : ""}`}
+                onClick={() => review.select(plan.runId)}>
+                <span className="font-medium">{plan.ownerName}</span>
+                <span className="text-xs text-muted-foreground">{formatMarketDateTime(plan.createdAt)} · {reviewLabels[state]}{plan.canApprove || state !== "PENDING" ? "" : " · you submitted this"}</span>
+              </button>
+            </li>
+          })}
+        </ul>
         <div className="flex items-center gap-3 text-xs">
           <Button type="button" size="sm" variant="outline" disabled={review.page === 0 || review.submitting || !!action} onClick={() => review.changePage(review.page - 1)}>Previous</Button>
           <span>Page {review.page + 1} of {Math.max(1, review.totalPages)}</span>
@@ -70,9 +83,7 @@ export function DecisionPanel({ onDecision }: { onDecision?: () => void }) {
             <Button type="button" variant="destructive" disabled={disabled || !!decisionUnavailable(review.plan, "revoke")}
               onClick={() => setAction("revoke")}>Revoke approval</Button>
           )}
-          {review.plan.reviewState === "APPROVED" && <Button type="button" disabled={disabled || !!calendarUnavailable(review.plan) || review.addedToCalendar}
-            onClick={() => void review.addToCalendar()}>{review.submitting && !action ? "Adding to calendar…" : review.addedToCalendar ? "Added to calendar" : "Add approved schedule to calendar"}</Button>}
-          {review.addedToCalendar && <Button type="button" variant="outline" asChild><Link href="/workloads">Open workload calendar</Link></Button>}
+          {review.plan.reviewState === "APPROVED" && <Button type="button" variant="outline" asChild><Link href="/workloads">Open Schedule</Link></Button>}
         </div>
       </>}
       {action && review.plan && <RejectPlanModal key={`${review.plan.runId}:${action}`} open action={action} runId={review.plan.runId}

@@ -2,9 +2,12 @@
 
 import * as React from "react"
 import { ApiRequestError, scheduleReviewApi, type ScheduleDecisionAction, type SchedulePlanDetail, type SchedulePlanSummary } from "@/lib/api"
-import { calendarUnavailable, decisionUnavailable, rationaleError, selectReviewRun } from "@/lib/schedule-review-utils"
+import { decisionUnavailable, rationaleError, selectReviewRun } from "@/lib/schedule-review-utils"
+
+export type ReviewTab = "PENDING" | "APPROVED"
 
 export function useScheduleReview(onDecision?: () => void) {
+  const [tab, setTab] = React.useState<ReviewTab>("PENDING")
   const [page, setPage] = React.useState(0)
   const [reload, setReload] = React.useState(0)
   const [list, setList] = React.useState<{ plans: SchedulePlanSummary[]; totalPages: number; key: string } | null>(null)
@@ -16,10 +19,9 @@ export function useScheduleReview(onDecision?: () => void) {
   const [conflict, setConflict] = React.useState(false)
   const [notice, setNotice] = React.useState<string | null>(null)
   const [submitting, setSubmitting] = React.useState(false)
-  const [addedRuns, setAddedRuns] = React.useState<Set<string>>(() => new Set())
   const busy = React.useRef(false)
   const mounted = React.useRef(true)
-  const listKey = `${page}:${reload}`
+  const listKey = `${tab}:${page}:${reload}`
   const detailKey = `${selected}:${reload}`
   const listLoading = list?.key !== listKey && !listError
   const detailLoading = !!selected && detail?.key !== detailKey && !detailError
@@ -28,7 +30,7 @@ export function useScheduleReview(onDecision?: () => void) {
   React.useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   React.useEffect(() => {
     let active = true
-    scheduleReviewApi.list(page).then(response => {
+    scheduleReviewApi.list(page, tab).then(response => {
       if (!active) return
       if (!response.success || !response.data) throw new Error(response.message || "Could not load schedule plans")
       const data = response.data
@@ -37,7 +39,7 @@ export function useScheduleReview(onDecision?: () => void) {
       setSelected(current => selectReviewRun(current, data.content.map(item => item.runId), requested))
     }).catch(error => { if (active) setListError(error instanceof Error ? error.message : "Could not load schedule plans") })
     return () => { active = false }
-  }, [page, reload, listKey])
+  }, [tab, page, reload, listKey])
 
   React.useEffect(() => {
     if (!selected) return
@@ -58,6 +60,10 @@ export function useScheduleReview(onDecision?: () => void) {
   const select = (runId: string) => {
     if (busy.current) return
     setSelected(runId); setDetailError(null); setDecisionError(null); setNotice(null); setConflict(false)
+  }
+  const changeTab = (next: ReviewTab) => {
+    if (busy.current || next === tab) return
+    setTab(next); setPage(0); setSelected(""); setDetail(null); setListError(null); setDetailError(null); setDecisionError(null); setNotice(null); setConflict(false)
   }
   const changePage = (next: number) => {
     if (busy.current) return
@@ -94,39 +100,7 @@ export function useScheduleReview(onDecision?: () => void) {
     }
   }
 
-  const addToCalendar = async () => {
-    if (busy.current || conflict || listLoading || detailLoading || listError || detailError || !plan) return
-    const invalid = calendarUnavailable(plan)
-    if (invalid) { setDecisionError(invalid); return }
-    busy.current = true
-    setSubmitting(true); setDecisionError(null); setNotice(null)
-    try {
-      const response = await scheduleReviewApi.apply(plan.runId)
-      if (!mounted.current) return
-      if (!response.success || !response.data) throw new Error(response.message || "Could not add schedule to calendar")
-      setAddedRuns(current => new Set(current).add(plan.runId))
-      // Mirror the server's own record locally so the panel reads as done immediately, without a
-      // refetch. addedRuns alone used to carry this, and it is component state: it vanished on
-      // remount, which is why returning to the panel re-offered the button. plan.appliedAt is the
-      // durable answer; this just keeps the two in step until the next detail load.
-      setDetail(current => current && ({ ...current, plan: { ...current.plan, appliedAt: new Date().toISOString() } }))
-      setNotice("Approved schedule added to the workload calendar.")
-      onDecision?.()
-    } catch (error) {
-      if (!mounted.current) return
-      setDecisionError(error instanceof ApiRequestError && error.status === 409 ? `409 conflict: ${error.message}` : error instanceof Error ? error.message : "Could not add schedule to calendar. Try again.")
-      if (error instanceof ApiRequestError && (error.status === 409 || error.reason === "NOT_APPROVED")) setConflict(true)
-    } finally {
-      busy.current = false
-      if (mounted.current) setSubmitting(false)
-    }
-  }
-
-  return { plans: list?.key === listKey ? list.plans : [], totalPages: list?.totalPages ?? 0, page,
+  return { tab, plans: list?.key === listKey ? list.plans : [], totalPages: list?.totalPages ?? 0, page,
     selected, plan, listLoading, detailLoading, listError, detailError, decisionError, conflict, notice,
-    submitting, refresh, select, changePage, decide, addToCalendar,
-    // Server truth first: a plan the backend says was applied is applied, however this component
-    // was mounted. addedRuns stays as the optimistic half, for the moment between a successful
-    // apply and the next detail load.
-    addedToCalendar: !!plan?.appliedAt || addedRuns.has(selected) }
+    submitting, refresh, select, changeTab, changePage, decide }
 }

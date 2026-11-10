@@ -8,9 +8,8 @@ export const reviewLabels: Record<PlanReviewState, string> = {
 /**
  * The universal blockers: true regardless of which action is being attempted, and regardless of
  * whether the plan currently holds a terminal decision. Used both by decisionUnavailable (every
- * action) and calendarUnavailable (only reachable once APPROVED, so it never needs the terminal
- * check below) to gate the controls around a review - the plan picker, refresh, "add to
- * calendar" - that stay meaningful even once a decision is terminal.
+ * action) and the controls around a review - the plan list, refresh - that stay
+ * meaningful even once a decision is terminal.
  */
 export function planUnavailable(plan: SchedulePlanDetail | null): string | null {
   if (!plan) return "Select a schedule to review."
@@ -53,22 +52,6 @@ export function decisionUnavailable(plan: SchedulePlanDetail | null, action: Sch
 export function rationaleError(comment: string): string | null {
   if (!comment.trim()) return "Enter a justification for this decision."
   if (comment.length > 2000) return "Justification must not exceed 2,000 characters."
-  return null
-}
-
-export function calendarUnavailable(plan: SchedulePlanDetail | null): string | null {
-  if (!plan || plan.reviewState !== "APPROVED") return "Approve this recommendation before adding it to the calendar."
-  const universal = planUnavailable(plan)
-  if (universal) return universal
-  // Applying is once per plan, and the server records when it happened (plan.appliedAt). Before that
-  // field was exposed the only record was the hook's own component state, which is lost the moment
-  // the operator navigates away - so returning to pending approvals re-enabled the button for a
-  // schedule that was already on the calendar. A second click was correctly a no-op, but offering
-  // the action at all said there was still something to do. Checked before the "no scheduled jobs"
-  // case below: an applied plan is finished either way, and "already added" is the more informative
-  // of the two answers.
-  if (plan.appliedAt) return "This schedule is already on the workload calendar."
-  if (!plan.recommendation!.items.some(item => item.scheduledStart && item.scheduledEnd)) return "This recommendation has no scheduled jobs to approve."
   return null
 }
 

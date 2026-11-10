@@ -14,7 +14,9 @@ public record WorkloadScheduleDto(
     LocalDateTime endUtc,
     String notes,
     String runId,
-    Long jobId
+    Long jobId,
+    String ownerName,
+    boolean mine
 ) {
     public record CreateRequest(
         String title,
