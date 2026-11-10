@@ -49,7 +49,7 @@ public class ScheduleExportService {
     @Transactional(noRollbackFor = ScheduleExportRejectedException.class)
     public ExportFile export(UUID runId, Format format, String email) {
         OptimizationPlan plan = gate.owned(runId, email);
-        var checked = gate.check(plan, email, true);
+        var checked = gate.check(plan, true);
         String body = format == Format.CSV ? csv.serialize(checked.schedule())
             : json.serialize(checked.schedule(), plan.getRun(), checked.approval());
         return new ExportFile("schedule-run-" + runId + "." + format.extension(), format.contentType(),

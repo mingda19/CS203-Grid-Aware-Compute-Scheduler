@@ -34,8 +34,8 @@ describe("forecast confidence banding", () => {
   })
 
   it("formats a score as a percentage and its band", () => {
-    expect(formatConfidence(0.824)).toBe("82% · High")
-    expect(formatConfidence(0.5)).toBe("50% · Moderate")
+    expect(formatConfidence(0.824)).toBe("82%, High")
+    expect(formatConfidence(0.5)).toBe("50%, Moderate")
   })
 
   it("tones each band differently so the colour carries the same meaning as the words", () => {

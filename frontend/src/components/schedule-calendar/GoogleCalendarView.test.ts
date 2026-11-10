@@ -217,3 +217,13 @@ describe("real scheduled rows never paint outside the 24-hour grid", () => {
       .toEqual([".>", "<>", "<>", "<."])
   })
 })
+
+describe("whose entry it is", () => {
+  const row = { id: 7, title: "Train", type: "ML Training", cluster: "c", powerKw: 1, savings: null, status: "Scheduled" as const,
+    startUtc: "2026-11-06T12:00:00Z", endUtc: "2026-11-06T14:00:00Z", notes: null }
+
+  it("carries the owner's name and whether the signed-in user owns the entry", () => {
+    expect(scheduleToEvent({ ...row, ownerName: "Ada", mine: false })).toMatchObject({ ownerName: "Ada", mine: false })
+    expect(scheduleToEvent({ ...row, ownerName: "Me", mine: true })).toMatchObject({ ownerName: "Me", mine: true })
+  })
+})

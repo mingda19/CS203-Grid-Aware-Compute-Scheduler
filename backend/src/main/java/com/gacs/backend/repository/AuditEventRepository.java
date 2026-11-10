@@ -41,4 +41,7 @@ public interface AuditEventRepository extends Repository<AuditEvent, Long>, Audi
 
     /** The most recently recorded event of the given types for a run; IDs increase with insertion order. */
     Optional<AuditEvent> findFirstByRunIdAndActionTypeInOrderByIdDesc(String runId, Collection<AuditActionType> types);
+
+    /** Whether the actor recorded an event of one of these types on the run, ignoring case. */
+    boolean existsByRunIdAndActorIgnoreCaseAndActionTypeIn(String runId, String actor, Collection<AuditActionType> types);
 }

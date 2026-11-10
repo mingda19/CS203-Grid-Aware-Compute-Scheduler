@@ -3,12 +3,14 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { ShieldCheck, ShieldAlert, Users, UserCheck, Search, ArrowLeft, RefreshCw, AlertCircle, CheckCircle2, Shield, Clock, LogOut, Zap } from "lucide-react"
+import { ShieldCheck, ShieldAlert, Users, UserCheck, Search, ArrowLeft, RefreshCw, AlertCircle, CheckCircle2, Shield, Clock } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { adminApi, authApi, removeStoredUser, type User } from "@/lib/api"
+import { FacilityConfigCard } from "@/components/admin/FacilityConfigCard"
+import { ApprovalSettingsCard } from "@/components/admin/ApprovalSettingsCard"
 
 export default function AdminPage() {
   const router = useRouter()
@@ -134,7 +136,7 @@ export default function AdminPage() {
   // Loading / Auth Verification screen
   if (isAuthorized === null) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+      <div className="min-h-[50vh] flex items-center justify-center p-4">
         <div className="flex flex-col items-center gap-3">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground animate-pulse">
@@ -148,7 +150,7 @@ export default function AdminPage() {
   // Unauthorized screen
   if (isAuthorized === false) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+      <div className="min-h-[50vh] flex items-center justify-center p-4">
         <Card className="max-w-md w-full border-red-500/30 bg-card/90 shadow-2xl">
           <CardHeader className="text-center space-y-2">
             <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-red-500/10 border border-red-500/20 text-red-500">
@@ -163,7 +165,7 @@ export default function AdminPage() {
           </CardHeader>
           <CardContent className="pt-2 flex flex-col gap-2">
             <Button asChild className="w-full bg-primary hover:bg-primary/90 text-primary-foreground">
-              <Link href="/" className="flex items-center justify-center gap-2">
+              <Link href="/home" className="flex items-center justify-center gap-2">
                 <ArrowLeft className="h-4 w-4" />
                 Return to Operations Dashboard
               </Link>
@@ -182,65 +184,26 @@ export default function AdminPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col">
-      {/* Top Navbar */}
-      <header className="sticky top-0 z-30 border-b border-border bg-card/80 backdrop-blur-md px-4 lg:px-8 py-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Link
-            href="/"
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-muted/40 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-            title="Back to Dashboard"
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-tr from-emerald-600 to-teal-400 text-white shadow-sm">
-              <Zap className="h-4 w-4 fill-current" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="font-bold text-sm leading-none">Admin Console</h1>
-                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
-                  RBAC Management
-                </span>
-              </div>
-              <p className="text-[11px] text-muted-foreground">Grid-Aware Compute Scheduler</p>
-            </div>
-          </div>
-        </div>
+    <div id="admin-root" className="space-y-6">
+      {/* No visible title. The heading stays for screen readers. */}
+      <h1 className="sr-only">Admin</h1>
 
-        <div className="flex items-center gap-3">
-          <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border bg-muted/30 text-xs">
-            <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            <span className="font-mono text-[11px] text-muted-foreground">Admin:</span>
-            <span className="font-semibold">{currentUser?.email}</span>
-          </div>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => { setIsLoading(true); setFeedback(null); setUsersReload(key => key + 1) }}
-            disabled={isLoading}
-            className="h-8 gap-1.5 text-xs cursor-pointer"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
-            <span className="hidden sm:inline">Refresh</span>
-          </Button>
-
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={handleLogout}
-            className="h-8 w-8 text-muted-foreground hover:text-red-500 cursor-pointer"
-            title="Log Out"
-          >
-            <LogOut className="h-4 w-4" />
-          </Button>
-        </div>
-      </header>
+      {/* Toolbar */}
+      <div className="flex items-center justify-end">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => { setIsLoading(true); setFeedback(null); setUsersReload(key => key + 1) }}
+          disabled={isLoading}
+          className="h-8 gap-1.5 text-xs cursor-pointer"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
+          Refresh
+        </Button>
+      </div>
 
       {/* Main Content */}
-      <main className="flex-1 px-4 lg:px-8 py-6 max-w-7xl w-full mx-auto space-y-6">
+      <div className="space-y-6">
         {/* Banner Alert Feedback */}
         {feedback && (
           <div
@@ -339,6 +302,9 @@ export default function AdminPage() {
             </CardContent>
           </Card>
         </div>
+
+        <FacilityConfigCard />
+        <ApprovalSettingsCard />
 
         {/* User Management Section */}
         <Card className="border border-border shadow-sm">
@@ -543,7 +509,7 @@ export default function AdminPage() {
             </div>
           </CardContent>
         </Card>
-      </main>
+      </div>
     </div>
   )
 }

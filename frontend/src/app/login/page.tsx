@@ -228,7 +228,7 @@ export default function LoginPage() {
             </h1>
           </div>
           <p className="text-xs text-muted-foreground">
-            Grid Aware Compute Scheduler · Wholesale Dispatch Operations
+            Grid Aware Compute Scheduler, Wholesale Dispatch Operations
           </p>
         </div>
 

@@ -134,11 +134,14 @@ public class AuditEventService {
      * list is returned for a run the caller never acted on, which is also what a nonexistent run
      * gives - deliberately, so the endpoint does not confirm that someone else's run exists.
      */
+    @Transactional(readOnly = true)
     public List<AuditEventResponseDto> getEventsByRunIdForActor(String runId, String actorEmail) {
         String wanted = actorEmail == null ? "" : actorEmail.trim().toLowerCase(Locale.ROOT);
+        // The owner of the run also sees the events of the people who decided it.
+        boolean owner = planRepository.findById(runId).map(plan -> isOwnedByViewer(plan, actorEmail)).orElse(false);
         return auditEventRepository.findByRunIdOrderByTimestampDesc(runId).stream()
-                .filter(event -> event.getActor() != null
-                        && event.getActor().trim().toLowerCase(Locale.ROOT).equals(wanted))
+                .filter(event -> owner || (event.getActor() != null
+                        && event.getActor().trim().toLowerCase(Locale.ROOT).equals(wanted)))
                 .map(AuditEventResponseDto::fromEntity)
                 .toList();
     }
@@ -201,11 +204,17 @@ public class AuditEventService {
             return new AuditEventDetailDto(event, run, ScheduleAvailability.NOT_STORED, null, null);
         }
         boolean hashMatches = ScheduleHashUtil.computeSha256(plan.getResultJson()).equals(event.scheduleHash());
-        if (!isOwnedByViewer(plan, viewerEmail)) {
+        // The owner sees the schedule, and so does anyone who decided it.
+        if (!isOwnedByViewer(plan, viewerEmail) && !hasDecided(plan, viewerEmail)) {
             return new AuditEventDetailDto(event, run, ScheduleAvailability.OWNER_ONLY, hashMatches, null);
         }
         return new AuditEventDetailDto(event, run, ScheduleAvailability.VISIBLE, hashMatches,
                 scheduleReader.read(plan.getResultJson()).orElse(null));
+    }
+
+    private boolean hasDecided(OptimizationPlan plan, String viewerEmail) {
+        return viewerEmail != null && auditEventRepository.existsByRunIdAndActorIgnoreCaseAndActionTypeIn(
+                plan.getRunId(), viewerEmail.trim(), ScheduleGate.DECISIONS);
     }
 
     private boolean isOwnedByViewer(OptimizationPlan plan, String viewerEmail) {
@@ -229,8 +238,14 @@ public class AuditEventService {
             }
             if (filter.onlyActor() != null && !filter.onlyActor().isBlank()) {
                 // Exact match, not a substring: see AuditEventFilter#onlyActor for why that matters.
-                predicates.add(cb.equal(cb.lower(root.<String>get("actor")),
-                        filter.onlyActor().trim().toLowerCase(Locale.ROOT)));
+                // The viewer's own events, and every event on a run they own.
+                String viewer = filter.onlyActor().trim().toLowerCase(Locale.ROOT);
+                Subquery<String> ownedRuns = query.subquery(String.class);
+                Root<OptimizationPlan> ownedPlan = ownedRuns.from(OptimizationPlan.class);
+                ownedRuns.select(ownedPlan.get("runId"))
+                        .where(cb.equal(cb.lower(ownedPlan.get("owner").<String>get("email")), viewer));
+                predicates.add(cb.or(cb.equal(cb.lower(root.<String>get("actor")), viewer),
+                        root.get("runId").in(ownedRuns)));
             }
             if (filter.actor() != null && !filter.actor().isBlank()) {
                 predicates.add(cb.like(cb.lower(root.<String>get("actor")), containsPattern(filter.actor()), '\\'));

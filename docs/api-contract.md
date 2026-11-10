@@ -493,7 +493,7 @@ Invalidates the persistent refresh token in the database, clears the client's `r
 
 ## 5. Current Endpoints: Administration & Role Management
 
-All endpoints in this section reside in `com.gacs.backend.controller.AdminController` and require `ROLE_ADMIN` authority.
+The user endpoints in §5.1 and §5.2 reside in `com.gacs.backend.controller.AdminController`. §5.3 to §5.5 reside in `AdminSettingsController`, `AdminFacilityController` and `AdminJobController`. Every `/api/admin/**` endpoint requires `ROLE_ADMIN` authority; any other caller gets **403**.
 
 ### 5.1 List All Users
 
@@ -580,6 +580,25 @@ Updates the authorization authority of a specific user (`ROLE_USER` or `ROLE_ADM
   * `400 Bad Request`: Invalid role value, user ID not found, or attempted self-demotion (`"You cannot demote your own administrator account."`).
   * `401 Unauthorized`: Authentication missing.
   * `403 Forbidden`: Non-admin user.
+
+---
+
+### 5.3 Deployment settings
+
+| Route | Behavior |
+|---|---|
+| `GET /api/admin/settings` | Returns `data: { "allowSelfApproval": boolean }`. Default `false`. |
+| `PUT /api/admin/settings` | Body `{ "allowSelfApproval": boolean }`. Returns the stored settings. |
+
+`allowSelfApproval` lets the submitter of a plan approve it. Administrators can always approve their own plans, whatever the setting (§6.9).
+
+### 5.4 Shared facility
+
+`PUT /api/admin/facility` sets the one facility every user shares. Body: `name`, `maxCpuHours` and `maxGpuHours` (the limits per hourly slot), and `location` (the ERCOT zone, for example `LZ_NORTH`). It returns the stored facility. A change to capacity or location ends the approval of every approved plan of every owner. Everyone reads the facility with `GET /api/facilities/me`; there is no per-user facility and no other write route (`PUT /api/facilities/me` was removed).
+
+### 5.5 All jobs
+
+`GET /api/admin/jobs` returns every user's jobs, ordered by `originalStartTime`. Each job has the same fields as §6.3 plus `ownerName`. The Jobs page uses it for the admin's "All" view.
 
 ---
 
@@ -699,16 +718,16 @@ Retrieves forecasted electricity prices and uncertainty intervals for the select
 ### 6.2 Workload Management
 
 #### `GET /api/workload-schedules`
-Returns the authenticated operator's saved workload schedules ordered by UTC start time.
+Returns the workload calendar for every user, ordered by UTC start time. Each entry has the §6.8 fields plus `ownerName` and `mine` (true for the caller's own entries). An entry of a plan that is no longer `APPROVED` (stale, invalidated, rejected) is left out, unless its slot has already ended. Entries with no run (legacy rows) are always listed.
 
 #### `POST /api/workload-schedules`
 Creates a workload schedule for the authenticated operator. Request fields: `title`, `type`, `cluster`, `powerKw`, `savings`, `startUtc`, `endUtc`, and optional `notes`. Timestamps are UTC ISO local date-times, and `endUtc` must be after `startUtc`.
 
 #### `PATCH /api/workload-schedules/{id}/status`
-Updates a saved schedule status. Supported statuses: `Scheduled`, `Running`, `Throttled`, and `Completed`.
+Updates a saved schedule status. Supported statuses: `Scheduled`, `Running`, `Throttled`, and `Completed`. Only the owner of the entry can change it: for anyone else the entry does not exist (**404**).
 
-#### `DELETE /api/workload-schedules/{id}`
-Deletes a saved schedule owned by the authenticated operator.
+#### `DELETE /api/workload-schedules/{id}` (removed 2026-11-10)
+This route no longer exists. A calendar entry cannot be deleted by itself, because a row could vanish while its job still showed Scheduled. To withdraw work, revoke the plan (`POST /api/schedules/{runId}/revoke`) or delete the job (`DELETE /api/jobs/{id}`). Both remove the calendar rows of work that has not yet completed.
 
 #### `POST /api/jobs`
 Creates a structured compute job for the authenticated operator per GRID-9 / GRID-112.
@@ -728,19 +747,19 @@ Creates a structured compute job for the authenticated operator per GRID-9 / GRI
     "confirmationOutcome": "CONFIRMED"
   }
   ```
-* **Success Response (201 Created)**: Returns the persisted Job entity with generated `id`, `ownerEmail`, `status: "PENDING"`, `priority: "NORMAL"`, and audit timestamps.
+* **Success Response (201 Created)**: Returns the persisted Job entity with generated `id`, `ownerEmail`, `status` (derived, see §6.9, so a new job reads `SCHEDULING`), `priority: "NORMAL"`, and audit timestamps. The system then plans the job by itself (§6.9).
 
 #### `GET /api/jobs`
-Returns all compute jobs owned by the authenticated operator, ordered chronologically by `originalStartTime` ascending. Each job includes its configured `priority`.
+Returns the compute jobs owned by the authenticated user, ordered chronologically by `originalStartTime` ascending. Each job includes its configured `priority`, its derived `status` and `statusReason`, and `approvedRunId`. An admin lists every user's jobs with `GET /api/admin/jobs` (§5.5).
 
 #### `GET /api/jobs/{id}`
 Returns details for a specific compute job owned by the authenticated operator. Returns 404 if the job does not exist or belongs to another operator.
 
 #### `PUT /api/jobs/{id}`
-Updates an existing job. All fields (including `priority`, `flexibilityWindowHours`, `deadline`, and `isExempt`) are editable. Unknown `priority` values are rejected with `400 Bad Request`.
+Updates an existing job. Only the owner can (**404** for anyone else, an admin included). All fields (including `priority`, `flexibilityWindowHours`, `deadline`, and `isExempt`) are editable, except that a job in an `APPROVED` plan cannot be edited at all (**409**), and neither can a `COMPLETED` job (**409**). Revoke the plan first to edit an approved job. Unknown `priority` values are rejected with `400 Bad Request`.
 
 #### `DELETE /api/jobs/{id}`
-Deletes a compute job owned by the authenticated operator.
+Deletes a compute job. Its owner can, and so can an admin; anyone else gets **404**. Deleting a job that is in an approved plan removes only that job: the plan and its other jobs stay approved with the same times, the job's calendar rows are removed, and a `REMOVE_JOB` audit event is recorded (§6.9). Deleting the last job of an approved plan ends the plan's approval.
 
 ---
 
@@ -761,9 +780,12 @@ The **Job** entity represents a compute workload submitted for schedule optimiza
 | `rawConstraints` | String | No | `null` | Original natural-language source retained verbatim (up to 1,000 characters). Persistence does not trigger parsing. |
 | `parsedAt` | ISO-8601 UTC local date-time | No | `null` | Actual parser timestamp supplied by the caller, e.g. `2026-10-20T09:30:00`; never inferred from job audit timestamps. |
 | `confirmationOutcome` | String (Enum) | No | `null` | Latest parse decision: `PENDING`, `CONFIRMED`, or `REJECTED`. A supplied nonnull `parsedAt` defaults this to `PENDING` when the outcome is omitted. |
-| `status` | String | No | `"PENDING"` | Workflow status: `"PENDING"`, `"SCHEDULED"`, `"RUNNING"`, `"COMPLETED"`, `"CANCELLED"`. |
+| `status` | String | Read-only | Derived | Worked out on every read from the job's plans and calendar entries: `SCHEDULING`, `AWAITING_APPROVAL`, `SCHEDULED`, `RUNNING`, `COMPLETED`, `REJECTED`, `NEEDS_ATTENTION`, `CANCELLED` (§6.9). A request may still send `status`, but only `"CANCELLED"` has an effect. |
+| `statusReason` | String | Read-only | Derived | Why the job is `REJECTED` or `NEEDS_ATTENTION`; otherwise null. |
+| `approvedRunId` | String | Read-only | Derived | The run ID of the approved plan the job is in, or null. |
 | `priority` | String (Enum) | No | `"NORMAL"` | Workload priority level: `"CRITICAL"`, `"HIGH"`, `"NORMAL"`, `"LOW"`. Default `"NORMAL"`. Used by the optimizer for tie-breaking when jobs compete for capacity - see §6.4's *Objective and tie-break order* for the exact rule (GRID-155 / GRID-124). Unknown values are rejected with 400 Bad Request. |
-| `ownerEmail` | String | Read-only | Auth user | Authenticated tenant operator email for tenancy isolation. |
+| `ownerEmail` | String | Read-only | Auth user | Email of the user who owns the job. |
+| `ownerName` | String | Read-only | Admin listing only | Display name of the owner. Set only by `GET /api/admin/jobs`. |
 | `createdAt` | ISO-8601 UTC String | Read-only | Auto | Timestamp when record was created. |
 | `updatedAt` | ISO-8601 UTC String | Read-only | Auto | Timestamp when record was last updated. |
 
@@ -1016,6 +1038,8 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 | 2026-11-01 | §6.4: added run `status` `INFEASIBLE` (nothing placeable; never approvable or exportable) and `503` with `runId` when the solver fails, recorded as a `FAILED` run with no plan (GRID-142 AC1.3). | - |
 | 2026-11-01 | Added §6.8: automatic material-input invalidation, shared backend execution gating, approved-run application, and plan detail (GRID-11 AC2.3). | - |
 | 2026-11-04 | §6.5: a plan now holds exactly one terminal decision. Once APPROVED, REJECTED, or REVISION_REQUESTED, every further `approve`/`reject`/`revise` call for that run returns `409` with `data.reason = "ALREADY_DECIDED"`, superseding the "repeated requests ... create additional history entries" text below, which described the previous (reversible) behavior (usability bug 3). An operator who wants to retract an approval must generate a new recommendation rather than reject/revise the same run. | - |
+| 2026-11-10 | §6.9: each plan in `GET /api/schedules` also carries `mine`, `jobNames`, `projectedSavingsUsd`, `projectedSavingsPercent`, `firstStart` and `usedSeededFallbackPrices`, so the Approvals list can name the jobs and the savings. | - |
+| 2026-11-10 | Compute Jobs rework (phases 1 to 6): shared facility (§5.4), deployment settings (§5.3), all-jobs listing (§5.5), shared review queue and the approval rule, autorun and `POST /api/schedules/recompute`, derived job `status`, locked approved jobs, and the shared calendar. `DELETE /api/workload-schedules/{id}` was removed. See §6.9. | - |
 | 2026-11-08 | §6.4: the priced span now always reaches the latest job `deadline` (capped at 168), so `horizonHours` (default 48) is a minimum. A job left out because of hours with no stored forecast price gets a `NO_FEASIBLE_SLOT` reason that names those hours, instead of "Cluster full". | - |
 
 ### 6.5 Operator decisions (GRID-11 AC2 / AC2.2)
@@ -1023,12 +1047,14 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 #### Browsing plans for review (GRID-55)
 
 `GET /api/schedules?page=0&size=20` returns a standard `ApiResponse<Page<PlanSummary>>`
-for the authenticated operator only, newest first by `createdAt`, then descending `runId`.
-Each summary contains `runId`, UTC `createdAt`, and `reviewState` (`PENDING`, `APPROVED`,
-`REJECTED`, `REVISION_REQUESTED`, `STALE`, or `INVALIDATED`). Page indices start at zero;
+for every owner's plans (the review queue is shared, §6.9), newest first by `createdAt`, then descending `runId`.
+Each summary contains `runId`, UTC `createdAt`, `reviewState` (`PENDING`, `APPROVED`,
+`REJECTED`, `REVISION_REQUESTED`, `STALE`, or `INVALIDATED`), `ownerName` (whose jobs the plan schedules) and
+`canApprove` (whether the caller may approve it), `mine` (the caller submitted it), `jobNames` (the plan's jobs without any removed after approval), `projectedSavingsUsd` and `projectedSavingsPercent` (from the stored result; null if it cannot be read), `firstStart` (earliest scheduled start, UTC, or null) and `usedSeededFallbackPrices`. Optional filters: `state` keeps one review state, and
+`approvable=true` keeps only plans the caller may approve. The Approvals page uses `state=PENDING` and
+`state=APPROVED` for its two tabs. Page indices start at zero;
 `size` must be 1–100. Invalid pagination returns **400**. Missing authentication returns
-**403**; an authenticated email without a database user returns **401**. Administrators
-cannot list another operator's plans.
+**403**; an authenticated email without a database user returns **401**.
 
 The list reports stored states. Before offering decisions, the UI reads
 `GET /api/schedules/{runId}` (§6.8) to check validity and display the persisted recommendation.
@@ -1037,17 +1063,15 @@ decision. Approval, rejection, and revision each require explicit confirmation w
 justification. The UI updates state only after a successful server response and refreshes
 decision history. It does not imply that an approval dispatched a workload.
 
-The Jobs optimization summary links to `/approvals?runId={runId}` with **Review and approve**.
-The review page selects that exact run, including runs outside the first list page. Once approval
-succeeds, **Add approved schedule to calendar** calls `POST /api/schedules/{runId}/apply` (§6.8).
-Jobs no longer creates individual calendar entries from an unapproved optimization preview.
-An already approved run does not require another approval before applying it. Application
-refusals require refreshing the plan; the backend remains authoritative if approval changes
-between reviewing and applying.
+Home links to `/approvals?runId={runId}` with **Review**. The review page selects that exact run,
+including runs outside the first list page. Approving a plan also applies it to the workload calendar in the
+same transaction (§6.9), so the page has no separate "add to calendar" step. Jobs no longer creates calendar
+entries from an unapproved optimization preview. The backend remains authoritative if approval changes
+between reviewing and approving; a **409** means the plan was replaced and the list must be reloaded.
 
 #### Recording a decision
 
-All routes require JWT authentication and ownership of the persisted optimization plan. Existing users act as operators; administrator privileges do not bypass ownership. The operator's numeric database ID is resolved from the authenticated email, never from request fields or the JWT's numeric user ID claim.
+All routes require JWT authentication. Any signed-in user can decide on any owner's plan (§6.9), with two limits: **approve** is refused with **403** (`You cannot approve your own plan. Another user has to approve it.`) when the caller submitted the plan, unless the caller is an admin or `allowSelfApproval` is on. **Revoke** is refused with **403** (`Only the plan's owner or an admin can revoke its approval.`) unless the caller owns the plan or is an admin; plan detail carries `canRevoke`. Reject and revise are open to the submitter. A missing plan returns **404**. The user's numeric database ID is resolved from the authenticated email, never from request fields or the JWT's numeric user ID claim.
 
 | Route | Recorded action | New review state |
 |---|---|---|
@@ -1299,7 +1323,7 @@ Example (the schedule from the CSV example; shown indented here for reading, but
 
 ### 6.7 Audit Log Queries (GRID-134 AC6)
 
-Both routes require `ROLE_USER` or `ROLE_ADMIN`; every such user can read every audit event.
+Both routes require `ROLE_USER` or `ROLE_ADMIN`. A user sees the events they performed and the events on plans they own, so a submitter can see who approved their plan. Administrators are scoped the same way.
 
 `POST /api/audit-events` remains a compatibility entry point for decisions. `APPROVE`, `REJECT`,
 `REVISE` and `REVOKE` use the same owner-scoped transaction and validity checks as the schedule
@@ -1372,13 +1396,13 @@ The Next.js frontend interacts with the backend using the helper module `fronten
 
 ### 6.8 Approval lifecycle and gated application (GRID-11 AC2.3)
 
-**Backend enforcement.** Frontend integration is a separate task. Until it adopts this contract, existing direct calendar-create calls will return **403** `NOT_APPROVED`.
+**Backend enforcement.** Direct calendar creation (`POST /api/workload-schedules`) always returns **403** `NOT_APPROVED`. Where this section says "owner", read it with §6.9: review is shared, and a plan's jobs, the facility and the manual apply and export routes are the owner's.
 
 #### Material inputs and lifecycle
 
 New plans retain an immutable input snapshot containing the submitted optimization request, owned job scheduling revisions and values, and the facility scheduling revision and values. Snapshot capture uses a short transaction before solving; solver and explanation calls hold no operator lock or database transaction. A submitted request may still be optimized as a preview, but approval is refused if its jobs are missing/unowned or scheduling inputs do not match persisted jobs, its capacity differs from the facility (including omitted solver defaults), its per-slot override exceeds facility capacity, or its forecast location differs from the facility when no explicit forecast was supplied. For an unconfigured facility, defaults are 256 CPU-hours, 64 GPU-hours, and `LZ_NORTH`.
 
-Job CPU/GPU hours, original start, deadline, flexibility, exemption, priority, cancellation/reinstatement, raw constraint source, and confirmation outcome are material. A timestamp-only parser edit is not material unless it changes confirmation. Facility CPU/GPU capacity and grid location are material. Every actual material change increments a monotonic scheduling revision, including changes subsequently reverted. Job updates/deletions invalidate that owner's approved plans containing the job. Facility changes invalidate all of that owner's approved plans. Input updates and invalidation commit atomically. New unrelated jobs, names, identical updates, and ordinary job execution statuses do not invalidate plans.
+Job CPU/GPU hours, original start, deadline, flexibility, exemption, priority, cancellation/reinstatement, raw constraint source, and confirmation outcome are material. A timestamp-only parser edit is not material unless it changes confirmation. Facility CPU/GPU capacity and grid location are material. Every actual material change increments a monotonic scheduling revision, including changes subsequently reverted. Editing a job in an approved plan is refused (§6.9). Deleting such a job removes only that job from the plan (§6.9). A facility change invalidates every owner's approved plans. Input updates and invalidation commit atomically. New unrelated jobs, names, identical updates, and ordinary job execution statuses do not invalidate plans.
 
 Before approval, the backend checks current ownership, revisions, input values, cancellation and confirmation (`PENDING`/`REJECTED` structured constraints cannot be approved). Missing, unreadable, or incomplete provenance fails closed. Changes during solving or while a recommendation awaits review therefore prevent approval. No stale/invalidated run can receive another decision; generate a new recommendation instead. Immutable schedule JSON and prior audit records remain intact.
 
@@ -1391,9 +1415,9 @@ A successful approval permanently transitions other approved plans containing ov
 | `POST /api/schedules/{runId}/apply` | **200**, `data: WorkloadScheduleDto[]` | Creates calendar entries atomically from the stored approved schedule; no request payload is required or used. |
 | `GET /api/schedules/{runId}` | **200**, `data: PlanDetail` | Returns the immutable recommendation and current lifecycle state; detects and persists outdated inputs/expiry. |
 
-Both routes require JWT authentication and ownership. Missing/unowned plans return **404** `Optimization plan not found`; an authenticated email without a database user returns **401**. Administrator privileges do not bypass ownership.
+`POST .../apply` requires JWT authentication and ownership: a plan owned by someone else returns **404** `Optimization plan not found`, and administrator privileges do not bypass ownership. `GET .../{runId}` is open to any signed-in user (§6.9). An authenticated email without a database user returns **401**. Approving a plan applies it automatically, so `apply` is a manual fallback and stays idempotent.
 
-`PlanDetail` contains `runId`, `reviewState` (`PENDING`, `APPROVED`, `REJECTED`, `REVISION_REQUESTED`, `INVALIDATED`, `STALE`), `invalidationReason` (string/null), `invalidatedAt` (UTC instant/null), `appliedAt` (UTC instant/null), and `recommendation` (the §6.4 optimizer response; null only if the stored result is unreadable). Detail requests succeed for unapproved/terminal plans so clients can explain the state.
+`PlanDetail` contains `runId`, `reviewState` (`PENDING`, `APPROVED`, `REJECTED`, `REVISION_REQUESTED`, `INVALIDATED`, `STALE`), `invalidationReason` (string/null), `invalidatedAt` (UTC instant/null), `appliedAt` (UTC instant/null), and `recommendation` (the §6.4 optimizer response; null only if the stored result is unreadable), `ownerName` (the submitter), `canApprove` (whether the caller may approve it, so a client can explain a disabled button) and `removedJobIds` (jobs that left the plan after approval, sorted). Detail requests succeed for unapproved/terminal plans so clients can explain the state.
 
 `appliedAt` is when `POST /api/schedules/{runId}/apply` wrote this plan to the workload calendar, or null if it never has been. The plan has recorded it since application became gated (it is what makes application idempotent), but until 2026-11-04 it was exposed on no DTO, so a client could not distinguish an approved plan still waiting to be applied from one applied an hour ago. Clients must treat a non-null `appliedAt` as "already on the calendar" and present the action as done rather than available; tracking it in client-side state instead is what caused the review panel to re-offer "Add approved schedule to calendar" after the operator navigated away and back.
 
@@ -1414,3 +1438,65 @@ Exports, application, and `PATCH /api/workload-schedules/{id}/status` transition
 Already running work is not interrupted by invalidation; completion remains permitted. Legacy calendar entries remain readable/deletable but cannot start or resume without a freshly generated and applied approved run. This backend does not control external execution systems or revoke files previously exported; external adapters must check current approval immediately before starting work.
 
 **Rollout.** Apply `V5__schedule_approval_lifecycle.sql` explicitly before deployment for managed PostgreSQL schemas; no migration runner is configured. It adds revisions, provenance/lifecycle/application fields, nullable entry linkage, and uniqueness, expands the review-state check, and invalidates existing plans missing provenance. Hibernate `ddl-auto=update` adds model columns in development; old approved plans also fail closed at the next gate or expiry check. Historical decisions and legacy calendar entries are preserved. Do not infer provenance for old schedules.
+
+### 6.9 Shared review, autorun and job status (Compute Jobs rework, 2026-11-10)
+
+This section replaces the single-owner wording of §6.5 and §6.8 where they disagree with it.
+
+#### The flow
+
+1. A user adds a job. The server plans it by itself within about a minute (autorun) and stores the plan as `PENDING`. Nothing is applied yet.
+2. Another user reviews the plan on Approvals and approves it.
+3. Approving applies the plan to the workload calendar in the same transaction and appends a `DISPATCH` audit event.
+
+#### The approval rule
+
+| Caller | Approve | Reject, revise, revoke |
+|---|---|---|
+| Any signed-in user except the submitter | Allowed | Allowed |
+| The submitter | **403**, unless `allowSelfApproval` is on | Allowed |
+| An admin | Allowed, including on their own plan | Allowed |
+
+Plans are visible to every signed-in user (`GET /api/schedules`, `GET /api/schedules/{runId}`). A plan can be exported (`export.csv`, `export.json`) and manually applied (`POST .../apply`) only by its owner. The plan check always uses the plan owner's jobs, not the caller's.
+
+#### Autorun and Recompute
+
+- A poller plans every job that has no live plan, for every user. A job is live when it is in a `PENDING` plan or in an `APPROVED` plan. It skips a job whose deadline has passed, a cancelled job, a job with unconfirmed constraints, a job whose approved slots have all ended, a job whose latest plan was rejected, and a job that already failed at its current revision. A job that cannot be planned records why (`statusReason`).
+- Properties: `gacs.schedule.autorun-enabled` (env `GACS_SCHEDULE_AUTORUN_ENABLED`, default `true`) and `gacs.schedule.autorun-ms` (env `GACS_SCHEDULE_AUTORUN_MS`, default `60000`). `spring.task.scheduling.pool.size=2`.
+- `POST /api/schedules/recompute` is the manual fallback. It plans the caller's jobs with no live plan, and also the ones whose last plan was rejected or that failed. A job in an approved plan is never included. Success: `data: { "runIds": string[], "failed": number }`.
+- A new plan marks older `PENDING` plans that share a job `STALE`.
+
+#### Capacity ledger
+
+Each run is solved against the facility limit minus the CPU and GPU hours reserved by all `APPROVED` plans (every owner), per hour, floored at zero. The server computes this; it is stored in the run's input snapshot. Baselines still use the full facility. A job with no room gets `NO_FEASIBLE_SLOT`.
+
+A `PENDING` plan becomes `STALE` (and is replaced) when a scheduled start has passed, when approved capacity was freed in its window, or when it no longer fits. Capacity taken while the plan still fits changes nothing. Nothing already approved ever moves. Approve locks the owner's row and then the facility row, so two approvers cannot over-commit the facility.
+
+#### Derived job status
+
+`status` and `statusReason` are worked out on every read:
+
+| Status | Meaning |
+|---|---|
+| `SCHEDULING` | No live plan and nothing blocking it |
+| `AWAITING_APPROVAL` | In a `PENDING` plan, with a slot |
+| `SCHEDULED` | In an `APPROVED` plan |
+| `RUNNING` | Its calendar entry is `Running` or `Throttled` |
+| `COMPLETED` | Its calendar entry is `Completed`, or all its approved slots have ended |
+| `REJECTED` | Its latest plan was rejected or sent back for revision; the reason is in `statusReason` |
+| `NEEDS_ATTENTION` | Planning failed, no feasible slot, unconfirmed constraints, or the deadline passed; the reason is in `statusReason` |
+| `CANCELLED` | `Job.status` was set to `CANCELLED` |
+
+#### Approved jobs are locked
+
+- A job in an approved plan cannot be edited (**409**), whatever the field. It can be deleted. After a revoke it can be edited again.
+- Jobs the run never placed are not approved. They are dropped from the plan on approval, can be edited, and show `NEEDS_ATTENTION`.
+- Deleting an approved job (owner or admin) adds it to the plan's `removedJobIds`, removes its calendar rows (except `Completed` ones) and records a `REMOVE_JOB` audit event. The plan's stored result and hash do not change, so its cost and savings still include the deleted job; the plan detail labels it deleted.
+
+#### The shared calendar
+
+`GET /api/workload-schedules` lists every user's entries (§6.2). Only the owner changes an entry's status. There is no delete route; revoke the plan or delete the job instead. Revoking removes the plan's entries except `Completed` ones.
+
+#### Rollout
+
+On the first start after deploy, autorun plans every job with no live plan, for every user. Set `GACS_SCHEDULE_AUTORUN_ENABLED=false` to turn it off. The one-off script `backend/scripts/shared-facility-cleanup.sql` keeps the oldest admin's facility row and deletes the others; run it once by hand.

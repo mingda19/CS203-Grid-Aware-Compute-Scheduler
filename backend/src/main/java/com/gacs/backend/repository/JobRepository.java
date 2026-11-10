@@ -16,6 +16,9 @@ public interface JobRepository extends JpaRepository<Job, Long> {
      */
     List<Job> findByOwnerEmailOrderByOriginalStartTimeAsc(String ownerEmail);
 
+    /** Every owner's jobs, for an admin. */
+    List<Job> findAllByOrderByOriginalStartTimeAsc();
+
     /**
      * Finds a single job by its ID scoped to the authenticated owner.
      */

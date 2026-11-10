@@ -1,13 +1,23 @@
 package com.gacs.backend.service;
 
-import com.gacs.backend.model.ConfirmationOutcome;
+import com.gacs.backend.dto.AuditEventRequestDto;
 import com.gacs.backend.dto.JobRequestDto;
 import com.gacs.backend.dto.JobResponseDto;
+import com.gacs.backend.exception.ConflictException;
 import com.gacs.backend.exception.ResourceNotFoundException;
+import com.gacs.backend.model.AuditActionType;
+import com.gacs.backend.model.ConfirmationOutcome;
 import com.gacs.backend.model.Job;
 import com.gacs.backend.model.JobPriority;
+import com.gacs.backend.model.OptimizationPlan;
+import com.gacs.backend.model.ReviewState;
+import com.gacs.backend.model.User;
 import com.gacs.backend.model.WorkloadCategory;
 import com.gacs.backend.repository.JobRepository;
+import com.gacs.backend.repository.OptimizationPlanRepository;
+import com.gacs.backend.repository.UserRepository;
+import com.gacs.backend.repository.WorkloadScheduleRepository;
+import com.gacs.backend.util.ScheduleHashUtil;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,7 +25,9 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -29,11 +41,33 @@ public class JobService {
     private final JobRepository jobRepository;
     private final ScheduleInputs inputs;
     private final Clock clock;
+    private final OptimizationPlanRepository plans;
+    private final WorkloadScheduleRepository schedules;
+    private final AuditEventService audit;
+    private final UserRepository users;
+    private final JobStatusResolver statuses;
 
-    public JobService(JobRepository jobRepository, ScheduleInputs inputs, Clock clock) {
+    public JobService(JobRepository jobRepository, ScheduleInputs inputs, Clock clock,
+                      OptimizationPlanRepository plans, WorkloadScheduleRepository schedules,
+                      AuditEventService audit, UserRepository users, JobStatusResolver statuses) {
+        this.statuses = statuses;
         this.inputs = inputs;
         this.jobRepository = jobRepository;
         this.clock = clock;
+        this.plans = plans;
+        this.schedules = schedules;
+        this.audit = audit;
+        this.users = users;
+    }
+
+    /** The job with where it stands now. {@code status} is worked out from its plans, not read from the row. */
+    private static JobResponseDto dto(Job job, Map<Long, JobStatusResolver.Derived> derived) {
+        JobResponseDto dto = JobResponseDto.fromEntity(job);
+        var state = derived.get(job.getId());
+        dto.setStatus(state.status().name());
+        dto.setStatusReason(state.reason());
+        dto.setApprovedRunId(state.approved() ? state.runId() : null);
+        return dto;
     }
 
     /**
@@ -41,9 +75,23 @@ public class JobService {
      */
     @Transactional(readOnly = true)
     public List<JobResponseDto> getJobsByOwner(String ownerEmail) {
-        return jobRepository.findByOwnerEmailOrderByOriginalStartTimeAsc(ownerEmail).stream()
-                .map(JobResponseDto::fromEntity)
-                .toList();
+        List<Job> own = jobRepository.findByOwnerEmailOrderByOriginalStartTimeAsc(ownerEmail);
+        Map<Long, JobStatusResolver.Derived> derived = statuses.resolve(own);
+        return own.stream().map(job -> dto(job, derived)).toList();
+    }
+
+    /** Every owner's jobs with the owner's name, for an admin. */
+    @Transactional(readOnly = true)
+    public List<JobResponseDto> getAllJobs() {
+        List<Job> all = jobRepository.findAllByOrderByOriginalStartTimeAsc();
+        Map<Long, JobStatusResolver.Derived> derived = statuses.resolve(all);
+        Map<String, String> names = new HashMap<>();
+        users.findAll().forEach(user -> names.put(user.getEmail(), user.displayName()));
+        return all.stream().map(job -> {
+            JobResponseDto dto = dto(job, derived);
+            dto.setOwnerName(names.getOrDefault(job.getOwnerEmail(), job.getOwnerEmail()));
+            return dto;
+        }).toList();
     }
 
     /**
@@ -53,7 +101,7 @@ public class JobService {
     public JobResponseDto getJobById(Long id, String ownerEmail) {
         Job job = jobRepository.findByIdAndOwnerEmail(id, ownerEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("Job not found with id: " + id));
-        return JobResponseDto.fromEntity(job);
+        return dto(job, statuses.resolve(List.of(job)));
     }
 
     /**
@@ -89,7 +137,7 @@ public class JobService {
 
         applyParseMetadata(job, request);
         Job saved = jobRepository.save(job);
-        return JobResponseDto.fromEntity(saved);
+        return dto(saved, statuses.resolve(List.of(saved)));
     }
 
     /**
@@ -100,6 +148,14 @@ public class JobService {
         inputs.lock(ownerEmail);
         Job existing = jobRepository.findByIdAndOwnerEmail(id, ownerEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("Job not found with id: " + id));
+
+        // An approved job is locked: every field, name and description included. Delete is the only change.
+        // So is a finished one: its plan goes stale when its slots end, which would lift the lock.
+        var state = statuses.resolve(List.of(existing)).get(id);
+        if (state.approved() && state.status() == JobStatusResolver.Status.COMPLETED)
+            throw new ConflictException("This job has finished and cannot be edited. You can delete it.");
+        if (state.approved())
+            throw new ConflictException("This job is approved and cannot be edited. You can delete it.");
 
         validateJobConstraints(request);
         // Only a time the edit changes is checked: a job whose start has passed stays editable (Lock
@@ -137,10 +193,9 @@ public class JobService {
 
         if (!before.equals(ScheduleInputs.state(existing))) {
             existing.setSchedulingRevision(existing.getSchedulingRevision() + 1);
-            inputs.invalidate(ownerEmail, id, "Scheduling inputs changed for job " + id);
         }
         Job updated = jobRepository.save(existing);
-        return JobResponseDto.fromEntity(updated);
+        return dto(updated, statuses.resolve(List.of(updated)));
     }
 
     private static String blankToNull(String value) {
@@ -173,14 +228,30 @@ public class JobService {
     }
 
     /**
-     * Deletes a compute job scoped to the authenticated operator.
+     * Deletes a job. Its owner can, and so can an admin; anyone else gets 404.
+     *
+     * <p>In an approved plan the job only leaves the plan: the other jobs keep their approval and their
+     * times, like reverting one commit. A pending plan that held it is caught by the gate's next check.
      */
     @Transactional
-    public void deleteJob(Long id, String ownerEmail) {
-        inputs.lock(ownerEmail);
+    public void deleteJob(Long id, String callerEmail, boolean admin) {
+        String ownerEmail = admin
+                ? jobRepository.findById(id).map(Job::getOwnerEmail)
+                        .orElseThrow(() -> new ResourceNotFoundException("Job not found with id: " + id))
+                : callerEmail;
+        User owner = inputs.lock(ownerEmail);
         Job existing = jobRepository.findByIdAndOwnerEmail(id, ownerEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("Job not found with id: " + id));
-        inputs.invalidate(ownerEmail, id, "job " + id + " is no longer in your jobs");
+        for (OptimizationPlan plan : plans.findByOwnerIdAndReviewState(owner.getId(), ReviewState.APPROVED)) {
+            if (!plan.liveJobIds().contains(id)) continue;
+            plan.removeJobs(List.of(id));
+            audit.recordEvent(new AuditEventRequestDto(AuditActionType.REMOVE_JOB, plan.getRunId(),
+                    ScheduleHashUtil.computeSha256(plan.getResultJson()),
+                    "Removed job " + existing.getName() + " (#" + id + ") from the plan"));
+            if (plan.liveJobIds().isEmpty())
+                plan.invalidate(ReviewState.INVALIDATED, "all of its jobs were deleted", clock.instant());
+        }
+        schedules.deleteByJobIdAndStatusNot(id, "Completed");
         jobRepository.delete(existing);
     }
 

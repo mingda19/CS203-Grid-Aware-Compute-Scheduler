@@ -81,7 +81,8 @@ class ScheduleExportServiceTest {
 
     private ScheduleExportService service(String now) {
         return new ScheduleExportService(new ScheduleGate(plans, auditEvents, jobs,
-            new StoredScheduleReader(), Clock.fixed(Instant.parse(now), ZoneOffset.UTC), inputs),
+            new StoredScheduleReader(), Clock.fixed(Instant.parse(now), ZoneOffset.UTC), inputs,
+                org.mockito.Mockito.mock(CapacityLedger.class)),
             new ApprovedScheduleCsvSerializer(), new ApprovedScheduleJsonSerializer());
     }
 

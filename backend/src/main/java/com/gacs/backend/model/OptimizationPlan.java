@@ -53,6 +53,8 @@ public class OptimizationPlan {
 
     public void invalidate(ReviewState state, String reason, Instant now) {
         if (reviewState == ReviewState.INVALIDATED || reviewState == ReviewState.STALE) return;
+        // Every path that ends a plan comes through here, so this one line says why an approval was lost.
+        org.slf4j.LoggerFactory.getLogger(OptimizationPlan.class).warn("Plan {} {} -> {}: {}", runId, reviewState, state, reason);
         reviewState = state;
         invalidationReason = reason;
         invalidatedAt = now;
@@ -64,6 +66,26 @@ public class OptimizationPlan {
         indexes = @Index(name = "idx_plan_jobs_job", columnList = "job_id"))
     @Column(name = "job_id", nullable = false)
     private Set<Long> jobIds = new HashSet<>();
+
+    /**
+     * Jobs that left this plan after it was approved: deleted, or never placed. {@link #jobIds} and the
+     * stored result stay as they were, so the approval hash and the input snapshot still match.
+     */
+    @ElementCollection
+    @CollectionTable(name = "optimization_plan_removed_jobs", joinColumns = @JoinColumn(name = "run_id"))
+    @Column(name = "job_id", nullable = false)
+    private Set<Long> removedJobIds = new HashSet<>();
+
+    /** The plan's jobs that have not been removed. */
+    public Set<Long> liveJobIds() {
+        Set<Long> live = new HashSet<>(jobIds);
+        live.removeAll(removedJobIds);
+        return live;
+    }
+
+    public void removeJobs(Collection<Long> ids) {
+        removedJobIds.addAll(ids);
+    }
 
     public OptimizationPlan(OptimizerRun run, User owner, String resultJson, Collection<Long> jobIds, Instant createdAt) {
         // Leave the derived ID unset so Spring Data persists this new entity instead of merging it.

@@ -1,30 +1,28 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
-import { BriefcaseBusiness, Eye, Pencil, Plus, RefreshCw, Trash2, Sparkles, TrendingUp, Clock, Calendar, Server, Check, ArrowRight, SlidersHorizontal } from "lucide-react"
+import { BriefcaseBusiness, Clock, Ellipsis, Lock, LockOpen, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react"
 import {
   jobsApi,
   priceApi,
-  optimizerApi,
   facilityApi,
-  type JobExplanation,
+  authApi,
+  type User,
   type ComputeJob,
   type ComputeJobPayload,
   type JobPriority,
   type WorkloadCategory,
   WORKLOAD_CATEGORY_LABELS,
   PRIORITY_LABELS,
-  type OptimizeResponse,
-  type ScheduleItem,
   type FacilityConfig,
 } from "@/lib/api"
 import { currentMarketHourInput, formatMarketDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Dialog,
   DialogContent,
@@ -35,11 +33,9 @@ import {
 } from "@/components/ui/dialog"
 import { EstimatedPriceBadge } from "@/components/ui/estimated-price-badge"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
-import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, forecastEndMs, maxJobHours, usesEstimatedPrices, type ScheduleMode, toInputDate, toApiUtcDate, toOptimizeJobInput, windowHours } from "@/lib/job-form-utils"
-import { elapsedJobLabel, elapsedJobsConfirmation, elapsedStartJobs } from "@/lib/elapsed-jobs"
-import { RecommendationExplanation } from "@/components/jobs/RecommendationExplanation"
+import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, forecastEndMs, maxJobHours, usesEstimatedPrices, type ScheduleMode, toInputDate, toApiUtcDate, windowHours } from "@/lib/job-form-utils"
+import { canRecompute, isPlanning, jobStatus } from "@/lib/job-status"
 import { JobDateTimePicker } from "@/components/jobs/JobDateTimePicker"
-import { ExplanationSummary } from "@/components/ui/explanation-summary"
 
 type FormState = {
   name: string
@@ -70,7 +66,8 @@ const blankForm = (): FormState => ({
   workloadCategory: "ML_TRAINING",
 })
 
-const displayDate = (value?: string) => (value ? formatMarketDateTime(value) : "—")
+// The table headers already name the zone, so rows leave it off to save width.
+const displayDate = (value?: string, zone = true) => (value ? formatMarketDateTime(value, zone) : "—")
 
 const getWindowDurationText = (start: string, end: string) => {
   const diffHours = windowHours(start, end)
@@ -95,6 +92,15 @@ function OpenCreateOnParam({ onOpen }: { onOpen: () => void }) {
 
 export default function JobsPage() {
   const [jobs, setJobs] = React.useState<ComputeJob[]>([])
+  // An admin can list every user's jobs. Everyone else sees their own.
+  const [scope, setScope] = React.useState<"mine" | "all">("mine")
+  const [me, setMe] = React.useState<User | null>(null)
+  React.useEffect(() => {
+    let active = true
+    authApi.getMe().then((r) => { if (active && r.data) setMe(r.data) }).catch(() => {}) // no admin switch if unknown
+    return () => { active = false }
+  }, [])
+  const isAdmin = me?.role === "ROLE_ADMIN"
   const [loading, setLoading] = React.useState(true)
   const [saving, setSaving] = React.useState(false)
   const [updatingExemptionId, setUpdatingExemptionId] = React.useState<number | null>(null)
@@ -110,85 +116,21 @@ export default function JobsPage() {
   const [estimatedToConfirm, setEstimatedToConfirm] = React.useState<ComputeJobPayload | null>(null)
   const [form, setForm] = React.useState<FormState>(blankForm)
 
-  // Optimizer state
-  const [optimizing, setOptimizing] = React.useState(false)
-  const [optimizationPlan, setOptimizationPlan] = React.useState<OptimizeResponse | null>(null)
-  const [optimizeOpen, setOptimizeOpen] = React.useState(false)
-  const [jobToDelete, setJobToDelete] = React.useState<ComputeJob | null>(null)
-  // The jobs whose start time has already passed, held while the operator decides whether to let
-  // the optimiser reschedule them. Null means no question is pending - the common path, where no
-  // job has elapsed and optimising must not cost an extra click.
-  const [elapsedToConfirm, setElapsedToConfirm] = React.useState<ComputeJob[] | null>(null)
+  const [recomputing, setRecomputing] = React.useState(false)
+  // The jobs the open delete confirmation is about: one from the detail dialog, or the checked rows.
+  const [jobsToDelete, setJobsToDelete] = React.useState<ComputeJob[]>([])
+  const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set())
   const [deletingJob, setDeletingJob] = React.useState(false)
+  const [menuJobId, setMenuJobId] = React.useState<number | null>(null) // row whose "⋯" menu is open
 
-  const [jobExplanations, setJobExplanations] = React.useState<JobExplanation[]>([])
-  const [explanationLoading, setExplanationLoading] = React.useState(false)
-  const [explanationError, setExplanationError] = React.useState("")
-  const explanationRequest = React.useRef(0)
-
-  const loadExplanations = async (runId: string) => {
-    const requestId = ++explanationRequest.current
-    setExplanationLoading(true)
-    setExplanationError("")
-    setJobExplanations([])
-    try {
-      const response = await optimizerApi.explanation(runId)
-      if (!response.success || !response.data) throw new Error(response.message || "Could not load explanations")
-      if (requestId === explanationRequest.current) setJobExplanations(response.data.items ?? [])
-    } catch {
-      if (requestId === explanationRequest.current) setExplanationError("Could not load recommendation explanations.")
-    } finally {
-      if (requestId === explanationRequest.current) setExplanationLoading(false)
-    }
-  }
-
-  // Facility & Cluster Envelope state (stored in DB per user)
+  // The shared facility, read only here (it sets the form limits). An admin changes it on the Admin page.
   const [facility, setFacility] = React.useState<FacilityConfig>({
     name: "Primary Compute Cluster",
     maxCpuHours: 256.0,
     maxGpuHours: 64.0,
     location: "LZ_NORTH",
   })
-  const [facilityLoading, setFacilityLoading] = React.useState(true)
   const [facilityError, setFacilityError] = React.useState<string | null>(null)
-  const [facilityDirty, setFacilityDirty] = React.useState(false)
-  const [facilitySaving, setFacilitySaving] = React.useState(false)
-  const [facilitySavedMsg, setFacilitySavedMsg] = React.useState<string | null>(null)
-  const [facilityExpanded, setFacilityExpanded] = React.useState(false)
-
-  const handleSaveFacility = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault()
-    setFacilitySaving(true)
-    setFacilitySavedMsg(null)
-    try {
-      const response = await facilityApi.update({
-        ...facility,
-        maxCpuHours: Number(facility.maxCpuHours) || 0,
-        maxGpuHours: Number(facility.maxGpuHours) || 0,
-      })
-      if (!response.success || !response.data) throw new Error(response.message || "Could not save facility settings")
-      setFacility(response.data)
-      setFacilityError(null)
-      setFacilityDirty(false)
-      setFacilitySavedMsg("Facility envelope updated & saved to database!")
-      setTimeout(() => setFacilitySavedMsg(null), 3500)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update facility envelope")
-    } finally {
-      setFacilitySaving(false)
-    }
-  }
-
-  const applyPreset = (presetName: string, cpu: number, gpu: number, loc = "LZ_NORTH") => {
-    setFacilityDirty(true)
-    setFacility((prev) => ({
-      ...prev,
-      name: presetName,
-      maxCpuHours: cpu,
-      maxGpuHours: gpu,
-      location: loc,
-    }))
-  }
 
   React.useEffect(() => {
     let active = true
@@ -202,19 +144,18 @@ export default function JobsPage() {
     setLoading(true)
     setError("")
     try {
-      const response = await jobsApi.list()
+      const response = await (scope === "all" ? jobsApi.listAll() : jobsApi.list())
       setJobs(response.data ?? [])
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load jobs")
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [scope])
 
   React.useEffect(() => {
     let active = true
-    jobsApi
-      .list()
+    ;(scope === "all" ? jobsApi.listAll() : jobsApi.list())
       .then((response) => {
         if (active) setJobs(response.data ?? [])
       })
@@ -224,14 +165,20 @@ export default function JobsPage() {
       .finally(() => {
         if (active) setLoading(false)
       })
+    return () => {
+      active = false
+    }
+  }, [scope])
 
+  React.useEffect(() => {
+    let active = true
     facilityApi.get().then(response => {
       if (!active) return
       if (!response.success || !response.data) throw new Error(response.message || "Could not load facility settings")
       setFacility(response.data)
     }).catch(error => {
       if (active) setFacilityError(error instanceof Error ? error.message : "Could not load facility settings")
-    }).finally(() => { if (active) setFacilityLoading(false) })
+    })
 
     return () => {
       active = false
@@ -381,10 +328,9 @@ export default function JobsPage() {
     }
     try {
       const response = await jobsApi.update(job.id, payload)
-      const updated = response.data
-      setJobs((current) =>
-        current.map((item) => (item.id === job.id ? (updated ?? { ...item, isExempt }) : item))
-      )
+      const updated = response.data ?? { ...job, isExempt }
+      setJobs((current) => current.map((item) => (item.id === job.id ? updated : item)))
+      setViewing((current) => (current?.id === job.id ? updated : current))
     } catch (e) {
       setError(e instanceof Error ? e.message : `Could not update exemption for ${job.name}`)
     } finally {
@@ -392,312 +338,117 @@ export default function JobsPage() {
     }
   }
 
-  const handleConfirmDeleteJob = async () => {
-    if (!jobToDelete) return
+  const handleConfirmDeleteJobs = async () => {
+    if (!jobsToDelete.length) return
     setDeletingJob(true)
     setError("")
+    const results = await Promise.allSettled(jobsToDelete.map((job) => jobsApi.remove(job.id)))
+    const deleted = new Set(jobsToDelete.filter((_, i) => results[i].status === "fulfilled").map((job) => job.id))
+    const failed = jobsToDelete.filter((job) => !deleted.has(job.id))
+    setJobs((current) => current.filter((item) => !deleted.has(item.id)))
+    setSelectedIds((current) => new Set([...current].filter((id) => !deleted.has(id))))
+    // Failed jobs stay selected, so a retry is one click.
+    setJobsToDelete([])
+    if (failed.length) setError(`Could not delete: ${failed.map((job) => job.name).join(", ")}.`)
+    setDeletingJob(false)
+  }
+
+  /** Only the owner edits a job, and not once it is in an approved plan. Delete stays open. */
+  const canEdit = (job: ComputeJob) => !job.approvedRunId && (scope === "mine" || job.ownerEmail?.toLowerCase() === me?.email?.toLowerCase())
+
+  const selectedJobs = jobs.filter((job) => selectedIds.has(job.id))
+  // Rows have no divider lines. A run of ticked rows is one rounded block: only its outer corners are round.
+  // Cells carry the tint and the corners because border-radius does not work on rows or collapsed borders.
+  const isTicked = (i: number) => i >= 0 && i < jobs.length && selectedIds.has(jobs[i].id)
+  const rowClass = (i: number) => {
+    const ticked = isTicked(i)
+    const parts = [ticked ? "[&>td]:bg-primary/10 [&:hover>td]:bg-primary/15" : "hover:bg-muted/30"]
+    if (ticked && !isTicked(i - 1)) parts.push("[&>td:first-child]:rounded-tl-lg [&>td:last-child]:rounded-tr-lg")
+    if (ticked && !isTicked(i + 1)) parts.push("[&>td:first-child]:rounded-bl-lg [&>td:last-child]:rounded-br-lg")
+    return parts.join(" ")
+  }
+  const toggleJob = (id: number, checked: boolean) =>
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+
+  const ownJobs = scope === "all" ? jobs.filter(job => job.ownerEmail?.toLowerCase() === me?.email?.toLowerCase()) : jobs
+
+  /** Reloads the list without the loading state, so the table does not flash. */
+  const refreshJobs = React.useCallback(async () => {
     try {
-      await jobsApi.remove(jobToDelete.id)
-      setJobs((current) => current.filter((item) => item.id !== jobToDelete.id))
-      setJobToDelete(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not delete job")
-    } finally {
-      setDeletingJob(false)
+      const response = await (scope === "all" ? jobsApi.listAll() : jobsApi.list())
+      setJobs(response.data ?? [])
+    } catch {
+      // Keep what is shown. The next tick tries again.
     }
-  }
+  }, [scope])
 
-  /** The jobs this run would submit: everything not already cancelled, completed or running. */
-  const schedulableJobs = () => jobs.filter(job => !["CANCELLED", "COMPLETED", "RUNNING"].includes(job.status))
+  // The system plans new jobs within a minute, so keep looking while one is still Scheduling.
+  const planning = isPlanning(jobs)
+  React.useEffect(() => {
+    if (!planning) return
+    const timer = window.setInterval(() => void refreshJobs(), 30_000)
+    return () => window.clearInterval(timer)
+  }, [planning, refreshJobs])
 
-  /**
-   * Schedule optimisation, with one question in front of it.
-   *
-   * A job whose start time has passed has a flexibility window anchored to a time that no longer
-   * exists, so the optimiser has nowhere to put it and reports it NO_FEASIBLE_SLOT even when its
-   * deadline is hours away. It can instead be rescheduled into the hours between now and that
-   * deadline - but that places it outside the window the operator specified, so it is their call,
-   * not an inference from the data. Hence the confirmation, which names the jobs.
-   *
-   * If nothing has elapsed there is no dialog: the common path keeps exactly one click.
-   */
-  const runOptimization = async () => {
-    if (jobs.length === 0) {
-      setError("Add at least one compute job before running schedule optimization.")
-      return
-    }
-    const pending = schedulableJobs()
-    if (!pending.length) {
-      setError("No pending jobs are available for optimization.")
-      return
-    }
-    const elapsed = elapsedStartJobs(pending)
-    if (elapsed.length) {
-      setError("")
-      setElapsedToConfirm(elapsed)
-      return
-    }
-    await optimize(false)
-  }
-
-  const optimize = async (rescheduleElapsedJobs: boolean) => {
+  /** Manual fallback for the automatic planner. */
+  const recompute = async () => {
     setError("")
-    setOptimizing(true)
-
-    // Build optimize payload ensuring originalStartTime is truncated to the hour
-    const pending = schedulableJobs()
-    if (!pending.length) {
-      setError("No pending jobs are available for optimization.")
-      setOptimizing(false)
-      return
-    }
-    const optimizeJobs = pending.map(toOptimizeJobInput)
-
+    setRecomputing(true)
     try {
-      const response = await optimizerApi.optimize({
-        jobs: optimizeJobs,
-        forecastLocation: facility.location || "LZ_NORTH",
-        clusterCapacity: {
-          maxConcurrentCpuHours: Number(facility.maxCpuHours),
-          maxConcurrentGpuHours: Number(facility.maxGpuHours),
-        },
-        // Only ever true because the operator just confirmed it for these jobs.
-        ...(rescheduleElapsedJobs ? { rescheduleElapsedJobs: true } : {}),
-      })
-      if (!response.success || !response.data) {
-        throw new Error(response.message || "Failed to generate schedule")
-      }
-      setOptimizationPlan(response.data)
-      setOptimizeOpen(true)
-      void loadExplanations(response.data.runId)
+      const response = await jobsApi.recompute()
+      const failed = response.data?.failed ?? 0
+      if (failed > 0) setError(`${failed} ${failed === 1 ? "job" : "jobs"} could not be planned. Open ${failed === 1 ? "it" : "them"} to see why.`)
+      await refreshJobs()
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Optimization failed")
+      setError(e instanceof Error ? e.message : "Could not plan your jobs")
     } finally {
-      setOptimizing(false)
+      setRecomputing(false)
     }
   }
 
   return (
     <div className="space-y-6" id="jobs-root">
       <React.Suspense fallback={null}><OpenCreateOnParam onOpen={openCreate} /></React.Suspense>
-      <div className="flex flex-col gap-4 rounded-2xl border border-border bg-gradient-to-r from-card to-card/60 p-6 shadow-xs sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <BriefcaseBusiness className="h-5 w-5 text-emerald-500" />
-            <h1 className="text-2xl font-bold tracking-tight">Compute Jobs</h1>
-          </div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Manage compute jobs and run grid-aware schedule optimization against ERCOT LMP pricing signals.
-          </p>
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">{scope === "all" ? "All jobs" : "My jobs"}</h1>
+          {isAdmin && (
+            <div role="group" aria-label="Jobs to show" className="flex rounded-md border">
+              {(["mine", "all"] as const).map((value) => (
+                <Button
+                  key={value}
+                  size="sm"
+                  variant={scope === value ? "secondary" : "ghost"}
+                  aria-pressed={scope === value}
+                  onClick={() => { if (scope !== value) { setScope(value); setSelectedIds(new Set()); setLoading(true) } }}
+                >
+                  {value === "mine" ? "Mine" : "All"}
+                </Button>
+              ))}
+            </div>
+          )}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            asChild
-            className="border-border text-foreground hover:bg-muted"
-          >
-            <Link href="/workloads">
-              <Calendar className="mr-2 h-4 w-4 text-emerald-500" />
-              Workload Calendar
-            </Link>
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => void loadJobs()}
-            disabled={loading}
-            aria-label="Refresh jobs"
-          >
-            <RefreshCw className="mr-2 h-4 w-4" />
-            Refresh
-          </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* The system plans new jobs by itself. This is the manual fallback. */}
+          {canRecompute(ownJobs) && (
+            <Button variant="outline" onClick={() => void recompute()} disabled={recomputing || loading}>
+              <RefreshCw className={`mr-2 h-4 w-4 ${recomputing ? "animate-spin" : ""}`} />
+              {recomputing ? "Planning…" : "Recompute"}
+            </Button>
+          )}
           <Button onClick={openCreate}>
             <Plus className="mr-2 h-4 w-4" />
             New job
           </Button>
-          <Button
-            onClick={runOptimization}
-            disabled={optimizing || loading || facilityLoading || facilitySaving || facilityDirty || !!facilityError || jobs.length === 0}
-            className="bg-teal-600 text-white hover:bg-teal-700 font-semibold shadow-xs"
-          >
-            <Sparkles className="mr-2 h-4 w-4" />
-            {optimizing ? "Solving Schedule…" : "Run Optimizer"}
-          </Button>
         </div>
       </div>
 
-      {facilityError && <p role="alert" className="text-sm text-destructive">{facilityError}. Save the facility settings below or reload the page before running optimization.</p>}
-      {facilityDirty && <p role="status" className="text-sm text-muted-foreground">Save your facility settings before running optimization.</p>}
-      {/* Facility & Cluster Hardware Envelope Card */}
-      <Card className="border border-border bg-card shadow-xs overflow-hidden">
-        <div className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/60 bg-muted/20">
-          <div className="flex items-start gap-3">
-            <div className="h-10 w-10 rounded-xl bg-teal-500/15 border border-teal-500/30 text-teal-600 dark:text-teal-400 flex items-center justify-center shrink-0">
-              <Server className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="font-semibold text-base text-foreground tracking-tight">
-                  Facility Hardware & Capacity Envelope
-                </h3>
-                <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-semibold">
-                  {facilityLoading ? "Loading" : facilityError ? "Unavailable" : facilityDirty ? "Unsaved changes" : "Saved"}
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Configured limits constrain solver slot allocation per hour (AC3). Adjust your data center throughput or test constrained conditions.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setFacilityExpanded(!facilityExpanded)}
-              className="gap-1.5 text-xs font-medium cursor-pointer"
-            >
-              <SlidersHorizontal className="h-3.5 w-3.5 text-teal-500" />
-              {facilityExpanded ? "Hide Settings" : "Configure Facility"}
-            </Button>
-          </div>
-        </div>
-
-        {/* Overview Bar */}
-        <div className="px-5 py-3.5 bg-card flex flex-wrap items-center justify-between gap-4 text-xs">
-          <div className="flex flex-wrap items-center gap-4 sm:gap-6">
-            <div>
-              <span className="text-[11px] text-muted-foreground block">Facility Node</span>
-              <span className="font-semibold text-foreground">{facility.name || "Primary Cluster"}</span>
-            </div>
-            <div className="h-8 w-px bg-border/60 hidden sm:block" />
-            <div>
-              <span className="text-[11px] text-muted-foreground block">Max CPU / Slot</span>
-              <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">
-                {facility.maxCpuHours} CPU-h
-              </span>
-            </div>
-            <div className="h-8 w-px bg-border/60 hidden sm:block" />
-            <div>
-              <span className="text-[11px] text-muted-foreground block">Max GPU / Slot</span>
-              <span className="font-mono font-semibold text-teal-600 dark:text-teal-400">
-                {facility.maxGpuHours} GPU-h
-              </span>
-            </div>
-            <div className="h-8 w-px bg-border/60 hidden sm:block" />
-            <div>
-              <span className="text-[11px] text-muted-foreground block">ERCOT Pricing Zone</span>
-              <span className="font-mono font-semibold text-foreground">
-                {facility.location || "LZ_NORTH"}
-              </span>
-            </div>
-          </div>
-
-          {facilitySavedMsg && (
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 animate-in fade-in">
-              <Check className="h-3.5 w-3.5" />
-              {facilitySavedMsg}
-            </div>
-          )}
-        </div>
-
-        {/* Expanded Configuration Panel */}
-        {facilityExpanded && (
-          <div className="p-5 border-t border-border/60 bg-muted/15 space-y-4 animate-in slide-in-from-top-2 duration-150">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-foreground uppercase tracking-wider">
-                Quick Facility Presets (Evaluation & Stress-Testing)
-              </span>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-[11px] gap-1"
-                  onClick={() => applyPreset("Standard Datacenter", 256.0, 64.0, "LZ_NORTH")}
-                >
-                  Standard (256 CPU · 64 GPU)
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-[11px] gap-1 text-amber-600 dark:text-amber-400 border-amber-500/30"
-                  onClick={() => applyPreset("Constrained Test Lab", 32.0, 8.0, "LZ_NORTH")}
-                >
-                  Constrained Lab (32 CPU · 8 GPU)
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-[11px] gap-1 text-teal-600 dark:text-teal-400 border-teal-500/30"
-                  onClick={() => applyPreset("AI Supercomputing Pod", 512.0, 128.0, "LZ_HOUSTON")}
-                >
-                  AI Pod (512 CPU · 128 GPU)
-                </Button>
-              </div>
-            </div>
-
-            <form onSubmit={handleSaveFacility} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
-              <Field label="Facility / Cluster Name">
-                <Input
-                  value={facility.name}
-                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, name: e.target.value }) }}
-                  placeholder="e.g. Austin Primary Cluster"
-                  required
-                />
-              </Field>
-
-              <Field label="Max Concurrent CPU-Hours / Slot">
-                <Input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={facility.maxCpuHours}
-                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, maxCpuHours: Number(e.target.value) }) }}
-                  required
-                />
-              </Field>
-
-              <Field label="Max Concurrent GPU-Hours / Slot">
-                <Input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={facility.maxGpuHours}
-                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, maxGpuHours: Number(e.target.value) }) }}
-                  required
-                />
-              </Field>
-
-              <Field label="ERCOT Settlement Location">
-                <select
-                  value={facility.location}
-                  onChange={(e) => { setFacilityDirty(true); setFacility({ ...facility, location: e.target.value }) }}
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs font-semibold text-foreground focus:ring-1 focus:ring-primary"
-                >
-                  <option value="LZ_NORTH">LZ_NORTH (North Hub)</option>
-                  <option value="LZ_HOUSTON">LZ_HOUSTON (Houston)</option>
-                  <option value="LZ_SOUTH">LZ_SOUTH (South Hub)</option>
-                  <option value="LZ_WEST">LZ_WEST (West Texas Wind)</option>
-                </select>
-              </Field>
-
-              <div className="sm:col-span-2 lg:col-span-4 flex items-center justify-end gap-2 pt-1">
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={facilityLoading || facilitySaving}
-                  className="gap-1.5 font-medium cursor-pointer"
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  {facilityLoading ? "Loading…" : facilitySaving ? "Saving to DB…" : "Save Facility Envelope"}
-                </Button>
-              </div>
-            </form>
-          </div>
-        )}
-      </Card>
+      {facilityError && <p role="alert" className="text-sm text-destructive">{facilityError}. The form is using default limits. Reload the page to load the real ones.</p>}
 
       {error && (
         <div
@@ -709,362 +460,128 @@ export default function JobsPage() {
       )}
 
       <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-lg">Your Compute Jobs</CardTitle>
-              <CardDescription>
-                {jobs.length} registered {jobs.length === 1 ? "job" : "jobs"} available for scheduling
-              </CardDescription>
-            </div>
-            {jobs.length > 0 && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={runOptimization}
-                disabled={optimizing}
-                className="gap-1.5 text-xs text-teal-600 dark:text-teal-400 border-teal-500/30"
-              >
-                <Sparkles className="h-3.5 w-3.5" />
-                Optimize ({jobs.length})
-              </Button>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
+        <CardContent className="pb-3">
           {loading ? (
             <p className="py-8 text-center text-sm text-muted-foreground">Loading jobs…</p>
           ) : jobs.length === 0 ? (
             <div className="py-10 text-center">
               <BriefcaseBusiness className="h-10 w-10 mx-auto text-muted-foreground/40 mb-3" />
               <p className="font-medium text-foreground">No compute jobs yet</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Create a compute job with CPU/GPU requirements and deadlines to start optimizing.
-              </p>
               <Button onClick={openCreate} className="mt-4">
                 <Plus className="mr-2 h-4 w-4" />
                 Create your first job
               </Button>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[920px] text-left text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="px-3 py-3">ID</th>
-                    <th className="px-3 py-3">Name</th>
-                    <th className="px-3 py-3">CPU / GPU hours</th>
-                    <th className="px-3 py-3">Original start ({MARKET_ZONE_LABEL})</th>
-                    <th className="px-3 py-3">Deadline ({MARKET_ZONE_LABEL})</th>
-                    <th className="px-3 py-3">Flexibility</th>
-                    <th className="px-3 py-3">Priority</th>
-                    <th className="px-3 py-3">Category</th>
-                    <th className="px-3 py-3">Lock</th>
-                    <th className="px-3 py-3">Status</th>
-                    <th className="px-3 py-3">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {jobs.map((job) => (
-                    <tr key={job.id} className="border-b last:border-0 hover:bg-muted/30">
-                      <td className="px-3 py-3 font-mono text-xs text-muted-foreground">#{job.id}</td>
-                      <td className="px-3 py-3 font-medium text-foreground">
-                        {job.name}
-                        {usesEstimatedPrices(job.deadline, forecastEnd) && <div className="mt-1"><EstimatedPriceBadge /></div>}
-                      </td>
-                      <td className="px-3 py-3">
-                        {job.cpuHours} CPU · {job.gpuHours} GPU
-                      </td>
-                      <td className="px-3 py-3">{displayDate(job.originalStartTime)}</td>
-                      <td className="px-3 py-3">{displayDate(job.deadline)}</td>
-                      <td className="px-3 py-3">{`${job.flexibilityWindowHours}h`}</td>
-                      <td className="px-3 py-3">{PRIORITY_LABELS[job.priority ?? "NORMAL"]}</td>
-                      <td className="px-3 py-3">{WORKLOAD_CATEGORY_LABELS[job.workloadCategory ?? "ML_TRAINING"]}</td>
-                      <td className="px-3 py-3">
-                        <div className="flex items-center gap-2">
-                          <Checkbox
-                            id={`job-exempt-${job.id}`}
-                            checked={job.isExempt}
-                            disabled={updatingExemptionId === job.id}
-                            onCheckedChange={(checked) => void setJobExempt(job, Boolean(checked))}
-                            aria-label={`${job.isExempt ? "Unlock" : "Lock"} ${job.name}`}
-                          />
-                          {job.isExempt ? (
-                            <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
-                              Locked
-                            </span>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">Flexible</span>
+            <table className="w-full border-separate border-spacing-0 text-left text-xs">
+              <thead>
+                <tr className="text-xs text-muted-foreground [&>th]:border-b">
+                  <th className="w-10 px-2 pb-3 pt-4 sm:px-3"><span className="sr-only">Select</span></th>
+                  <th className="hidden whitespace-nowrap px-2 pb-3 pt-4 sm:px-3 2xl:table-cell">ID</th>
+                  <th className="w-full px-2 pb-3 pt-4 sm:px-3">Name</th>
+                  <th className="hidden whitespace-nowrap px-2 pb-3 pt-4 sm:px-3 2xl:table-cell">CPU hours</th>
+                  <th className="hidden whitespace-nowrap px-2 pb-3 pt-4 sm:px-3 2xl:table-cell">GPU hours</th>
+                  <th className="hidden whitespace-nowrap px-2 pb-3 pt-4 sm:px-3 md:table-cell">Start ({MARKET_ZONE_LABEL})</th>
+                  <th className="whitespace-nowrap px-2 pb-3 pt-4 sm:px-3">Deadline ({MARKET_ZONE_LABEL})</th>
+                  <th className="hidden whitespace-nowrap px-2 pb-3 pt-4 sm:px-3 xl:table-cell">Priority</th>
+                  <th className="hidden whitespace-nowrap px-2 pb-3 pt-4 sm:px-3 xl:table-cell">Job type</th>
+                  <th className="whitespace-nowrap px-2 pb-3 pt-4 sm:px-3">Status</th>
+                  <th className="w-10 px-2 pb-3 pt-4 sm:px-3"><span className="sr-only">Actions</span></th>
+                </tr>
+                {/* Gap between the header line and the first row, outside the row so hover does not cover it. */}
+                <tr aria-hidden="true"><th colSpan={11} className="h-3 p-0" /></tr>
+              </thead>
+              <tbody>
+                {jobs.map((job, i) => (
+                  <tr
+                    key={job.id}
+                    className={`group/row cursor-pointer ${rowClass(i)}`}
+                    onClick={() => void openView(job)}
+                  >
+                    <td className="px-2 py-2 sm:px-3" onClick={(e) => e.stopPropagation()}>
+                      <Checkbox
+                        checked={selectedIds.has(job.id)}
+                        className={revealClass(selectedJobs.length > 0)}
+                        onCheckedChange={(checked) => toggleJob(job.id, checked)}
+                        aria-label={`Select ${job.name}`}
+                      />
+                    </td>
+                    <td className="hidden whitespace-nowrap px-2 py-2 font-mono text-muted-foreground sm:px-3 2xl:table-cell">#{job.id}</td>
+                    <td className="max-w-0 px-2 py-2 font-medium text-foreground sm:px-3">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          title={job.name}
+                          className="min-w-0 truncate text-left hover:underline focus-visible:underline focus-visible:outline-none"
+                          onClick={(e) => { e.stopPropagation(); void openView(job) }}
+                        >
+                          {job.name}
+                        </button>
+                        {usesEstimatedPrices(job.deadline, forecastEnd) && <EstimatedPriceBadge compact />}
+                      </div>
+                    </td>
+                    <td className="hidden whitespace-nowrap px-2 py-2 sm:px-3 2xl:table-cell">{job.cpuHours}</td>
+                    <td className="hidden whitespace-nowrap px-2 py-2 sm:px-3 2xl:table-cell">{job.gpuHours}</td>
+                    <td className="hidden whitespace-nowrap px-2 py-2 sm:px-3 md:table-cell">{displayDate(job.originalStartTime, false)}</td>
+                    <td className="whitespace-nowrap px-2 py-2 sm:px-3">{displayDate(job.deadline, false)}</td>
+                    <td className="hidden whitespace-nowrap px-2 py-2 sm:px-3 xl:table-cell">{PRIORITY_LABELS[job.priority ?? "NORMAL"]}</td>
+                    <td className="hidden whitespace-nowrap px-2 py-2 sm:px-3 xl:table-cell">{WORKLOAD_CATEGORY_LABELS[job.workloadCategory ?? "ML_TRAINING"]}</td>
+                    <td className="whitespace-nowrap px-2 py-2 sm:px-3">
+                      <StatusBadge status={job.status} />
+                    </td>
+                    {/* Popover content is portaled, but React events still bubble to this cell, so the row click stays out. */}
+                    <td className="px-2 py-2 sm:px-3" onClick={(e) => e.stopPropagation()}>
+                      <Popover open={menuJobId === job.id} onOpenChange={(open) => setMenuJobId(open ? job.id : null)}>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className={`h-8 w-8 data-[state=open]:opacity-100 ${revealClass(false)}`}
+                            aria-label={`Actions for ${job.name}`}
+                          >
+                            <Ellipsis className="h-4 w-4" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="end" className="w-48 p-1">
+                          <MenuItem onClick={() => { setMenuJobId(null); void openView(job) }}>View details</MenuItem>
+                          {canEdit(job) && (
+                            <MenuItem onClick={() => { setMenuJobId(null); openEdit(job) }}>
+                              <Pencil className="h-4 w-4" /> Edit
+                            </MenuItem>
                           )}
-                        </div>
-                      </td>
-                      <td className="px-3 py-3">
-                        <span className="rounded-full bg-muted px-2 py-1 text-xs">{job.status}</span>
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="flex gap-1">
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            aria-label={`View ${job.name}`}
-                            onClick={() => void openView(job)}
-                          >
-                            <Eye className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            aria-label={`Edit ${job.name}`}
-                            onClick={() => openEdit(job)}
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            aria-label={`Delete ${job.name}`}
-                            onClick={() => setJobToDelete(job)}
-                          >
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                          {canEdit(job) && (
+                            <MenuItem disabled={updatingExemptionId === job.id} onClick={() => { setMenuJobId(null); void setJobExempt(job, !job.isExempt) }}>
+                              {job.isExempt ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                              {job.isExempt ? "Unlock schedule" : "Lock schedule"}
+                            </MenuItem>
+                          )}
+                          <MenuItem className="text-destructive" onClick={() => { setMenuJobId(null); setJobsToDelete([job]) }}>
+                            <Trash2 className="h-4 w-4" /> Delete
+                          </MenuItem>
+                        </PopoverContent>
+                      </Popover>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </CardContent>
       </Card>
 
-      {/*
-        Elapsed-start confirmation. Shown only when at least one job's start time has already gone
-        by; optimising when nothing has elapsed does not pass through here at all. Choosing
-        "Optimize anyway" is what sends rescheduleElapsedJobs - the operator's explicit consent to
-        placement outside the window they originally set.
-      */}
-      <Dialog open={!!elapsedToConfirm} onOpenChange={open => { if (!open && !optimizing) setElapsedToConfirm(null) }}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>
-              {elapsedToConfirm?.length === 1
-                ? "One job's start time has passed"
-                : `${elapsedToConfirm?.length ?? 0} jobs' start times have passed`}
-            </DialogTitle>
-            <DialogDescription>
-              {elapsedToConfirm ? elapsedJobsConfirmation(elapsedToConfirm.length) : ""}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="max-h-56 overflow-y-auto rounded-md border p-3">
-            <ul className="space-y-1 text-sm">
-              {elapsedToConfirm?.map(job => (
-                <li key={job.id} className="flex flex-wrap items-baseline justify-between gap-2">
-                  {/* Name and id, not the id alone: an operator cannot tell which job "#118" is. */}
-                  <span className="font-medium">{elapsedJobLabel(job)}</span>
-                  <span className="text-xs text-muted-foreground">
-                    was due {formatMarketDateTime(job.originalStartTime)} {MARKET_ZONE_LABEL}, deadline{" "}
-                    {formatMarketDateTime(job.deadline)} {MARKET_ZONE_LABEL}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" disabled={optimizing}
-              onClick={() => setElapsedToConfirm(null)}>Cancel</Button>
-            {/*
-              Optimising without the flag stays available: it is today's behaviour, and an operator
-              who would rather fix the start times themselves should not have to accept a widened
-              window to see the rest of the plan.
-            */}
-            <Button type="button" variant="outline" disabled={optimizing}
-              onClick={() => { setElapsedToConfirm(null); void optimize(false) }}>
-              Leave them out
-            </Button>
-            <Button type="button" disabled={optimizing}
-              onClick={() => { setElapsedToConfirm(null); void optimize(true) }}>
-              {optimizing ? "Solving Schedule…" : "Reschedule and optimize"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Optimizer Results Dialog */}
-      <Dialog open={optimizeOpen} onOpenChange={setOptimizeOpen}>
-        <DialogContent className="sm:max-w-3xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-5 w-5 text-teal-500" />
-                <DialogTitle className="text-xl">Optimized Execution Schedule</DialogTitle>
-              </div>
-              {optimizationPlan && (
-                <span
-                  className={`px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider ${optimizationPlan.status === "SCHEDULED"
-                      ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30"
-                      : "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
-                    }`}
-                >
-                  {optimizationPlan.status}
-                </span>
-              )}
-            </div>
-            <DialogDescription>
-              Mathematical solver results generated against wholesale ERCOT LMP price signals.
-            </DialogDescription>
-          </DialogHeader>
-
-          {optimizationPlan && (
-            <div className="space-y-5 py-3">
-              {/* Facility Envelope Audit Info */}
-              <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-muted/40 border border-border text-xs">
-                <div className="flex items-center gap-2">
-                  <Server className="h-4 w-4 text-teal-500" />
-                  <span className="text-foreground">
-                    Facility: <strong>{facility.name}</strong> ({facility.maxCpuHours} CPU-h · {facility.maxGpuHours} GPU-h / slot)
-                  </span>
-                </div>
-                <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-card border border-border text-muted-foreground">
-                  Settlement Node: {facility.location || "LZ_NORTH"}
-                </span>
-              </div>
-
-              {/* Cost Summary Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="rounded-xl border border-border bg-card p-4">
-                  <span className="text-xs text-muted-foreground uppercase tracking-wider block font-medium">
-                    Baseline Cost
-                  </span>
-                  <div className="text-xl font-bold font-mono mt-1 text-foreground">
-                    ${optimizationPlan.baselineCostUsd.toFixed(2)}
-                  </div>
-                  <span className="text-[11px] text-muted-foreground">Original unshifted schedule</span>
-                </div>
-
-                <div className="rounded-xl border border-border bg-card p-4">
-                  <span className="text-xs text-muted-foreground uppercase tracking-wider block font-medium">
-                    Optimized Cost
-                  </span>
-                  <div className="text-xl font-bold font-mono mt-1 text-teal-600 dark:text-teal-400">
-                    ${optimizationPlan.optimizedCostUsd.toFixed(2)}
-                  </div>
-                  <span className="text-[11px] text-muted-foreground">Shifted to low LMP valleys</span>
-                </div>
-
-                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
-                  <span className="text-xs text-emerald-700 dark:text-emerald-300 uppercase tracking-wider block font-medium">
-                    Projected Savings
-                  </span>
-                  <div className="text-xl font-bold font-mono mt-1 text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
-                    <TrendingUp className="h-4 w-4" />
-                    ${optimizationPlan.projectedSavingsUsd.toFixed(2)}
-                    <span className="text-xs font-normal">
-                      ({optimizationPlan.projectedSavingsPercent.toFixed(1)}%)
-                    </span>
-                  </div>
-                  <span className="text-[11px] text-emerald-700/80 dark:text-emerald-300/80">
-                    {optimizationPlan.provenOptimal
-                      ? "Proven optimal solver solution"
-                      : "Simulated annealing heuristic"}
-                  </span>
-                </div>
-              </div>
-
-              {/* Plain English Solver Rationale */}
-              <div className="rounded-xl border border-border/80 bg-muted/40 p-4">
-                <span className="text-xs font-semibold text-foreground flex items-center gap-1.5 mb-1.5">
-                  <Clock className="h-3.5 w-3.5 text-teal-500" />
-                  Solver Rationale & Summary
-                </span>
-                <ExplanationSummary text={optimizationPlan.plainEnglishExplanation} />
-              </div>
-
-              {/* Schedule Items Table */}
-              <div>
-                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                  Job Placement Details
-                </h4>
-                <div className="rounded-xl border border-border overflow-hidden">
-                  <table className="w-full text-xs text-left">
-                    <thead className="bg-muted/50 border-b border-border text-muted-foreground">
-                      <tr>
-                        <th className="py-2.5 px-3">Job</th>
-                        <th className="py-2.5 px-3">Outcome</th>
-                        <th className="py-2.5 px-3">Scheduled Start ({MARKET_ZONE_LABEL})</th>
-                        <th className="py-2.5 px-3">Scheduled End ({MARKET_ZONE_LABEL})</th>
-                        <th className="py-2.5 px-3 text-right">Cost</th>
-                        <th className="py-2.5 px-3 text-right">Savings</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border/60">
-                      {optimizationPlan.items.map((item: ScheduleItem) => (
-                        <React.Fragment key={item.jobId}>
-                        <tr className="hover:bg-muted/20">
-                          <td className="py-2.5 px-3 font-medium text-foreground">{item.jobName} <span className="font-mono text-[10px] font-normal text-muted-foreground">#{item.jobId}</span></td>
-                          <td className="py-2.5 px-3">
-                            <span
-                              className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${item.perJobStatus === "OPTIMISED"
-                                  ? "bg-teal-500/15 text-teal-700 dark:text-teal-300 border border-teal-500/30"
-                                  : item.perJobStatus === "UNCHANGED_EXEMPT"
-                                    ? "bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-500/30"
-                                    : "bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30"
-                                }`}
-                            >
-                              {item.perJobStatus}
-                            </span>
-                            {item.reason && (
-                              <p className="text-[10px] text-muted-foreground mt-0.5">{item.reason}</p>
-                            )}
-                          </td>
-                          <td className="py-2.5 px-3 text-muted-foreground">
-                            {item.scheduledStart ? displayDate(item.scheduledStart) : "—"}
-                          </td>
-                          <td className="py-2.5 px-3 text-muted-foreground">
-                            {item.scheduledEnd ? displayDate(item.scheduledEnd) : "—"}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono">
-                            {item.optimizedCostUsd != null ? `$${item.optimizedCostUsd.toFixed(2)}` : "—"}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono text-emerald-600 dark:text-emerald-400 font-medium">
-                            {item.savingsUsd != null ? `$${item.savingsUsd.toFixed(2)}` : "—"}
-                          </td>
-                        </tr>
-                        <tr><td colSpan={6} className="px-3 pb-3 pt-1">
-                          <RecommendationExplanation
-                            item={item}
-                            explanation={jobExplanations.find((entry) => entry.jobId === item.jobId)}
-                            loading={explanationLoading}
-                            error={explanationError}
-                            onRetry={() => void loadExplanations(optimizationPlan.runId)}
-                          />
-                        </td></tr>
-                        </React.Fragment>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <DialogFooter className="flex flex-col sm:flex-row gap-2 justify-between">
-            {optimizationPlan && (
-              <div className="space-y-2">
-                <Button type="button" asChild className="gap-1.5">
-                  <Link href={`/approvals?runId=${encodeURIComponent(optimizationPlan.runId)}`}>
-                    Review and approve <ArrowRight className="h-3.5 w-3.5" />
-                  </Link>
-                </Button>
-                <p className="text-xs text-muted-foreground">Approve this recommendation before adding it to the calendar.</p>
-              </div>
-            )}
-            <Button type="button" onClick={() => setOptimizeOpen(false)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Bulk actions, floating over the list while rows are ticked */}
+      {selectedJobs.length > 0 && (
+        <div className="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-lg border bg-popover px-4 py-2 text-popover-foreground shadow-lg">
+          <span role="status" className="text-sm">{selectedJobs.length} selected</span>
+          <Button variant="destructive" size="sm" onClick={() => setJobsToDelete(selectedJobs)}>
+            <Trash2 className="mr-2 h-4 w-4" />
+            Delete
+          </Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Clear selection" onClick={() => setSelectedIds(new Set())}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
 
       {/* Create / Edit Form Dialog */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
@@ -1115,7 +632,7 @@ export default function JobsPage() {
                 />
               </div>
               <div className="grid grid-cols-2 gap-4 sm:col-span-2">
-                <Field label="CPU hours">
+                <Field label={`CPU hours (limit ${facility.maxCpuHours} per hour)`}>
                   <Input
                     type="number"
                     min="0"
@@ -1126,7 +643,7 @@ export default function JobsPage() {
                     onChange={(e) => setForm({ ...form, cpuHours: e.target.value })}
                   />
                 </Field>
-                <Field label="GPU hours">
+                <Field label={`GPU hours (limit ${facility.maxGpuHours} per hour)`}>
                   <Input
                     type="number"
                     min="0"
@@ -1276,89 +793,126 @@ export default function JobsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* View Dialog */}
+      {/* Detail dialog: Edit, Delete and the lock live here, not in the table. */}
       <Dialog open={viewOpen} onOpenChange={setViewOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{viewing?.name ?? "Job details"}</DialogTitle>
-            <DialogDescription>Compute job details returned by the API.</DialogDescription>
+            <DialogDescription className="sr-only">Job details</DialogDescription>
           </DialogHeader>
           {viewing && (
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 py-3 text-sm">
-              <Detail label="Job ID" value={String(viewing.id)} />
-              {viewing.description && <Detail label="Description" value={viewing.description} />}
-              {usesEstimatedPrices(viewing.deadline, forecastEnd) && <EstimatedPriceBadge />}
-              <Detail label="Status" value={viewing.status} />
-              <Detail label="CPU hours" value={String(viewing.cpuHours)} />
-              <Detail label="GPU hours" value={String(viewing.gpuHours)} />
-              <Detail label="Original start" value={displayDate(viewing.originalStartTime)} />
-              <Detail label="Deadline" value={displayDate(viewing.deadline)} />
-              <Detail label="Flexibility" value={`${viewing.flexibilityWindowHours} hours`} />
-              <Detail label="Priority" value={PRIORITY_LABELS[viewing.priority ?? "NORMAL"]} />
-              <Detail label="Job type" value={WORKLOAD_CATEGORY_LABELS[viewing.workloadCategory ?? "ML_TRAINING"]} />
-              <Detail label="Locked" value={viewing.isExempt ? "Yes" : "No"} />
-            </dl>
+            <>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 py-3 text-sm">
+                <Detail label="Job ID" value={String(viewing.id)} />
+                {viewing.ownerName && <Detail label="Owner" value={viewing.ownerName} />}
+                {viewing.description && <Detail label="Description" value={viewing.description} />}
+                {usesEstimatedPrices(viewing.deadline, forecastEnd) && <EstimatedPriceBadge />}
+                <Detail label="Status" value={jobStatus(viewing.status).label} />
+                {viewing.statusReason && <Detail label="Reason" value={viewing.statusReason} />}
+                <Detail label="CPU hours" value={String(viewing.cpuHours)} />
+                <Detail label="GPU hours" value={String(viewing.gpuHours)} />
+                <Detail label="Start" value={displayDate(viewing.originalStartTime)} />
+                <Detail label="Deadline" value={displayDate(viewing.deadline)} />
+                <Detail label="Priority" value={PRIORITY_LABELS[viewing.priority ?? "NORMAL"]} />
+                <Detail label="Job type" value={WORKLOAD_CATEGORY_LABELS[viewing.workloadCategory ?? "ML_TRAINING"]} />
+                <Detail label="Scheduling" value={viewing.isExempt ? "Locked" : "Flexible"} />
+                {viewing.approvedRunId && <Detail label="Plan" value="Approved" />}
+              </dl>
+              {canEdit(viewing) && (
+                <label className="flex items-center gap-2 text-sm font-medium">
+                  <Checkbox
+                    checked={viewing.isExempt}
+                    disabled={updatingExemptionId === viewing.id}
+                    onCheckedChange={(checked) => void setJobExempt(viewing, checked)}
+                  />
+                  Lock schedule
+                </label>
+              )}
+            </>
           )}
-          <DialogFooter>
-            <Button onClick={() => setViewOpen(false)}>Close</Button>
+          <DialogFooter className="sm:justify-between sm:space-x-0">
+            <Button
+              variant="outline"
+              className="text-destructive"
+              onClick={() => { if (viewing) { setJobsToDelete([viewing]); setViewOpen(false) } }}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete
+            </Button>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row">
+              <Button variant="outline" onClick={() => setViewOpen(false)}>Close</Button>
+              {viewing && canEdit(viewing) && (
+                <Button onClick={() => { setViewOpen(false); openEdit(viewing) }}>
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit
+                </Button>
+              )}
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Delete Compute Job Confirmation Dialog */}
-      <Dialog open={!!jobToDelete} onOpenChange={(open) => { if (!open && !deletingJob) setJobToDelete(null) }}>
+      {/* Delete confirmation, for one job or the checked rows */}
+      <Dialog open={jobsToDelete.length > 0} onOpenChange={(open) => { if (!open && !deletingJob) setJobsToDelete([]) }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Delete compute job</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete <strong className="text-foreground">{jobToDelete?.name}</strong> (#{jobToDelete?.id})? This action cannot be undone and will remove all associated resource specifications.
-            </DialogDescription>
+            <DialogTitle>{jobsToDelete.length === 1 ? "Delete job" : `Delete ${jobsToDelete.length} jobs`}</DialogTitle>
+            <DialogDescription>This cannot be undone.</DialogDescription>
           </DialogHeader>
-
-          {jobToDelete && (
-            <div className="rounded-lg border bg-muted/40 p-3 text-xs space-y-1.5 text-muted-foreground">
-              <div className="flex justify-between">
-                <span>Job ID:</span>
-                <span className="font-medium text-foreground font-mono">#{jobToDelete.id}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Priority:</span>
-                <span className="font-medium text-foreground">{jobToDelete.priority}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Resources:</span>
-                <span className="font-medium text-foreground">{jobToDelete.cpuHours} CPU-hrs · {jobToDelete.gpuHours} GPU-hrs</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Baseline Start ({MARKET_ZONE_LABEL}):</span>
-                <span className="font-medium text-foreground">{formatMarketDateTime(jobToDelete.originalStartTime)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Deadline ({MARKET_ZONE_LABEL}):</span>
-                <span className="font-medium text-foreground">{formatMarketDateTime(jobToDelete.deadline)}</span>
-              </div>
-            </div>
-          )}
-
+          <ul className="max-h-56 space-y-1 overflow-y-auto rounded-md border p-3 text-sm">
+            {jobsToDelete.map((job) => (
+              <li key={job.id}>
+                <div className="flex justify-between gap-2">
+                  <span className="font-medium">{job.name}</span>
+                  <span className="font-mono text-xs text-muted-foreground">#{job.id}</span>
+                </div>
+                {job.approvedRunId && (
+                  <p className="text-xs text-muted-foreground">
+                    In approved plan {job.approvedRunId.slice(0, 8)}. It leaves the plan and the calendar. The other jobs stay approved.
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
           <DialogFooter className="gap-2 sm:gap-0">
-            <Button
-              variant="outline"
-              onClick={() => setJobToDelete(null)}
-              disabled={deletingJob}
-            >
+            <Button variant="outline" onClick={() => setJobsToDelete([])} disabled={deletingJob}>
               Cancel
             </Button>
-            <Button
-              variant="destructive"
-              disabled={deletingJob}
-              onClick={() => void handleConfirmDeleteJob()}
-            >
-              {deletingJob ? "Deleting…" : "Delete compute job"}
+            <Button variant="destructive" disabled={deletingJob} onClick={() => void handleConfirmDeleteJobs()}>
+              {deletingJob ? "Deleting…" : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+/**
+ * Hidden until the row is hovered or a control inside is focused. Always shown on touch screens,
+ * which cannot hover, and while any row is ticked.
+ */
+function revealClass(anySelected: boolean) {
+  return `${anySelected ? "" : "opacity-0"} group-hover/row:opacity-100 group-focus-within/row:opacity-100 peer-focus-visible:opacity-100 [@media(hover:none)]:opacity-100`
+}
+
+function MenuItem({ className = "", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      type="button"
+      className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted focus-visible:bg-muted focus-visible:outline-none disabled:opacity-50 ${className}`}
+      {...props}
+    />
+  )
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const { label, icon: Icon, tone } = jobStatus(status)
+  return (
+    <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-1 text-xs ${tone}`}>
+      <Icon className="h-3 w-3" aria-hidden="true" />
+      {label}
+    </span>
   )
 }
 
