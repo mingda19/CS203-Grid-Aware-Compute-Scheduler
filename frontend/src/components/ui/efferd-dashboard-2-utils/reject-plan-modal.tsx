@@ -27,7 +27,7 @@ export function RejectPlanModal({ open, action, runId, onOpenChange, onSubmit, s
       onPointerDownOutside={event => { if (submitting) event.preventDefault() }}>
       <DialogHeader>
         <DialogTitle>{labels[action]}</DialogTitle>
-        <DialogDescription className="break-all">Run {runId}. This records your decision and justification. {action === "revoke" ? "Workloads already dispatched from this schedule will be blocked from starting or resuming." : "Workloads are not dispatched by this action."}</DialogDescription>
+        <DialogDescription className="break-all">Run {runId}. This records your decision and justification. {action === "revoke" ? "Workloads already dispatched from this schedule will be blocked from starting or resuming." : action === "approve" ? "Approving also adds the plan to the Schedule calendar." : "Nothing is added to the calendar by this action."}</DialogDescription>
       </DialogHeader>
       <label htmlFor="schedule-decision-comment" className="text-sm font-medium">Justification (required)</label>
       <textarea id="schedule-decision-comment" rows={4} maxLength={2000} value={comment} disabled={submitting}

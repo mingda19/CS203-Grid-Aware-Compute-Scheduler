@@ -46,6 +46,10 @@ public interface OptimizationPlanRepository extends JpaRepository<OptimizationPl
 
     List<OptimizationPlan> findByOwnerIdAndReviewState(Long ownerId, ReviewState state);
 
+    /** Which of these runs are in the given review state, without loading their stored results. */
+    @Query("select p.runId from OptimizationPlan p where p.runId in :runIds and p.reviewState = :state")
+    List<String> findRunIdsInState(@Param("runIds") java.util.Collection<String> runIds, @Param("state") ReviewState state);
+
     /** One job in one plan, without loading the plan's stored result. */
     record PlanLink(Long jobId, String runId, ReviewState state, Instant createdAt, Instant invalidatedAt) {}
 

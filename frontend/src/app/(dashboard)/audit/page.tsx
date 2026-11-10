@@ -17,7 +17,6 @@ import {
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { DataStatusBadge } from "@/components/ui/data-status-badge"
 import {
   Dialog,
   DialogContent,
@@ -212,45 +211,30 @@ export default function AuditPage() {
 
   return (
     <div id="audit-root" className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-gradient-to-r from-card to-card/60 p-6 rounded-2xl border border-border shadow-xs">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold tracking-tight text-foreground">
-              Historical Audit Trail
-            </h1>
-            <DataStatusBadge
-              size="sm"
-              status={error ? "unavailable" : "live"}
-              source="Append-only operator decision audit log"
-            />
-          </div>
-          <p className="text-sm text-muted-foreground mt-1">
-            Searchable, tamper-evident record of your own decisions on optimiser schedules, with the schedule hash each decision was made on. Other operators&apos; decisions are not visible here.
-          </p>
-        </div>
+      {/* No visible title. The heading stays for screen readers. */}
+      <h1 className="sr-only">Audit</h1>
 
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={() => setReloadKey((k) => k + 1)}
-            size="sm"
-            variant="outline"
-            className="gap-2"
-            disabled={isLoading}
-          >
-            <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} /> Refresh
-          </Button>
-          <Button
-            onClick={exportCsv}
-            size="sm"
-            variant="outline"
-            className="gap-2"
-            disabled={isExporting || totalElements === 0}
-            title={totalElements > EXPORT_LIMIT ? `Exports the newest ${EXPORT_LIMIT} matching records` : undefined}
-          >
-            <Download className="h-4 w-4" /> {isExporting ? "Exporting…" : "Export CSV"}
-          </Button>
-        </div>
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <Button
+          onClick={() => setReloadKey((k) => k + 1)}
+          size="sm"
+          variant="outline"
+          className="gap-2"
+          disabled={isLoading}
+        >
+          <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} /> Refresh
+        </Button>
+        <Button
+          onClick={exportCsv}
+          size="sm"
+          variant="outline"
+          className="gap-2"
+          disabled={isExporting || totalElements === 0}
+          title={totalElements > EXPORT_LIMIT ? `Exports the newest ${EXPORT_LIMIT} matching records` : undefined}
+        >
+          <Download className="h-4 w-4" /> {isExporting ? "Exporting…" : "Export CSV"}
+        </Button>
       </div>
 
       {/* Filter and Table Card */}

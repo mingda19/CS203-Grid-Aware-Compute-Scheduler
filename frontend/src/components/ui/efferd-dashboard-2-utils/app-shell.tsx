@@ -62,14 +62,14 @@ export function AppShell({ children }: AppShellProps) {
       href: "/home",
     },
     {
-      title: "Review suggested changes",
-      description: "Pending approvals show schedule recommendations that need your review. Read the expected impact before approving or rejecting a change.",
+      title: "Approve plans",
+      description: "The system plans every job you add. Approvals lists the plans, with a Pending tab and an Approved tab. Anyone except the person who submitted a plan can approve it, and approving puts it on the calendar.",
       target: "approvals-root",
       href: "/approvals",
     },
     {
-      title: "See your scheduled work",
-      description: "The workload scheduler lists compute jobs, their current status, and when they are planned to run. A schedule can move flexible work to a lower-cost time.",
+      title: "See the schedule",
+      description: "Schedule is a calendar of everyone's approved jobs and when they run. Flexible work can move to a lower-cost time. You can change the status of your own entries.",
       target: "workloads-root",
       href: "/workloads",
     },
@@ -204,11 +204,11 @@ export function AppShell({ children }: AppShellProps) {
   const navItems: NavItem[] = [
     // The order follows the real flow: create jobs, approve, schedule (masterplan D17).
     { label: "Home", icon: House, href: "/home", active: pathname === "/home" || pathname === "/" },
-    { label: "My jobs", icon: BriefcaseBusiness, href: "/jobs", active: pathname?.startsWith("/jobs") },
-    { label: "Pending Approvals", icon: CheckCircle2, href: "/approvals", active: pathname?.startsWith("/approvals") },
+    { label: "Jobs", icon: BriefcaseBusiness, href: "/jobs", active: pathname?.startsWith("/jobs") },
+    { label: "Approvals", icon: CheckCircle2, href: "/approvals", active: pathname?.startsWith("/approvals") },
     { label: "Schedule", icon: CalendarClock, href: "/workloads", active: pathname?.startsWith("/workloads") },
     { label: "Price Forecast", icon: TrendingDown, href: "/forecasts", active: pathname?.startsWith("/forecasts") },
-    { label: "Historical Audit Logs", icon: FileText, href: "/audit", active: pathname?.startsWith("/audit") },
+    { label: "Audit", icon: FileText, href: "/audit", active: pathname?.startsWith("/audit") },
   ]
 
   const sidebarContent = (
@@ -291,11 +291,13 @@ export function AppShell({ children }: AppShellProps) {
             <Link
               href="/admin"
               onClick={() => isMobile && setMobileOpen(false)}
-              className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all group border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20"
+              className={`flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all group border border-primary/30 ${
+                pathname?.startsWith("/admin") ? "bg-primary text-primary-foreground" : "bg-primary/10 text-primary hover:bg-primary/20"
+              }`}
             >
               <div className="flex items-center gap-3">
-                <ShieldCheck className="h-4 w-4 text-primary" />
-                <span>Admin Console</span>
+                <ShieldCheck className="h-4 w-4" />
+                <span>Admin</span>
               </div>
               <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/30">
                 RBAC

@@ -43,6 +43,9 @@ export interface CalendarEvent {
     dot: string
   }
   notes?: string
+  /** Whose job this is, and whether the signed-in user owns it. Only the owner changes the status. */
+  ownerName?: string
+  mine?: boolean
 }
 
 const TYPE_CONFIG: Record<
@@ -133,6 +136,8 @@ export function scheduleToEvent(schedule: WorkloadSchedule): CalendarEvent {
     endUtc: end.toISOString(),
     colorScheme: TYPE_CONFIG[type],
     notes: schedule.notes ?? undefined,
+    ownerName: schedule.ownerName,
+    mine: schedule.mine,
   }
 }
 
@@ -494,23 +499,6 @@ export function GoogleCalendarView() {
       setSelectedEvent(updated)
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "Unable to update schedule")
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const handleDeleteEvent = async (event: CalendarEvent) => {
-    const id = Number(event.id)
-    if (!Number.isInteger(id) || saving) return
-    setSaving(true)
-    setLoadError(null)
-    try {
-      const response = await workloadScheduleApi.remove(id)
-      if (!response.success) throw new Error(response.message || "Unable to delete schedule")
-      setEvents((prev) => prev.filter((item) => item.id !== event.id))
-      setSelectedEvent(null)
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Unable to delete schedule")
     } finally {
       setSaving(false)
     }
@@ -1282,7 +1270,8 @@ export function GoogleCalendarView() {
               </span>
             </div>
 
-            <h3 className="text-lg font-bold text-foreground mb-3">{selectedEvent.title}</h3>
+            <h3 className="text-lg font-bold text-foreground">{selectedEvent.title}</h3>
+            {selectedEvent.ownerName && <p className="mb-3 text-xs text-muted-foreground">{selectedEvent.mine ? "Your job" : `Submitted by ${selectedEvent.ownerName}`}</p>}
 
             <div className="space-y-3 py-2 text-xs">
               <div className="flex items-center gap-3 text-muted-foreground">
@@ -1327,15 +1316,10 @@ export function GoogleCalendarView() {
             </div>
 
             <div className="flex items-center justify-between gap-3 mt-6 pt-4 border-t border-border">
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => void handleDeleteEvent(selectedEvent)}
-                disabled={saving}
-                className="text-xs h-8"
-              >
-                Remove calendar entry
-              </Button>
+              {/* No delete: to withdraw work, revoke the plan on Approvals or delete the job. */}
+              <p className="text-[11px] text-muted-foreground">
+                {selectedEvent.mine === false ? `Owned by ${selectedEvent.ownerName ?? "another user"}. Only the owner can change its status.` : ""}
+              </p>
 
               <div className="flex items-center gap-2">
                 <Button
@@ -1346,14 +1330,14 @@ export function GoogleCalendarView() {
                 >
                   Close
                 </Button>
-                <Button
+                {selectedEvent.mine !== false && <Button
                   size="sm"
                   onClick={() => void handleUpdateStatus(selectedEvent, selectedEvent.status === "Running" ? "Scheduled" : "Running")}
                   disabled={saving}
                   className="text-xs h-8 bg-primary text-primary-foreground"
                 >
                   {selectedEvent.status === "Running" ? "Mark scheduled" : "Mark running"}
-                </Button>
+                </Button>}
               </div>
             </div>
           </div>
