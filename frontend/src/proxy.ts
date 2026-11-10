@@ -9,7 +9,7 @@ export function proxy(request: NextRequest) {
     pathname.startsWith("/_next") ||
     pathname.startsWith("/api") ||
     pathname.includes("favicon.ico") ||
-    pathname.match(/\.(png|jpg|jpeg|gif|webp|svg|ico)$/)
+    pathname.match(/\.(png|jpg|jpeg|gif|webp|svg|ico|mp4)$/)
   ) {
     return NextResponse.next()
   }
