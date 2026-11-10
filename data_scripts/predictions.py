@@ -110,7 +110,7 @@ MIN_CONFIDENCE_SAMPLES = 3  # fewer points make "decay" meaningless - that hour 
 
 # Henry Hub is published on business days with a lag, so a given day's gas
 # price is the last published one carried forward - but never one older than this.
-GAS_MAX_STALE_DAYS = 7
+GAS_MAX_STALE_DAYS = 14
 
 # Physical / assumed constants (same as model/wind_solar_power_features.py - no
 # real farm metadata exists, see model/model.md S3.5).
