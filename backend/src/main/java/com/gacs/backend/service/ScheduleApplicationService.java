@@ -166,7 +166,8 @@ public class ScheduleApplicationService {
         var caller = AuthenticatedOperators.resolve(users, email);
         return new PlanDetail(plan.getRunId(), plan.getReviewState(), plan.getInvalidationReason(),
             plan.getInvalidatedAt(), plan.getAppliedAt(), reader.read(plan.getResultJson()).orElse(null),
-            plan.getOwner().displayName(), settings.canApprove(caller, plan), new TreeSet<>(plan.getRemovedJobIds()));
+            plan.getOwner().displayName(), settings.canApprove(caller, plan), AppSettingsService.canRevoke(caller, plan),
+            new TreeSet<>(plan.getRemovedJobIds()));
     }
 
     /**
@@ -181,11 +182,12 @@ public class ScheduleApplicationService {
      *                  action implied there was something left to do.
      * @param ownerName the plan's submitter, whose jobs it schedules
      * @param canApprove whether the caller may approve it, so the UI can explain a disabled button
+     * @param canRevoke whether the caller may revoke its approval: the owner or an admin
      * @param removedJobIds jobs that left the plan after approval (deleted, or never placed)
      */
     public record PlanDetail(String runId, ReviewState reviewState, String invalidationReason,
                              Instant invalidatedAt, Instant appliedAt, OptimizeResponseDto recommendation,
-                             String ownerName, boolean canApprove, Set<Long> removedJobIds) {}
+                             String ownerName, boolean canApprove, boolean canRevoke, Set<Long> removedJobIds) {}
 
     private String nameOf(String email) {
         return users.findByEmail(email).map(User::displayName).orElse(email);

@@ -102,6 +102,46 @@ class SchedulePlanQueryIntegrationTest {
             .andExpect(jsonPath("$.data.totalElements").value(3));
     }
 
+    @Test void summaryNamesTheLiveJobsTheirSavingsAndFirstStart() throws Exception {
+        var owner = owner();
+        var other = owner();
+        String result = """
+            {"runId":"r","status":"SCHEDULED","projectedSavingsUsd":1.5,"projectedSavingsPercent":12.5,
+             "usedSeededFallbackPrices":true,"items":[
+              {"jobId":1,"jobName":"Train","scheduledStart":"2026-11-02T03:00:00Z"},
+              {"jobId":2,"jobName":"ETL","scheduledStart":"2026-11-02T01:00:00Z"},
+              {"jobId":3,"jobName":"Removed","scheduledStart":"2026-11-01T00:00:00Z"},
+              {"jobId":4,"jobName":"Unplaced","scheduledStart":null}]}""";
+        var run = runs.save(OptimizerRun.builder().id(UUID.randomUUID().toString()).createdAt(Instant.parse("2026-11-01T10:00:00Z"))
+            .solverName("test").solverVersion("1").solverConfig("{}").build());
+        var plan = new OptimizationPlan(run, owner, result, List.of(1L, 2L, 3L, 4L), Instant.parse("2026-11-01T10:00:00Z"));
+        plan.removeJobs(List.of(3L));
+        plans.saveAndFlush(plan);
+        mvc.perform(get("/api/schedules").with(user(owner.getEmail())))
+            .andExpect(jsonPath("$.data.content[0].mine").value(true))
+            .andExpect(jsonPath("$.data.content[0].jobNames.length()").value(3))
+            .andExpect(jsonPath("$.data.content[0].jobNames[0]").value("Train"))
+            .andExpect(jsonPath("$.data.content[0].jobNames[2]").value("Unplaced"))
+            .andExpect(jsonPath("$.data.content[0].projectedSavingsUsd").value(1.5))
+            .andExpect(jsonPath("$.data.content[0].projectedSavingsPercent").value(12.5))
+            .andExpect(jsonPath("$.data.content[0].firstStart").value("2026-11-02T01:00:00Z"))
+            .andExpect(jsonPath("$.data.content[0].usedSeededFallbackPrices").value(true));
+        mvc.perform(get("/api/schedules").with(user(other.getEmail())))
+            .andExpect(jsonPath("$.data.content[0].mine").value(false));
+    }
+
+    @Test void unreadableResultStillListsWithNoJobsOrSavings() throws Exception {
+        var owner = owner();
+        var run = runs.save(OptimizerRun.builder().id(UUID.randomUUID().toString()).createdAt(Instant.now())
+            .solverName("test").solverVersion("1").solverConfig("{}").build());
+        plans.saveAndFlush(new OptimizationPlan(run, owner, "not json", List.of(), Instant.now()));
+        mvc.perform(get("/api/schedules").with(user(owner.getEmail())))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.content[0].jobNames").isEmpty())
+            .andExpect(jsonPath("$.data.content[0].projectedSavingsUsd").doesNotExist())
+            .andExpect(jsonPath("$.data.content[0].firstStart").doesNotExist());
+    }
+
     @Test void rejectsUnknownStateFilter() throws Exception {
         var owner = owner();
         mvc.perform(get("/api/schedules?state=NOPE").with(user(owner.getEmail())))

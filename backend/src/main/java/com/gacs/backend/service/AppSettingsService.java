@@ -35,7 +35,8 @@ public class AppSettingsService {
 
     /**
      * Anyone may approve a plan except its submitter, unless the submitter is an admin or an admin has
-     * allowed self-approval. Rejecting, revising and revoking are not limited by this rule.
+     * allowed self-approval. Rejecting and revising are not limited by this rule; revoking is, see
+     * {@link #canRevoke}.
      */
     @Transactional
     public boolean canApprove(User caller, OptimizationPlan plan) {
@@ -45,5 +46,10 @@ public class AppSettingsService {
     /** The same rule for a caller of many plans, which read the setting once. */
     public static boolean canApprove(User caller, Long ownerId, boolean allowSelfApproval) {
         return !caller.getId().equals(ownerId) || allowSelfApproval || isAdmin(caller);
+    }
+
+    /** Only the plan's owner (the jobs' author) or an admin may withdraw an approval. */
+    public static boolean canRevoke(User caller, OptimizationPlan plan) {
+        return caller.getId().equals(plan.getOwner().getId()) || isAdmin(caller);
     }
 }

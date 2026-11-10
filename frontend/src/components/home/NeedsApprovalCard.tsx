@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { EstimatedPriceBadge } from "@/components/ui/estimated-price-badge"
 import { scheduleReviewApi, type SchedulePlanDetail } from "@/lib/api"
+import { money } from "@/lib/format"
 import { unwrap, useLoad } from "./use-load"
 
 interface Pending {
@@ -30,12 +31,6 @@ async function loadPending(): Promise<Pending> {
   const first = await read()
   // The check can change the newest plan's state. Then the list is out of date, so read it once more.
   return first.newest && first.newest.reviewState !== "PENDING" ? read() : first
-}
-
-// Whole dollars for large sums, cents for small ones. The sign stays: savings can be negative.
-function money(usd: number) {
-  const digits = Math.abs(usd) >= 100 ? 0 : 2
-  return usd.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: digits })
 }
 
 export function NeedsApprovalCard() {
@@ -79,7 +74,7 @@ export function NeedsApprovalCard() {
         </div>
         {data && data.count > 0 && data.runId && (
           <Button asChild className="shrink-0 self-start sm:self-auto">
-            <Link href={`/approvals?runId=${encodeURIComponent(data.runId)}`}>Review</Link>
+            <Link href={`/approvals/${encodeURIComponent(data.runId)}`}>Review</Link>
           </Button>
         )}
       </CardContent>

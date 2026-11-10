@@ -1038,6 +1038,7 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 | 2026-11-01 | §6.4: added run `status` `INFEASIBLE` (nothing placeable; never approvable or exportable) and `503` with `runId` when the solver fails, recorded as a `FAILED` run with no plan (GRID-142 AC1.3). | - |
 | 2026-11-01 | Added §6.8: automatic material-input invalidation, shared backend execution gating, approved-run application, and plan detail (GRID-11 AC2.3). | - |
 | 2026-11-04 | §6.5: a plan now holds exactly one terminal decision. Once APPROVED, REJECTED, or REVISION_REQUESTED, every further `approve`/`reject`/`revise` call for that run returns `409` with `data.reason = "ALREADY_DECIDED"`, superseding the "repeated requests ... create additional history entries" text below, which described the previous (reversible) behavior (usability bug 3). An operator who wants to retract an approval must generate a new recommendation rather than reject/revise the same run. | - |
+| 2026-11-10 | §6.9: each plan in `GET /api/schedules` also carries `mine`, `jobNames`, `projectedSavingsUsd`, `projectedSavingsPercent`, `firstStart` and `usedSeededFallbackPrices`, so the Approvals list can name the jobs and the savings. | - |
 | 2026-11-10 | Compute Jobs rework (phases 1 to 6): shared facility (§5.4), deployment settings (§5.3), all-jobs listing (§5.5), shared review queue and the approval rule, autorun and `POST /api/schedules/recompute`, derived job `status`, locked approved jobs, and the shared calendar. `DELETE /api/workload-schedules/{id}` was removed. See §6.9. | - |
 | 2026-11-08 | §6.4: the priced span now always reaches the latest job `deadline` (capped at 168), so `horizonHours` (default 48) is a minimum. A job left out because of hours with no stored forecast price gets a `NO_FEASIBLE_SLOT` reason that names those hours, instead of "Cluster full". | - |
 
@@ -1049,7 +1050,7 @@ optimizer or invoke explanation generation again. A run belonging to another ope
 for every owner's plans (the review queue is shared, §6.9), newest first by `createdAt`, then descending `runId`.
 Each summary contains `runId`, UTC `createdAt`, `reviewState` (`PENDING`, `APPROVED`,
 `REJECTED`, `REVISION_REQUESTED`, `STALE`, or `INVALIDATED`), `ownerName` (whose jobs the plan schedules) and
-`canApprove` (whether the caller may approve it). Optional filters: `state` keeps one review state, and
+`canApprove` (whether the caller may approve it), `mine` (the caller submitted it), `jobNames` (the plan's jobs without any removed after approval), `projectedSavingsUsd` and `projectedSavingsPercent` (from the stored result; null if it cannot be read), `firstStart` (earliest scheduled start, UTC, or null) and `usedSeededFallbackPrices`. Optional filters: `state` keeps one review state, and
 `approvable=true` keeps only plans the caller may approve. The Approvals page uses `state=PENDING` and
 `state=APPROVED` for its two tabs. Page indices start at zero;
 `size` must be 1–100. Invalid pagination returns **400**. Missing authentication returns
@@ -1070,7 +1071,7 @@ between reviewing and approving; a **409** means the plan was replaced and the l
 
 #### Recording a decision
 
-All routes require JWT authentication. Any signed-in user can decide on any owner's plan (§6.9), with one limit: **approve** is refused with **403** (`You cannot approve your own plan. Another user has to approve it.`) when the caller submitted the plan, unless the caller is an admin or `allowSelfApproval` is on. Reject, revise and revoke are open to the submitter. A missing plan returns **404**. The user's numeric database ID is resolved from the authenticated email, never from request fields or the JWT's numeric user ID claim.
+All routes require JWT authentication. Any signed-in user can decide on any owner's plan (§6.9), with two limits: **approve** is refused with **403** (`You cannot approve your own plan. Another user has to approve it.`) when the caller submitted the plan, unless the caller is an admin or `allowSelfApproval` is on. **Revoke** is refused with **403** (`Only the plan's owner or an admin can revoke its approval.`) unless the caller owns the plan or is an admin; plan detail carries `canRevoke`. Reject and revise are open to the submitter. A missing plan returns **404**. The user's numeric database ID is resolved from the authenticated email, never from request fields or the JWT's numeric user ID claim.
 
 | Route | Recorded action | New review state |
 |---|---|---|

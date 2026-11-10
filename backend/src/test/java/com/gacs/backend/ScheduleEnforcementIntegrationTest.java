@@ -636,16 +636,14 @@ class ScheduleEnforcementIntegrationTest {
      * branch and be written straight to the audit log with no ownership or state check at all.
      */
     @Test
-    @DisplayName("any signed-in operator can revoke an approval, and it halts the schedule")
-    void anotherOperatorCanRevokeAnApproval() throws Exception {
+    @DisplayName("another operator cannot revoke an approval through the audit endpoint either")
+    void anotherOperatorCannotRevokeAnApproval() throws Exception {
         String run = optimize();
         decide(run, "approve").andExpect(status().isOk());
         User other = users.save(new User(UUID.randomUUID() + "@test.io", "pw", "Other", "ROLE_USER"));
         try {
-            auditDecision(run, "REVOKE", other.getEmail()).andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.actor").value(other.getEmail()));
-            assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.REJECTED);
-            refused(apply(run), "NOT_APPROVED");
+            auditDecision(run, "REVOKE", other.getEmail()).andExpect(status().isForbidden());
+            assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.APPROVED);
         } finally { users.deleteById(other.getId()); }
     }
 

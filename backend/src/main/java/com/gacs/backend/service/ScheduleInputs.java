@@ -151,7 +151,10 @@ public class ScheduleInputs {
                     return "Structured constraints are not confirmed for job " + j.getId();
             }
             return null;
-        } catch (Exception ex) { return "Unreadable input provenance; generate a new recommendation"; }
+        } catch (Exception ex) {
+            org.slf4j.LoggerFactory.getLogger(ScheduleInputs.class).warn("mismatch() failed for plan {}", plan.getRunId(), ex);
+            return "Unreadable input provenance; generate a new recommendation";
+        }
     }
 
     /** The revision of each job as the run solved it, from the stored provenance. Empty when unreadable. */

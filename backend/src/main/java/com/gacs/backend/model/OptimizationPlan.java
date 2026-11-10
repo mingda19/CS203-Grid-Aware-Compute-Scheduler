@@ -53,6 +53,8 @@ public class OptimizationPlan {
 
     public void invalidate(ReviewState state, String reason, Instant now) {
         if (reviewState == ReviewState.INVALIDATED || reviewState == ReviewState.STALE) return;
+        // Every path that ends a plan comes through here, so this one line says why an approval was lost.
+        org.slf4j.LoggerFactory.getLogger(OptimizationPlan.class).warn("Plan {} {} -> {}: {}", runId, reviewState, state, reason);
         reviewState = state;
         invalidationReason = reason;
         invalidatedAt = now;

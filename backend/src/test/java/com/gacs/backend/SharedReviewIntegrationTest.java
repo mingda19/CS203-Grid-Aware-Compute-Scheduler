@@ -362,7 +362,7 @@ class SharedReviewIntegrationTest {
             .andExpect(jsonPath("$.message").value("This job is approved and cannot be edited. You can delete it."));
         assertThat(jobs.findById(train.getId()).orElseThrow().getName()).isEqualTo("Train");
 
-        decide(approver, run, "revoke").andExpect(status().isOk());
+        decide(owner, run, "revoke").andExpect(status().isOk());
         edit(owner, train, renamed).andExpect(status().isOk());
         assertThat(jobs.findById(train.getId()).orElseThrow().getName()).isEqualTo("Renamed");
         assertThat(json.readTree(mvc.perform(get("/api/jobs/" + train.getId()).with(as(owner))).andReturn()

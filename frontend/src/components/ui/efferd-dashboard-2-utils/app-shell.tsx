@@ -63,7 +63,7 @@ export function AppShell({ children }: AppShellProps) {
     },
     {
       title: "Approve plans",
-      description: "The system plans every job you add. Approvals lists the plans, with a Pending tab and an Approved tab. Anyone except the person who submitted a plan can approve it, and approving puts it on the calendar.",
+      description: "The system plans every job you add. Approvals lists the plans waiting for a decision. Open one to approve it or ask for changes. You cannot approve your own plan.",
       target: "approvals-root",
       href: "/approvals",
     },

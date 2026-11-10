@@ -729,6 +729,15 @@ export interface SchedulePlanSummary {
   ownerName: string
   /** Whether the signed-in user may approve it. A submitter may not, unless an admin or the setting allows it. */
   canApprove: boolean
+  /** The signed-in user submitted it. */
+  mine: boolean
+  /** The plan's jobs, without any removed after approval. Empty if the stored result cannot be read. */
+  jobNames: string[]
+  projectedSavingsUsd: number | null
+  projectedSavingsPercent: number | null
+  /** Earliest scheduled start (UTC), or null if nothing is placed. */
+  firstStart: string | null
+  usedSeededFallbackPrices: boolean
 }
 export interface SchedulePlanDetail {
   runId: string
@@ -745,6 +754,8 @@ export interface SchedulePlanDetail {
   recommendation: OptimizeResponse | null
   ownerName: string
   canApprove: boolean
+  /** Whether the signed-in user may revoke its approval: the plan's owner or an admin. */
+  canRevoke: boolean
   /** Jobs that left the plan after approval (deleted, or never placed). */
   removedJobIds: number[]
 }

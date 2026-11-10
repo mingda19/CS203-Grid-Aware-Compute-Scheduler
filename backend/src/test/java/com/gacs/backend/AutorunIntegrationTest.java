@@ -227,7 +227,7 @@ class AutorunIntegrationTest {
         assertThat(cpuAt(b, t0.plusHours(3))).isLessThanOrEqualTo(4.0 + 1e-9);
         assertThat(detail(approver, b).path("reviewState").asText()).isEqualTo("PENDING");
 
-        decide(approver, a, "revoke").andExpect(status().isOk());
+        decide(owner, a, "revoke").andExpect(status().isOk());
 
         JsonNode seen = detail(approver, b);
         assertThat(seen.path("reviewState").asText()).isEqualTo("STALE");
@@ -302,9 +302,54 @@ class AutorunIntegrationTest {
             .contentType(APPLICATION_JSON).content("{\"status\":\"Running\"}")).andExpect(status().isOk());
         assertThat(jobStatus(owner, j)).isEqualTo("RUNNING");
 
-        decide(approver, run, "revoke").andExpect(status().isOk());
+        decide(owner, run, "revoke").andExpect(status().isOk());
         assertThat(jobStatus(owner, j)).isEqualTo("REJECTED");
         assertThat(planning.plan(owner.getEmail(), false).runIds()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("only the owner or an admin can revoke an approval; the approver cannot")
+    void onlyTheOwnerOrAnAdminRevokes() throws Exception {
+        job(owner, "J", 4.0, 3, 20, 10);
+        String run = planning.plan(owner.getEmail(), false).runIds().getFirst();
+        decide(approver, run, "approve").andExpect(status().isOk());
+        assertThat(detail(approver, run).path("canRevoke").asBoolean()).isFalse();
+        assertThat(detail(owner, run).path("canRevoke").asBoolean()).isTrue();
+
+        decide(approver, run, "revoke").andExpect(status().isForbidden());
+        decide(other, run, "revoke").andExpect(status().isForbidden());
+        assertThat(stateOf(run)).isEqualTo(ReviewState.APPROVED);
+
+        decide(admin, run, "revoke").andExpect(status().isOk());
+        assertThat(stateOf(run)).isEqualTo(ReviewState.REJECTED);
+    }
+
+    @Test
+    @DisplayName("an approved plan stays approved through the expiry check and the next autorun tick")
+    void anApprovedPlanStaysApproved() throws Exception {
+        Job future = job(owner, "Future", 4.0, 3, 20, 10);
+        Job elapsed = job(other, "Elapsed", 4.0, -2, 20, 0); // start already passed: the autorun re-anchors it
+        Job offHour = jobs.save(Job.builder().ownerEmail(admin.getEmail()).name("Off hour").cpuHours(4.0).gpuHours(0.0)
+            .originalStartTime(t0.plusHours(3).plusMinutes(17).plusSeconds(5)).deadline(t0.plusHours(20).plusMinutes(17))
+            .flexibilityWindowHours(10).build());
+        Map<Job, User> owners = Map.of(future, owner, elapsed, other, offHour, admin);
+        Map<Job, String> runs = new HashMap<>();
+        for (var e : owners.entrySet()) {
+            String run = planning.plan(e.getValue().getEmail(), false).runIds().getFirst();
+            decide(approver, run, "approve").andExpect(status().isOk());
+            runs.put(e.getKey(), run);
+        }
+
+        clock.set(clock.instant().plusSeconds(90));
+        expiry.expire();
+        planning.tick();
+
+        for (var e : owners.entrySet()) {
+            var plan = plans.findById(runs.get(e.getKey())).orElseThrow();
+            assertThat(plan.getReviewState()).as(e.getKey().getName() + ": " + plan.getInvalidationReason())
+                .isEqualTo(ReviewState.APPROVED);
+            assertThat(jobStatus(e.getValue(), e.getKey())).isEqualTo("SCHEDULED");
+        }
     }
 
     @Test

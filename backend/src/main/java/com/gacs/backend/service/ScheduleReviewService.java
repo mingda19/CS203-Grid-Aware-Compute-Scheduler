@@ -184,6 +184,8 @@ public class ScheduleReviewService {
         OptimizationPlan plan = gate.reviewable(runId);
         if (action == AuditActionType.APPROVE && !settings.canApprove(caller, plan))
             throw new AccessDeniedException("You cannot approve your own plan. Another user has to approve it.");
+        if (action == AuditActionType.REVOKE && !AppSettingsService.canRevoke(caller, plan))
+            throw new AccessDeniedException("Only the plan's owner or an admin can revoke its approval.");
         if (TERMINAL_DECISIONS.contains(plan.getReviewState())
             && !isRevocationOfApproval(plan.getReviewState(), action))
             throw new com.gacs.backend.exception.ScheduleExportRejectedException(
