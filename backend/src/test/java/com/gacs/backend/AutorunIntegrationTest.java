@@ -9,6 +9,8 @@ import com.gacs.backend.service.JobPlanningService;
 import com.gacs.backend.service.PriceSeriesProvider;
 import com.gacs.backend.service.ScheduleExpiryService;
 import com.gacs.backend.service.StoredScheduleReader;
+import com.gacs.backend.service.allocation.AllocationSolver;
+import com.gacs.backend.service.allocation.OptimizationProblem;
 import com.gacs.backend.support.MutableClock;
 import com.gacs.backend.support.MutableClockConfig;
 import org.junit.jupiter.api.AfterEach;
@@ -67,6 +69,7 @@ class AutorunIntegrationTest {
     @Autowired StoredScheduleReader reader;
     @Autowired MutableClock clock;
     @MockitoSpyBean PriceSeriesProvider prices;
+    @MockitoSpyBean AllocationSolver solver;
 
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
     private User owner;
@@ -90,7 +93,7 @@ class AutorunIntegrationTest {
 
     @AfterEach
     void cleanup() {
-        Mockito.reset(prices);
+        Mockito.reset(prices, solver);
         clock.set(Instant.now());
         for (User u : List.of(owner, other, approver, admin)) {
             for (OptimizationPlan plan : ownedPlans(u)) {
@@ -456,6 +459,32 @@ class AutorunIntegrationTest {
         for (int tick = 0; tick < 3; tick++) assertThat(planning.plan(owner.getEmail(), false).runIds()).isEmpty();
         assertThat(ownedPlans(owner)).isEmpty();
         assertThat(jobStatus(owner, j)).isEqualTo("NEEDS_ATTENTION");
+    }
+
+    @Test
+    @DisplayName("a solver crash gives the one failing job a reason and is not retried every tick")
+    void aSolverCrashIsNotRetried() throws Exception {
+        Job good = job(owner, "Good", 4.0, 3, 10, 2);
+        Job crashing = job(owner, "Crashing", 4.0, 3, 10, 2);
+        Mockito.doAnswer(call -> {
+            var problem = (OptimizationProblem) call.getArgument(0);
+            if (problem.jobs().stream().anyMatch(j -> j.id().equals(crashing.getId())))
+                throw new IllegalStateException("solver blew up");
+            return call.callRealMethod();
+        }).when(solver).solve(any(OptimizationProblem.class));
+
+        var result = planning.plan(owner.getEmail(), false);
+
+        assertThat(result.runIds()).hasSize(1);
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(jobs.findById(crashing.getId()).orElseThrow().getPlanError()).contains("optimiser failed");
+        assertThat(jobStatus(owner, crashing)).isEqualTo("NEEDS_ATTENTION");
+        assertThat(jobStatus(owner, good)).isEqualTo("AWAITING_APPROVAL");
+        Mockito.clearInvocations(solver);
+        var again = planning.plan(owner.getEmail(), false);
+        assertThat(again.runIds()).isEmpty();
+        assertThat(again.failed()).isZero();
+        Mockito.verify(solver, Mockito.never()).solve(any(OptimizationProblem.class));
     }
 
     @Test

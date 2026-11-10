@@ -224,15 +224,7 @@ public class ScheduleGate {
         }
 
         var limit = inputs.facility();
-        Map<LocalDateTime, double[]> planned = new java.util.TreeMap<>();
-        for (ScheduleItem item : items(schedule)) {
-            if (item.allocations() == null) continue;
-            for (var slot : item.allocations()) {
-                double[] sum = planned.computeIfAbsent(slot.intervalStartUtc(), k -> new double[2]);
-                sum[0] += slot.cpuHours();
-                sum[1] += slot.gpuHours();
-            }
-        }
+        Map<LocalDateTime, double[]> planned = CapacityLedger.hoursBySlot(items(schedule));
         for (var entry : planned.entrySet()) {
             var used = now.get(entry.getKey());
             double cpu = entry.getValue()[0] + (used == null ? 0.0 : used.cpuHours());

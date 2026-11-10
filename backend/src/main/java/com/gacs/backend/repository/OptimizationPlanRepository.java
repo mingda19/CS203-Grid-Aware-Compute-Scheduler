@@ -61,8 +61,9 @@ public interface OptimizationPlanRepository extends JpaRepository<OptimizationPl
     @Query("select r, p.runId from OptimizationPlan p join p.removedJobIds r where r in :ids")
     List<Object[]> findRemoved(@Param("ids") java.util.Collection<Long> ids);
 
-    @Query("select p.inputSnapshot from OptimizationPlan p where p.runId = :runId")
-    Optional<String> findInputSnapshot(@Param("runId") String runId);
+    /** The (run, input snapshot) pairs for these runs, in one query. */
+    @Query("select p.runId, p.inputSnapshot from OptimizationPlan p where p.runId in :runIds")
+    List<Object[]> findInputSnapshots(@Param("runIds") java.util.Collection<String> runIds);
 
     /** Of these jobs, the ones in an approved plan that they have not left. */
     @Query("select j from OptimizationPlan p join p.jobIds j where p.reviewState = com.gacs.backend.model.ReviewState.APPROVED"

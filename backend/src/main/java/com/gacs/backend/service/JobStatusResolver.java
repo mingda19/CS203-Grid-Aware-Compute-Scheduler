@@ -72,16 +72,31 @@ public class JobStatusResolver {
         Map<Long, List<WorkloadSchedule>> rows = schedules.findByJobIdIn(ids).stream()
             .filter(row -> row.getJobId() != null).collect(Collectors.groupingBy(WorkloadSchedule::getJobId));
 
+        Map<Long, List<PlanLink>> newestFirst = new HashMap<>();
+        Set<String> rejectedRuns = new HashSet<>();
         for (Job job : jobs) {
             List<PlanLink> mine = links.getOrDefault(job.getId(), List.of()).stream()
                 .sorted(Comparator.comparing(PlanLink::createdAt, Comparator.reverseOrder())).toList();
-            result.put(job.getId(), derive(job, mine, removed, rows.getOrDefault(job.getId(), List.of()), now));
+            newestFirst.put(job.getId(), mine);
+            if (!mine.isEmpty() && isDeclined(mine.get(0))) rejectedRuns.add(mine.get(0).runId());
         }
+        // One query for every declined latest plan, instead of one per job on each page load.
+        Map<String, String> snapshots = new HashMap<>();
+        if (!rejectedRuns.isEmpty())
+            for (Object[] row : plans.findInputSnapshots(rejectedRuns)) snapshots.put((String) row[0], (String) row[1]);
+
+        for (Job job : jobs)
+            result.put(job.getId(), derive(job, newestFirst.get(job.getId()), removed,
+                rows.getOrDefault(job.getId(), List.of()), snapshots, now));
         return result;
     }
 
+    private static boolean isDeclined(PlanLink link) {
+        return link.state() == ReviewState.REJECTED || link.state() == ReviewState.REVISION_REQUESTED;
+    }
+
     private Derived derive(Job job, List<PlanLink> mine, Set<String> removed, List<WorkloadSchedule> rows,
-                           LocalDateTime now) {
+                           Map<String, String> snapshots, LocalDateTime now) {
         if ("CANCELLED".equals(job.getStatus())) return Derived.of(Status.CANCELLED);
 
         PlanLink finished = finishedUnder(mine, rows, now);
@@ -116,8 +131,8 @@ public class JobStatusResolver {
         // would leave the job stuck after a later plan was replaced.
         if (!mine.isEmpty()) {
             PlanLink latest = mine.get(0);
-            if ((latest.state() == ReviewState.REJECTED || latest.state() == ReviewState.REVISION_REQUESTED)
-                && plans.findInputSnapshot(latest.runId())
+            if (isDeclined(latest)
+                && java.util.Optional.ofNullable(snapshots.get(latest.runId()))
                     .map(snapshot -> inputs.revisionIn(snapshot, job.getId())).filter(r -> r == job.getSchedulingRevision())
                     .isPresent())
                 return new Derived(Status.REJECTED, latest.state() == ReviewState.REJECTED
