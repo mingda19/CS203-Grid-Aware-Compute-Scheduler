@@ -508,15 +508,17 @@ export default function JobsPage() {
                     </td>
                     <td className="hidden whitespace-nowrap px-2 py-2 font-mono text-muted-foreground sm:px-3 2xl:table-cell">#{job.id}</td>
                     <td className="max-w-0 px-2 py-2 font-medium text-foreground sm:px-3">
-                      <button
-                        type="button"
-                        title={job.name}
-                        className="block max-w-full truncate text-left hover:underline focus-visible:underline focus-visible:outline-none"
-                        onClick={(e) => { e.stopPropagation(); void openView(job) }}
-                      >
-                        {job.name}
-                      </button>
-                      {usesEstimatedPrices(job.deadline, forecastEnd) && <div className="mt-1"><EstimatedPriceBadge /></div>}
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          title={job.name}
+                          className="min-w-0 truncate text-left hover:underline focus-visible:underline focus-visible:outline-none"
+                          onClick={(e) => { e.stopPropagation(); void openView(job) }}
+                        >
+                          {job.name}
+                        </button>
+                        {usesEstimatedPrices(job.deadline, forecastEnd) && <EstimatedPriceBadge compact />}
+                      </div>
                     </td>
                     <td className="hidden whitespace-nowrap px-2 py-2 sm:px-3 2xl:table-cell">{job.cpuHours}</td>
                     <td className="hidden whitespace-nowrap px-2 py-2 sm:px-3 2xl:table-cell">{job.gpuHours}</td>
