@@ -17,7 +17,7 @@ export function RecommendationExplanation({ item, explanation, loading, error, o
           savings compare against a baseline that already partly elapsed. Said here rather than
           left to be inferred from a cost difference that is not like the others'.
         */}
-        {item.rescheduledFromElapsedStart && <p role="note" className="rounded-md border border-amber-500 p-2 text-amber-700 dark:text-amber-400">
+        {item.rescheduledFromElapsedStart && <p role="note" className="rounded-md border border-warning/40 p-2 text-warning-foreground">
           Rescheduled because its start time had already passed. It was moved into the hours between
           the current hour and its deadline, which may be outside the flexibility window originally
           set for it. The cost difference below is against a baseline that itself already partly
@@ -29,7 +29,7 @@ export function RecommendationExplanation({ item, explanation, loading, error, o
         <dl className="grid gap-2 sm:grid-cols-3">
           <div><dt className="text-muted-foreground">Baseline cost (USD)</dt><dd>{money(item.baselineCostUsd)}</dd></div>
           <div><dt className="text-muted-foreground">Proposed cost (USD)</dt><dd>{money(item.optimizedCostUsd)}</dd></div>
-          <div><dt className="text-muted-foreground">Cost difference</dt><dd className={item.savingsUsd != null && item.savingsUsd < 0 ? "text-amber-700 dark:text-amber-400" : ""}>
+          <div><dt className="text-muted-foreground">Cost difference</dt><dd className={item.savingsUsd != null && item.savingsUsd < 0 ? "text-warning-foreground" : ""}>
             {item.savingsUsd == null ? "Unavailable — job was not scheduled" : item.savingsUsd > 0 ? `${money(item.savingsUsd)} savings` : item.savingsUsd < 0 ? `${money(-item.savingsUsd)} increase` : "No cost change"}
           </dd></div>
         </dl>

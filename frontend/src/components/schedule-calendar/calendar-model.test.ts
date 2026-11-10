@@ -1,15 +1,13 @@
 import { describe, it, expect } from "vitest"
-import { clampToGrid, layoutEvents, runLengthHours, scheduleToEvent, splitAcrossDays, type CalendarEvent } from "./GoogleCalendarView"
-
-const colorScheme = { bg: "", border: "", text: "", badge: "", dot: "" }
+import { clampToGrid, collapseLanes, layoutEvents, PX_PER_HOUR, runLengthHours, scheduleToEvent, splitAcrossDays, type CalendarEvent } from "./calendar-model"
 
 function event(id: string, startHour: number, durationHours: number, startMinute = 0): CalendarEvent {
   // These lane-layout cases only care about start and duration within one day, so the instants are
   // derived from them rather than stated: splitAcrossDays has its own cases below.
   const start = Date.UTC(2026, 10, 4, startHour, startMinute)
   return {
-    id, title: id, type: "ML Training", cluster: "c", powerKw: 10, savings: "$1",
-    status: "Scheduled", dateStr: "2026-11-04", startHour, startMinute, durationHours, colorScheme,
+    id, title: id, type: "ML Training", savings: "$1", runId: null, jobId: null,
+    status: "Scheduled", dateStr: "2026-11-04", startHour, startMinute, durationHours,
     startUtc: new Date(start).toISOString(),
     endUtc: new Date(start + durationHours * 3_600_000).toISOString(),
   }
@@ -18,8 +16,8 @@ function event(id: string, startHour: number, durationHours: number, startMinute
 /** A run stated by its real instants, which is what splitAcrossDays works from. */
 function run(id: string, startUtc: string, endUtc: string): CalendarEvent {
   return {
-    id, title: id, type: "ML Training", cluster: "c", powerKw: 10, savings: "$1",
-    status: "Scheduled", dateStr: "", startHour: 0, startMinute: 0, durationHours: 0, colorScheme,
+    id, title: id, type: "ML Training", savings: "$1", runId: null, jobId: null,
+    status: "Scheduled", dateStr: "", startHour: 0, startMinute: 0, durationHours: 0,
     startUtc, endUtc,
   }
 }
@@ -149,41 +147,41 @@ describe("runLengthHours", () => {
 
 describe("clampToGrid (a box never paints past the bottom of the day)", () => {
   it("sizes an ordinary block from its duration", () => {
-    expect(clampToGrid(9 * 60, 2)).toBe(2 * 60 - 3)
+    expect(clampToGrid(9 * PX_PER_HOUR, 2)).toBe(2 * PX_PER_HOUR - 3)
   })
 
   it("clips a block that would run past midnight", () => {
     // 22:00 with 6 hours left to run: 2 hours of grid remain, so 2 hours is what is drawn.
-    expect(clampToGrid(22 * 60, 6)).toBe(2 * 60)
+    expect(clampToGrid(22 * PX_PER_HOUR, 6)).toBe(2 * PX_PER_HOUR)
   })
 
   it("clips the 52-hour run that overflowed the calendar", () => {
     // The original defect: 03:00 + 52h drew a box 3120px tall in a 1440px grid.
-    expect(clampToGrid(3 * 60, 52)).toBe(21 * 60)
-    expect(clampToGrid(3 * 60, 52)).toBeLessThanOrEqual(24 * 60)
+    expect(clampToGrid(3 * PX_PER_HOUR, 52)).toBe(21 * PX_PER_HOUR)
+    expect(clampToGrid(3 * PX_PER_HOUR, 52)).toBeLessThanOrEqual(24 * PX_PER_HOUR)
   })
 
   it("keeps a very short block readable rather than collapsing it", () => {
-    expect(clampToGrid(9 * 60, 0.1)).toBe(24)
-    expect(clampToGrid(9 * 60, 0)).toBe(24)
+    expect(clampToGrid(9 * PX_PER_HOUR, 0.1)).toBe(24)
+    expect(clampToGrid(9 * PX_PER_HOUR, 0)).toBe(24)
   })
 
   it("never returns a negative height for a block starting past the grid", () => {
-    expect(clampToGrid(30 * 60, 2)).toBe(24)
+    expect(clampToGrid(30 * PX_PER_HOUR, 2)).toBe(24)
   })
 })
 
 /**
  * Built from rows that were actually in workload_schedules when the calendar was reported as
  * overflowing, driven through the same pipeline the page uses (scheduleToEvent -> splitAcrossDays
- * -> clampToGrid). The grid is 24 rows of 60px, so no box may end past 1440px; the original defect
+ * -> clampToGrid). The grid is 24 rows of PX_PER_HOUR, so no box may end past the grid; the original defect
  * drew an 88-hour run as a single 5280px box.
  */
 describe("real scheduled rows never paint outside the 24-hour grid", () => {
-  const GRID_PX = 24 * 60
+  const GRID_PX = 24 * PX_PER_HOUR
 
   const row = (id: number, title: string, startUtc: string, endUtc: string) => ({
-    id, title, type: "ML Training", cluster: "c", powerKw: 1, savings: null,
+    id, title, type: "ML Training", savings: null,
     status: "Scheduled" as const, startUtc, endUtc, notes: null,
   })
 
@@ -196,7 +194,7 @@ describe("real scheduled rows never paint outside the 24-hour grid", () => {
 
   it.each(REAL_ROWS.map((r) => [r.title, r] as const))("keeps every segment of %s inside the grid", (_t, r) => {
     for (const seg of splitAcrossDays(scheduleToEvent(r as never))) {
-      const topPx = seg.startHour * 60 + (seg.startMinute / 60) * 60
+      const topPx = (seg.startHour + seg.startMinute / 60) * PX_PER_HOUR
       expect(topPx + clampToGrid(topPx, seg.durationHours)).toBeLessThanOrEqual(GRID_PX)
     }
   })
@@ -219,11 +217,40 @@ describe("real scheduled rows never paint outside the 24-hour grid", () => {
 })
 
 describe("whose entry it is", () => {
-  const row = { id: 7, title: "Train", type: "ML Training", cluster: "c", powerKw: 1, savings: null, status: "Scheduled" as const,
+  const row = { id: 7, title: "Train", type: "ML Training", cluster: "c", powerKw: 1, savings: null, status: "Scheduled" as const, runId: "r1", jobId: 3,
     startUtc: "2026-11-06T12:00:00Z", endUtc: "2026-11-06T14:00:00Z", notes: null }
 
   it("carries the owner's name and whether the signed-in user owns the entry", () => {
     expect(scheduleToEvent({ ...row, ownerName: "Ada", mine: false })).toMatchObject({ ownerName: "Ada", mine: false })
     expect(scheduleToEvent({ ...row, ownerName: "Me", mine: true })).toMatchObject({ ownerName: "Me", mine: true })
+  })
+})
+
+describe("collapseLanes (week view draws at most three lanes)", () => {
+  const five = ["a", "b", "c", "d", "e"].map((id) => event(id, 9, 2))
+
+  it("leaves a group of three or fewer untouched", () => {
+    const { shown, more } = collapseLanes(layoutEvents(five.slice(0, 3)))
+    expect(shown).toHaveLength(3)
+    expect(more).toEqual([])
+  })
+
+  it("draws lanes 0 and 1 and replaces the other jobs with one +N block", () => {
+    const { shown, more } = collapseLanes(layoutEvents(five))
+    expect(shown).toHaveLength(2)
+    expect(shown.every((s) => s.laneCount === 3 && s.lane < 2)).toBe(true)
+    expect(more).toEqual([{ group: 0, count: 3, startMin: 9 * 60, endMin: 11 * 60 }])
+  })
+
+  it("spans the earliest start to the latest end of the hidden jobs", () => {
+    const wide = [...five.slice(0, 3), event("f", 10, 3), event("g", 9, 4)]
+    const { more } = collapseLanes(layoutEvents(wide))
+    expect(more).toHaveLength(1)
+    expect(more[0].endMin).toBeGreaterThan(11 * 60)
+  })
+
+  it("does not touch an unrelated job elsewhere in the day", () => {
+    const { shown } = collapseLanes(layoutEvents([...five, event("z", 15, 1)]))
+    expect(shown.find((s) => s.event.id === "z")).toMatchObject({ lane: 0, laneCount: 1 })
   })
 })
