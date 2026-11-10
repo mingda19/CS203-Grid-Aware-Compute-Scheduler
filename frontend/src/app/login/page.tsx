@@ -3,8 +3,6 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import {
-  Zap,
-  ShieldCheck,
   Lock,
   Mail,
   User as UserIcon,
@@ -22,15 +20,142 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { authApi, getStoredUser, setStoredUser, removeStoredUser } from "@/lib/api"
 
 import { PASSWORD_HINT, passwordError } from "@/lib/password-policy"
 import { Intro } from "./intro"
+import { LoginBackdrop } from "./backdrop"
+import { GacsLogo } from "./gacs-logo"
 
 const INTRO_SEEN_KEY = "gacs_intro_seen"
 
 type AuthMode = "login" | "register" | "verify-otp" | "forgot-password" | "reset-password"
+
+const OTP_LENGTH = 6
+const TICK_MS = 500 // how long the success tick shows before moving on
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/** Self-drawing check mark; styles live in globals.css. */
+function AnimatedTick({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true" className={`animate-tick-pop ${className ?? ""}`}>
+      <path d="M5 12.5l4.5 4.5L19 7.5" pathLength={1} className="animate-tick-draw" />
+    </svg>
+  )
+}
+
+/** Password input with a leading lock icon and its own show/hide toggle. */
+function PasswordField({ id, placeholder, value, onChange, autoComplete, minLength, maxLength, invalid, describedBy }: {
+  id: string
+  placeholder: string
+  value: string
+  onChange: (next: string) => void
+  autoComplete: string
+  minLength?: number
+  maxLength?: number
+  invalid?: boolean
+  describedBy?: string
+}) {
+  const [visible, setVisible] = React.useState(false)
+  return (
+    <div className="relative">
+      <Lock className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground pointer-events-none" />
+      <Input
+        id={id}
+        type={visible ? "text" : "password"}
+        aria-label={placeholder}
+        placeholder={placeholder}
+        autoComplete={autoComplete}
+        minLength={minLength}
+        maxLength={maxLength}
+        aria-invalid={invalid}
+        aria-describedby={describedBy}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        required
+        className={`pl-12 pr-12 h-12 text-base ${invalid ? "border-red-500/60 focus-visible:ring-red-500" : ""}`}
+      />
+      <button
+        type="button"
+        onClick={() => setVisible((prev) => !prev)}
+        aria-label={visible ? "Hide password" : "Show password"}
+        className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+      >
+        {visible ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+      </button>
+    </div>
+  )
+}
+
+/** Six single-digit boxes. `value` is always a contiguous digit string (no gaps). */
+function OtpInput({ value, onChange, onComplete, disabled }: {
+  value: string
+  onChange: (next: string) => void
+  onComplete: (code: string) => void
+  disabled?: boolean
+}) {
+  const refs = React.useRef<Array<HTMLInputElement | null>>([])
+  const focusBox = (i: number) => refs.current[Math.max(0, Math.min(i, OTP_LENGTH - 1))]?.focus()
+
+  // Focus the first box on mount, and again whenever the code is cleared (e.g. after a failed attempt).
+  React.useEffect(() => {
+    if (value === "" && !disabled) focusBox(0)
+  }, [value, disabled])
+
+  const commit = (next: string, focusIndex: number) => {
+    const clean = next.replace(/\D/g, "").slice(0, OTP_LENGTH)
+    onChange(clean)
+    focusBox(focusIndex)
+    if (clean.length === OTP_LENGTH) onComplete(clean)
+  }
+
+  return (
+    <div role="group" aria-label="6-digit verification code" className="grid grid-cols-6 gap-2">
+      {Array.from({ length: OTP_LENGTH }, (_, i) => (
+        <Input
+          key={i}
+          ref={(el) => { refs.current[i] = el }}
+          type="text"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          aria-label={`Digit ${i + 1}`}
+          value={value[i] ?? ""}
+          disabled={disabled}
+          onFocus={(e) => {
+            // Never let focus skip past the first empty box.
+            if (i > value.length) focusBox(value.length)
+            else e.target.select()
+          }}
+          onChange={(e) => {
+            const typed = e.target.value.replace(/\D/g, "")
+            if (!typed) return
+            // Several characters at once = autofill / paste into one box: replace the whole code.
+            if (typed.length > 1) return commit(typed, typed.length)
+            const next = value.slice(0, i) + typed + value.slice(i + 1)
+            commit(next, i + 1)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Backspace") {
+              e.preventDefault()
+              if (value[i]) commit(value.slice(0, i) + value.slice(i + 1), i)
+              else if (i > 0) commit(value.slice(0, i - 1) + value.slice(i), i - 1)
+            } else if (e.key === "ArrowLeft") { e.preventDefault(); focusBox(i - 1) }
+            else if (e.key === "ArrowRight") { e.preventDefault(); focusBox(Math.min(i + 1, value.length)) }
+          }}
+          onPaste={(e) => {
+            e.preventDefault()
+            const pasted = e.clipboardData.getData("text").replace(/\D/g, "")
+            if (pasted) commit(pasted, pasted.length)
+          }}
+          className="h-14 min-w-0 px-0 text-center font-mono text-2xl font-semibold tabular-nums"
+        />
+      ))}
+    </div>
+  )
+}
+
 export default function LoginPage() {
   const router = useRouter()
 
@@ -39,7 +164,6 @@ export default function LoginPage() {
   const [fullName, setFullName] = React.useState("")
   const [email, setEmail] = React.useState("")
   const [password, setPassword] = React.useState("")
-  const [showPassword, setShowPassword] = React.useState(false)
   const [otpCode, setOtpCode] = React.useState("")
   const [recoveryCode, setRecoveryCode] = React.useState("")
   const [confirmPassword, setConfirmPassword] = React.useState("")
@@ -50,6 +174,24 @@ export default function LoginPage() {
   const [successMessage, setSuccessMessage] = React.useState<string | null>(null)
   const [resendCooldown, setResendCooldown] = React.useState(0)
   const [showIntro, setShowIntro] = React.useState(false)
+  const [showTick, setShowTick] = React.useState(false)
+  const cardRef = React.useRef<HTMLDivElement>(null)
+
+  // Shake the card whenever a new error appears (skipped for reduced-motion users).
+  React.useEffect(() => {
+    if (!errorMessage || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return
+    cardRef.current?.animate?.(
+      [
+        { transform: "translateX(0)" },
+        { transform: "translateX(-10px)" },
+        { transform: "translateX(9px)" },
+        { transform: "translateX(-6px)" },
+        { transform: "translateX(4px)" },
+        { transform: "translateX(0)" },
+      ],
+      { duration: 420, easing: "ease-in-out" },
+    )
+  }, [errorMessage])
 
   // Layout effect so first-time visitors get the intro before the form paints.
   React.useLayoutEffect(() => {
@@ -102,6 +244,8 @@ export default function LoginPage() {
 
       if (!response.success || !response.user) throw new Error(response.message || "Sign-in failed. Please try again.")
       setStoredUser(response.user, response.refreshExpiresIn)
+      setShowTick(true) // stays on until the redirect unmounts the page
+      await sleep(TICK_MS)
       router.replace("/")
     } catch (err: unknown) {
       setErrorMessage((err instanceof Error ? err.message : "") || "Invalid work email or password.")
@@ -115,6 +259,7 @@ export default function LoginPage() {
     e.preventDefault()
     const issue = passwordError(password)
     if (issue) { setErrorMessage(issue); setSuccessMessage(null); return }
+    if (password !== confirmPassword) { setErrorMessage("Passwords do not match."); setSuccessMessage(null); return }
     setIsLoading(true)
     setErrorMessage(null)
     setSuccessMessage(null)
@@ -127,6 +272,9 @@ export default function LoginPage() {
       })
 
       if (!response.success) throw new Error(response.message || "Registration failed")
+      setShowTick(true)
+      await sleep(TICK_MS)
+      setShowTick(false)
       setSuccessMessage(response.message || "Verification code sent to your email. Enter it below.")
       setMode("verify-otp")
       setResendCooldown(60)
@@ -138,20 +286,27 @@ export default function LoginPage() {
   }
 
   // Handle OTP Verification
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const verifyOtp = async (code: string) => {
+    if (isLoading) return
     setIsLoading(true)
     setErrorMessage(null)
     setSuccessMessage(null)
 
     try {
-      const response = await authApi.verifyOtp({ email, otp: otpCode.trim() })
+      const response = await authApi.verifyOtp({ email, otp: code })
       if (!response.success) throw new Error(response.message || "Verification failed")
 
+      setShowTick(true)
+      await sleep(TICK_MS)
+      setShowTick(false)
+
       setSuccessMessage("Account verified successfully! Please sign in with your password.")
+      setOtpCode("")
       setMode("login")
       setPassword("")
+      setConfirmPassword("")
     } catch (err: unknown) {
+      setOtpCode("") // clear the boxes so the user can retype
       setErrorMessage((err instanceof Error ? err.message : "") || "Invalid or expired OTP code.")
     } finally {
       setIsLoading(false)
@@ -209,7 +364,6 @@ export default function LoginPage() {
       setPassword("")
       setConfirmPassword("")
       setRecoveryCode("")
-      setShowPassword(false)
       setMode("login")
       setSuccessMessage("Password updated. Sign in with your new password.")
     } catch (err) {
@@ -217,75 +371,81 @@ export default function LoginPage() {
     } finally { setIsLoading(false) }
   }
 
+  // Register / reset: flag a mismatch as soon as the user has started typing the confirmation.
+  const passwordsMismatch = confirmPassword.length > 0 && password !== confirmPassword
+  const mismatchNote = passwordsMismatch ? (
+    <p id="confirm-password-error" role="alert" className="text-xs text-red-600 dark:text-red-400">
+      Passwords do not match.
+    </p>
+  ) : null
+
+  // Logo + heading shared by every auth screen.
+  const brandTitle = (text: string) => (
+    <span className="flex items-center gap-2.5">
+      <GacsLogo className="h-11 w-11 shrink-0 text-emerald-500" />
+      <span className="text-2xl font-extrabold tracking-tight">{text}</span>
+    </span>
+  )
+
+  const goToLogin = () => {
+    setOtpCode("")
+    setPassword("")
+    setRecoveryCode("")
+    setConfirmPassword("")
+    setMode("login")
+    setErrorMessage(null)
+    setSuccessMessage(null)
+  }
+
+  const submitButtonClass =
+    "w-full h-14 font-bold text-base shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer"
+  const spinner = <span className="h-5 w-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+
   return (
     <div className="relative min-h-screen flex items-center justify-center p-4 bg-background selection:bg-emerald-500 selection:text-white overflow-hidden">
-      {/* Background Graphic & Ambient Glow */}
-      <div className="absolute inset-0 z-0">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(16,185,129,0.15),rgba(255,255,255,0))]" />
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[520px] h-[520px] bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute bottom-10 right-10 w-[420px] h-[420px] bg-teal-500/10 rounded-full blur-3xl pointer-events-none" />
-      </div>
+      <LoginBackdrop />
 
       <div className="relative z-10 w-full max-w-md space-y-5">
-        {/* Environment Badge & Brand Header */}
-        <div className="text-center space-y-2">
-          <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-[11px] font-mono font-semibold text-emerald-600 dark:text-emerald-400 shadow-xs">
+        {/* Environment badge, styled like the pill on the intro end card */}
+        <div className="text-center">
+          <div className="inline-flex items-center gap-2.5 rounded-full border border-emerald-500/40 bg-emerald-500/5 px-4 py-1.5 text-[11px] font-mono font-semibold tracking-[0.2em] text-emerald-600 dark:text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.15)]">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
             <span>GRID-AWARE COMPUTE SCHEDULER</span>
           </div>
-
-          <div className="flex items-center justify-center gap-2 pt-1">
-            <div className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-400 text-white shadow-lg shadow-emerald-500/25">
-              <Zap className="h-5 w-5 fill-current" />
-            </div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
-              Sign in to GACS
-            </h1>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Grid Aware Compute Scheduler, Wholesale Dispatch Operations
-          </p>
         </div>
 
-        {/* Auth Card */}
-        <Card className="border border-border/80 bg-card/90 backdrop-blur-xl shadow-2xl">
-          <CardHeader className="space-y-2 pb-3">
+        {/* Auth Card. Concentric corners: inner radius = outer radius (--card-r) - padding (--card-p). */}
+        <Card
+          ref={cardRef}
+          style={{ "--card-r": "2rem", "--card-p": "1.5rem", "--inner-r": "calc(var(--card-r) - var(--card-p))" } as React.CSSProperties}
+          className="rounded-[var(--card-r)] border border-border/80 bg-card/90 backdrop-blur-xl shadow-2xl [&_input]:rounded-[var(--inner-r)] [&_button[type=submit]]:rounded-[var(--inner-r)]"
+        >
+          <CardHeader className="space-y-2 pb-4">
             <div className="flex items-center justify-between pt-1">
               <CardTitle className="text-base font-bold text-foreground">
-                {mode === "login" && "Enter Account Credentials"}
-                {mode === "register" && "Create an Account"}
-                {mode === "verify-otp" && "Verify Email with OTP"}
-                {mode === "forgot-password" && "Forgot password?"}
-                {mode === "reset-password" && "Set a new password"}
+                {mode === "login" && brandTitle("Sign in to GACS")}
+                {mode === "register" && brandTitle("Create an Account")}
+                {mode === "verify-otp" && brandTitle("Verify Email with OTP")}
+                {mode === "forgot-password" && brandTitle("Forgot password?")}
+                {mode === "reset-password" && brandTitle("Set a new password")}
               </CardTitle>
               {mode !== "login" && (
                 <button
                   type="button"
                   disabled={isLoading}
-                  onClick={() => {
-                    setOtpCode("")
-                    setPassword("")
-                    setRecoveryCode("")
-                    setConfirmPassword("")
-                    setShowPassword(false)
-                    setMode("login")
-                    setErrorMessage(null)
-                    setSuccessMessage(null)
-                  }}
+                  onClick={goToLogin}
                   className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 cursor-pointer"
                 >
                   <ArrowLeft className="h-3 w-3" /> Back
                 </button>
               )}
             </div>
-            <CardDescription className="text-xs">
-              {mode === "login" && "Sign in to manage compute jobs, price forecasts, and schedule approvals."}
-              {mode === "register" &&
-                "We’ll email you a code to verify your account."}
-              {mode === "verify-otp" && `Enter the 6-digit code sent to ${email}.`}
-              {mode === "forgot-password" && "Enter your account email to request a recovery code."}
-              {mode === "reset-password" && `Paste the recovery code emailed to ${email}. It expires in 10 minutes.`}
-            </CardDescription>
+            {(mode === "forgot-password" || mode === "reset-password") && (
+              <CardDescription className="text-sm">
+                {mode === "forgot-password" && "Enter your account email to request a recovery code."}
+                {mode === "reset-password" && `Paste the recovery code emailed to ${email}. It expires in 10 minutes.`}
+              </CardDescription>
+            )}
           </CardHeader>
 
           <CardContent className="space-y-4 pt-1">
@@ -294,7 +454,7 @@ export default function LoginPage() {
               <div
                 role="alert"
                 aria-live="assertive"
-                className="flex items-start gap-2 p-3 text-xs rounded-lg border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400"
+                className="flex items-start gap-2 p-3 text-xs rounded-[var(--inner-r)] border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400"
               >
                 <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
                 <span className="leading-tight">{errorMessage}</span>
@@ -305,80 +465,39 @@ export default function LoginPage() {
               <div
                 role="status"
                 aria-live="polite"
-                className="flex items-start gap-2 p-3 text-xs rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                className="flex items-start gap-2 p-3 text-xs rounded-[var(--inner-r)] border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
               >
                 <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" />
                 <span className="leading-tight">{successMessage}</span>
               </div>
             )}
 
-            {/* TAB 1: STANDARD SIGN-IN FORM */}
+            {/* MODE: STANDARD SIGN-IN FORM */}
             {mode === "login" && (
-              <form onSubmit={handleLogin} className="space-y-3.5">
-                <div className="space-y-1.5">
-                  <Label htmlFor="login-email" className="text-xs font-semibold">
-                    Work Email
-                  </Label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-                    <Input
-                      id="login-email"
-                      type="email"
-                      placeholder="operator@datacenter.io"
-                      autoComplete="username"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      required
-                      className="pl-9 h-10 text-sm"
-                    />
-                  </div>
+              <form onSubmit={handleLogin} className="space-y-4">
+                <div className="relative">
+                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground pointer-events-none" />
+                  <Input
+                    id="login-email"
+                    type="email"
+                    aria-label="Work email"
+                    placeholder="Work email"
+                    autoComplete="username"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                    className="pl-12 h-12 text-base"
+                  />
                 </div>
 
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="login-password" className="text-xs font-semibold">
-                      Password
-                    </Label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMode("forgot-password")
-                        setErrorMessage(null)
-                        setSuccessMessage(null)
-                        setPassword("")
-                        setConfirmPassword("")
-                        setRecoveryCode("")
-                      }}
-                      className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
-                    >
-                      Forgot password?
-                    </button>
-                  </div>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-                    <Input
-                      id="login-password"
-                      type={showPassword ? "text" : "password"}
-                      placeholder="••••••••"
-                      autoComplete="current-password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      required
-                      className="pl-9 pr-9 h-10 text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword((prev) => !prev)}
-                      aria-label={showPassword ? "Hide password" : "Show password"}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
-                    >
-                      {showPassword ? (
-                        <EyeOff className="h-4 w-4" />
-                      ) : (
-                        <Eye className="h-4 w-4" />
-                      )}
-                    </button>
-                  </div>
+                <div className="pt-1">
+                  <PasswordField
+                    id="login-password"
+                    placeholder="Password"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={setPassword}
+                  />
                 </div>
 
                 <div className="flex items-center justify-between py-0.5">
@@ -390,33 +509,48 @@ export default function LoginPage() {
                     />
                     <Label
                       htmlFor="remember-me"
-                      className="text-xs font-medium cursor-pointer text-muted-foreground hover:text-foreground select-none"
+                      className="text-sm font-medium cursor-pointer text-muted-foreground hover:text-foreground select-none"
                     >
                       Remember this workstation
                     </Label>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode("forgot-password")
+                      setErrorMessage(null)
+                      setSuccessMessage(null)
+                      setPassword("")
+                      setConfirmPassword("")
+                      setRecoveryCode("")
+                    }}
+                    className="text-sm text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
+                  >
+                    Forgot password?
+                  </button>
                 </div>
 
-                <Button
-                  type="submit"
-                  className="w-full h-10 font-semibold text-sm shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
-                  disabled={isLoading}
-                >
-                  {isLoading ? (
+                <Button type="submit" className={`${submitButtonClass} mt-1`} disabled={isLoading || showTick}>
+                  {showTick ? (
+                    <>
+                      <AnimatedTick className="h-7 w-7" />
+                      <span className="sr-only">Signed in</span>
+                    </>
+                  ) : isLoading ? (
                     <span className="flex items-center gap-2">
-                      <span className="h-4 w-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                      {spinner}
                       Verifying session...
                     </span>
                   ) : (
                     <>
-                      <span>Enter Operations Cockpit</span>
-                      <ArrowRight className="h-4 w-4" />
+                      <span>Log in</span>
+                      <ArrowRight className="h-5 w-5" />
                     </>
                   )}
                 </Button>
 
                 <div className="text-center pt-1.5">
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-sm text-muted-foreground">
                     Need new credentials?{" "}
                     <button
                       type="button"
@@ -434,123 +568,174 @@ export default function LoginPage() {
               </form>
             )}
 
+            {/* MODE: FORGOT PASSWORD */}
             {mode === "forgot-password" && (
-              <form onSubmit={(event) => { event.preventDefault(); void requestRecovery() }} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="recovery-email">Account email</Label>
-                  <Input id="recovery-email" type="email" autoComplete="email" required autoFocus
-                    value={email} onChange={(event) => setEmail(event.target.value)} disabled={isLoading} />
+              <form onSubmit={(event) => { event.preventDefault(); void requestRecovery() }} className="space-y-5">
+                <div className="relative">
+                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground pointer-events-none" />
+                  <Input id="recovery-email" type="email" aria-label="Account email" placeholder="Account email"
+                    autoComplete="email" required autoFocus
+                    value={email} onChange={(event) => setEmail(event.target.value)} disabled={isLoading}
+                    className="pl-12 h-12 text-base" />
                 </div>
-                <Button type="submit" className="w-full" disabled={isLoading}>
-                  {isLoading ? "Sending…" : "Send recovery code"}
+                <Button type="submit" className={submitButtonClass} disabled={isLoading}>
+                  {isLoading ? (
+                    <span className="flex items-center gap-2">
+                      {spinner}
+                      Sending...
+                    </span>
+                  ) : (
+                    <>
+                      <span>Send recovery code</span>
+                      <ArrowRight className="h-5 w-5" />
+                    </>
+                  )}
                 </Button>
               </form>
             )}
 
+            {/* MODE: RESET PASSWORD */}
             {mode === "reset-password" && (
-              <form onSubmit={handleResetPassword} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="recovery-code">Recovery code</Label>
-                  <Input id="recovery-code" autoComplete="one-time-code" autoCapitalize="none" spellCheck={false}
-                    required autoFocus minLength={43} maxLength={43} pattern="[A-Za-z0-9_-]{43}" title="Paste the complete 43-character code from your email" value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} />
+              <form onSubmit={handleResetPassword} className="space-y-5">
+                <div className="relative">
+                  <KeyRound className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground pointer-events-none" />
+                  <Input id="recovery-code" aria-label="Recovery code" placeholder="Recovery code"
+                    autoComplete="one-time-code" autoCapitalize="none" spellCheck={false}
+                    required autoFocus minLength={43} maxLength={43} pattern="[A-Za-z0-9_-]{43}"
+                    title="Paste the complete 43-character code from your email"
+                    value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)}
+                    className="pl-12 h-12 text-base" />
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="new-password">New password</Label>
-                  <Input id="new-password" type="password" autoComplete="new-password" required minLength={15} maxLength={72}
-                    value={password} onChange={(event) => setPassword(event.target.value)} aria-describedby="password-hint" />
+
+                <div className="space-y-1.5">
+                  <PasswordField
+                    id="new-password"
+                    placeholder="New password"
+                    autoComplete="new-password"
+                    minLength={15}
+                    maxLength={72}
+                    describedBy="password-hint"
+                    value={password}
+                    onChange={setPassword}
+                  />
                   <p id="password-hint" className="text-xs text-muted-foreground">{PASSWORD_HINT}</p>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="confirm-password">Confirm new password</Label>
-                  <Input id="confirm-password" type="password" autoComplete="new-password" required minLength={15} maxLength={72}
-                    value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+
+                <div className="space-y-1.5">
+                  <PasswordField
+                    id="confirm-password"
+                    placeholder="Confirm new password"
+                    autoComplete="new-password"
+                    minLength={15}
+                    maxLength={72}
+                    invalid={passwordsMismatch}
+                    describedBy={passwordsMismatch ? "confirm-password-error" : undefined}
+                    value={confirmPassword}
+                    onChange={setConfirmPassword}
+                  />
+                  {mismatchNote}
                 </div>
-                <Button type="submit" className="w-full" disabled={isLoading}>
-                  {isLoading ? "Updating…" : "Update password"}
+
+                <Button type="submit" className={submitButtonClass} disabled={isLoading || passwordsMismatch}>
+                  {isLoading ? (
+                    <span className="flex items-center gap-2">
+                      {spinner}
+                      Updating...
+                    </span>
+                  ) : (
+                    <>
+                      <span>Update password</span>
+                      <ArrowRight className="h-5 w-5" />
+                    </>
+                  )}
                 </Button>
-                <button type="button" onClick={() => void requestRecovery()} disabled={isLoading || resendCooldown > 0}
-                  className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50">
-                  {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : "Send a new recovery code"}
-                </button>
+
+                <div className="text-center">
+                  <button type="button" onClick={() => void requestRecovery()} disabled={isLoading || resendCooldown > 0}
+                    className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-50 cursor-pointer">
+                    {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : "Send a new recovery code"}
+                  </button>
+                </div>
               </form>
             )}
 
             {/* MODE: REGISTER FORM */}
             {mode === "register" && (
-              <form onSubmit={handleRegister} className="space-y-3">
-                <div className="space-y-1.5">
-                  <Label htmlFor="reg-fullname" className="text-xs font-semibold">
-                    Full Name
-                  </Label>
-                  <div className="relative">
-                    <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="reg-fullname"
-                      type="text"
-                      placeholder="Full name"
-                      value={fullName}
-                      onChange={(e) => setFullName(e.target.value)}
-                      required
-                      className="pl-9 h-10 text-sm"
-                    />
-                  </div>
+              <form onSubmit={handleRegister} className="space-y-5">
+                <div className="relative">
+                  <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground pointer-events-none" />
+                  <Input
+                    id="reg-fullname"
+                    type="text"
+                    aria-label="Full name"
+                    placeholder="Full name"
+                    autoComplete="name"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    required
+                    className="pl-12 h-12 text-base"
+                  />
+                </div>
+
+                <div className="relative">
+                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground pointer-events-none" />
+                  <Input
+                    id="reg-email"
+                    type="email"
+                    aria-label="Work email"
+                    placeholder="Work email"
+                    autoComplete="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                    className="pl-12 h-12 text-base"
+                  />
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label htmlFor="reg-email" className="text-xs font-semibold">
-                    Work Email
-                  </Label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="reg-email"
-                      type="email"
-                      placeholder="operator@datacenter.io"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      required
-                      className="pl-9 h-10 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label htmlFor="reg-password" className="text-xs font-semibold">
-                    Set Password
-                  </Label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="reg-password"
-                      type="password"
-                      placeholder="At least 15 characters"
-                      autoComplete="new-password"
-                      maxLength={72}
-                      aria-describedby="register-password-hint"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      required
-                      minLength={15}
-                      className="pl-9 h-10 text-sm"
-                    />
-                  </div>
+                  <PasswordField
+                    id="reg-password"
+                    placeholder="Set password"
+                    autoComplete="new-password"
+                    minLength={15}
+                    maxLength={72}
+                    describedBy="register-password-hint"
+                    value={password}
+                    onChange={setPassword}
+                  />
                   <p id="register-password-hint" className="text-xs text-muted-foreground">{PASSWORD_HINT}</p>
                 </div>
 
-                <Button
-                  type="submit"
-                  className="w-full h-10 mt-2 font-semibold text-sm shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
-                  disabled={isLoading}
-                >
-                  {isLoading ? (
+                <div className="space-y-1.5">
+                  <PasswordField
+                    id="reg-confirm-password"
+                    placeholder="Confirm password"
+                    autoComplete="new-password"
+                    minLength={15}
+                    maxLength={72}
+                    invalid={passwordsMismatch}
+                    describedBy={passwordsMismatch ? "confirm-password-error" : undefined}
+                    value={confirmPassword}
+                    onChange={setConfirmPassword}
+                  />
+                  {mismatchNote}
+                </div>
+
+                <Button type="submit" className={`${submitButtonClass} mt-3`} disabled={isLoading || showTick || passwordsMismatch}>
+                  {showTick ? (
+                    <>
+                      <AnimatedTick className="h-7 w-7" />
+                      <span className="sr-only">Code sent</span>
+                    </>
+                  ) : isLoading ? (
                     <span className="flex items-center gap-2">
-                      <span className="h-4 w-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                      {spinner}
                       Sending OTP...
                     </span>
                   ) : (
                     <>
                       <span>Send 6-Digit OTP</span>
-                      <ArrowRight className="h-4 w-4" />
+                      <ArrowRight className="h-5 w-5" />
                     </>
                   )}
                 </Button>
@@ -559,50 +744,32 @@ export default function LoginPage() {
 
             {/* MODE: OTP VERIFICATION */}
             {mode === "verify-otp" && (
-              <form onSubmit={handleVerifyOtp} className="space-y-3.5">
-                <div className="space-y-2">
-                  <Label htmlFor="otp-input" className="text-xs font-semibold">
-                    6-Digit Verification Code
-                  </Label>
-                  <div className="relative">
-                    <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="otp-input"
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                      pattern="[0-9]{6}"
-                      maxLength={6}
-                      placeholder="123456"
-                      value={otpCode}
-                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
-                      required
-                      className="pl-9 h-11 text-center font-mono text-xl tracking-widest tabular-nums"
-                      autoFocus
-                    />
-                  </div>
-                  <p className="text-[11px] text-muted-foreground">
+              <div className="space-y-5">
+                <p className="text-center text-sm text-balance text-muted-foreground">
+                  A 6-digit OTP has been sent to{" "}
+                  <span className="font-semibold text-foreground break-all">{email}</span>
+                </p>
+                <OtpInput
+                  value={otpCode}
+                  onChange={setOtpCode}
+                  onComplete={(code) => void verifyOtp(code)}
+                  disabled={isLoading}
+                />
+                {showTick ? (
+                  <p role="status" className="flex items-center justify-center gap-2 text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                    <AnimatedTick className="h-5 w-5" />
+                    Verified
+                  </p>
+                ) : isLoading ? (
+                  <p role="status" className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <span className="h-4 w-4 border-2 border-muted-foreground/40 border-t-muted-foreground rounded-full animate-spin" />
+                    Verifying...
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground text-center">
                     Your code is valid for 10 minutes. Check your spam folder if it hasn’t arrived.
                   </p>
-                </div>
-
-                <Button
-                  type="submit"
-                  className="w-full h-10 font-semibold text-sm shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
-                  disabled={isLoading || otpCode.length !== 6}
-                >
-                  {isLoading ? (
-                    <span className="flex items-center gap-2">
-                      <span className="h-4 w-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                      Verifying...
-                    </span>
-                  ) : (
-                    <>
-                      <span>Verify email</span>
-                      <ArrowRight className="h-4 w-4" />
-                    </>
-                  )}
-                </Button>
+                )}
 
                 <div className="flex items-center justify-between text-xs pt-1">
                   <button
@@ -620,6 +787,7 @@ export default function LoginPage() {
                     disabled={isLoading}
                     onClick={() => {
                       setOtpCode("")
+                      setConfirmPassword("")
                       setMode("login")
                       setErrorMessage(null)
                       setSuccessMessage(null)
@@ -629,26 +797,21 @@ export default function LoginPage() {
                     Change email
                   </button>
                 </div>
-              </form>
+              </div>
             )}
           </CardContent>
-
-          <CardFooter className="flex items-center justify-between border-t border-border/50 py-3 text-[11px] text-muted-foreground">
-            <div className="flex items-center gap-1.5">
-              <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
-              <span>Account authentication</span>
-            </div>
-
-          </CardFooter>
         </Card>
 
-        <div className="text-center">
+        {/* Replay the intro video */}
+        <div className="flex justify-center">
           <button
             type="button"
             onClick={() => setShowIntro(true)}
-            className="text-xs text-muted-foreground hover:text-foreground hover:underline cursor-pointer"
+            aria-label="Replay intro"
+            title="Replay intro"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-border/60 bg-card/60 text-muted-foreground backdrop-blur transition-colors hover:border-emerald-500/50 hover:text-foreground cursor-pointer"
           >
-            Watch intro
+            <RotateCcw className="h-4 w-4" />
           </button>
         </div>
       </div>
