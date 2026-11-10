@@ -4,6 +4,7 @@ import com.gacs.backend.dto.OptimizeRequestDto;
 import com.gacs.backend.dto.OptimizeResponseDto;
 import com.gacs.backend.dto.OptimizeRequestDto.ClusterCapacityInput;
 import com.gacs.backend.dto.OptimizeRequestDto.JobInput;
+import com.gacs.backend.exception.OptimizationFailedException;
 import com.gacs.backend.exception.ScheduleExportRejectedException;
 import com.gacs.backend.exception.UnprocessableDataException;
 import com.gacs.backend.model.Job;
@@ -106,8 +107,9 @@ public class JobPlanningService {
     }
 
     /**
-     * Plans {@code batch} together. A 400 or 422 means some job cannot be planned, and the request does not
-     * say which, so the batch is split and each job tried alone. Any other failure, such as a missing
+     * Plans {@code batch} together. A 400, a 422 or a solver crash (503) means some job cannot be planned, and
+     * the request does not say which, so the batch is split and each job tried alone. A crash left uncaught
+     * would be retried every tick with no reason on the job. Any other failure, such as a missing
      * forecast or a database error, records nothing on the jobs and propagates: the next tick tries again.
      */
     private void solve(String email, List<Job> batch, ClusterCapacityInput cluster, String location,
@@ -117,11 +119,13 @@ public class JobPlanningService {
             // A run that placed nothing was ended as it was recorded, and its jobs got a reason.
             if (OptimizeResponseDto.STATUS_INFEASIBLE.equals(response.status())) failed[0] += batch.size();
             else runIds.add(response.runId());
-        } catch (IllegalArgumentException | UnprocessableDataException ex) {
+        } catch (IllegalArgumentException | UnprocessableDataException | OptimizationFailedException ex) {
             if (batch.size() > 1) {
                 for (Job job : batch) solve(email, List.of(job), cluster, location, runIds, failed);
             } else {
-                recordFailure(batch.get(0), ex.getMessage());
+                recordFailure(batch.get(0), ex instanceof OptimizationFailedException crash
+                    ? "The optimiser failed on this job (run " + crash.getRunId() + "). Edit the job or use Recompute to try again."
+                    : ex.getMessage());
                 failed[0]++;
             }
         }
