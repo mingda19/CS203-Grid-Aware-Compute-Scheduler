@@ -26,6 +26,9 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { authApi, getStoredUser, setStoredUser, removeStoredUser } from "@/lib/api"
 
 import { PASSWORD_HINT, passwordError } from "@/lib/password-policy"
+import { Intro } from "./intro"
+
+const INTRO_SEEN_KEY = "gacs_intro_seen"
 
 type AuthMode = "login" | "register" | "verify-otp" | "forgot-password" | "reset-password"
 export default function LoginPage() {
@@ -46,6 +49,18 @@ export default function LoginPage() {
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null)
   const [successMessage, setSuccessMessage] = React.useState<string | null>(null)
   const [resendCooldown, setResendCooldown] = React.useState(0)
+  const [showIntro, setShowIntro] = React.useState(false)
+
+  // Layout effect so first-time visitors get the intro before the form paints.
+  React.useLayoutEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!localStorage.getItem(INTRO_SEEN_KEY)) setShowIntro(true)
+  }, [])
+
+  const closeIntro = () => {
+    localStorage.setItem(INTRO_SEEN_KEY, "1")
+    setShowIntro(false)
+  }
 
   // Verify a cached session before leaving the sign-in page.
   React.useEffect(() => {
@@ -626,7 +641,19 @@ export default function LoginPage() {
 
           </CardFooter>
         </Card>
+
+        <div className="text-center">
+          <button
+            type="button"
+            onClick={() => setShowIntro(true)}
+            className="text-xs text-muted-foreground hover:text-foreground hover:underline cursor-pointer"
+          >
+            Watch intro
+          </button>
+        </div>
       </div>
+
+      {showIntro && <Intro onDone={closeIntro} />}
     </div>
   )
 }
