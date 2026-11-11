@@ -65,6 +65,8 @@ public class JobResponseDto {
     @Schema(description = "Optional natural language constraints or notes", example = "Can wait up to 12 hours for low price valley, finish by tomorrow evening")
     private String rawConstraints;
 
+    private java.util.List<com.gacs.backend.model.JobConstraint> pairConstraints;
+
     @Schema(description = "Actual parser timestamp in UTC ISO-8601; null when unparsed", example = "2026-10-20T09:30:00")
     private LocalDateTime parsedAt;
 
@@ -115,6 +117,7 @@ public class JobResponseDto {
                 .flexibilityWindowHours(job.getFlexibilityWindowHours())
                 .isExempt(job.isExempt())
                 .rawConstraints(job.getRawConstraints())
+                .pairConstraints(job.getPairConstraints())
                 .parsedAt(job.getParsedAt())
                 .confirmationOutcome(job.getConfirmationOutcome())
                 .status(job.getStatus())

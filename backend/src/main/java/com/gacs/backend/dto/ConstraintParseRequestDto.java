@@ -28,7 +28,12 @@ public record ConstraintParseRequestDto(
 
         @Schema(description = "IANA time zone the text's times are in", example = "America/Chicago")
         @Size(max = 64, message = "timeZone must not exceed 64 characters")
-        String timeZone) {
+        String timeZone,
+        @Schema(description = "Job being edited, omitted for a new job") Long editingJobId) {
+
+    public ConstraintParseRequestDto(String rawConstraints, Draft draft, String timeZone) {
+        this(rawConstraints, draft, timeZone, null);
+    }
 
     /** Job form values, in the same form as the job API. Any of them may be null. */
     public record Draft(

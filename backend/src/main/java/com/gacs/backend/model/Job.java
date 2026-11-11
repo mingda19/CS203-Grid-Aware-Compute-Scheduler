@@ -63,6 +63,11 @@ public class Job {
     @Column(name = "raw_constraints", length = 1000)
     private String rawConstraints;
 
+    @Convert(converter = JobConstraintsConverter.class)
+    @Column(name = "pair_constraints", columnDefinition = "TEXT")
+    @Builder.Default
+    private java.util.List<JobConstraint> pairConstraints = java.util.List.of();
+
     @Column(name = "parsed_at")
     private LocalDateTime parsedAt;
 

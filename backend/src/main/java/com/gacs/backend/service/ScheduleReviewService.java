@@ -96,6 +96,7 @@ public class ScheduleReviewService {
      */
     public OptimizeResponseDto optimize(OptimizeRequestDto request, String email, boolean discardIfEmpty) {
         User owner = operator(email);
+        request = inputs.withStoredConstraints(request, email);
         var reserved = ledger.reserved();
         String provenance = inputs.capture(request, email, reserved);
         try {
