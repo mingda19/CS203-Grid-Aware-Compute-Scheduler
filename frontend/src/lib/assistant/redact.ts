@@ -1,13 +1,23 @@
 /**
- * Strips confidential data from chat text before it can reach the model.
+ * Removes the kinds of private data listed below from chat text before it reaches the model.
+ *
+ * This is best effort, not a guarantee. It matches known shapes (emails, phone numbers, NRIC/FIN,
+ * card numbers, IP addresses, tokens, keys and labelled secrets). It cannot recognise private
+ * data in a format it has no rule for, or data a person has deliberately disguised, for example
+ * "j a n e at example dot com" or a password with no label. Users are told not to share
+ * sensitive details; this is a safety net, not a licence to.
  *
  * Runs in the browser (so the user sees what was removed) and again in the route handler (so a
  * modified client cannot skip it). Pure string work only, so it adds no noticeable latency.
  */
 
-/** What the input box allows. */
+/** What the input box allows, and what the server enforces on the message as the user typed it. */
 export const MAX_MESSAGE_CHARS = 1000
-/** Placeholders are longer than what they replace, so text after redaction may be a little longer. */
+/**
+ * The most text that may be sent once placeholders are in. A placeholder such as [REDACTED_IP]
+ * is longer than the "1.1.1.1" it replaces, so cleaned text can be longer than MAX_MESSAGE_CHARS.
+ * This is a ceiling on that expansion, not a second user limit: see `typedLength`.
+ */
 export const MAX_CLEAN_CHARS = 1500
 
 export type RedactionType =
@@ -39,6 +49,18 @@ export interface RedactionResult {
   text: string
   /** Each type that was removed, once, in the order the rules ran. */
   types: RedactionType[]
+}
+
+/**
+ * What counts as a credential: a message containing one is refused outright, not redacted and
+ * sent. It would cost tokens to answer a message the person should not have sent, and a partly
+ * matched secret may leave a piece behind. Personal details (email, phone, card, NRIC/FIN, IP) are
+ * different: a question about them is still a fair question, so they are redacted and sent.
+ */
+const CREDENTIAL_TYPES: ReadonlySet<RedactionType> = new Set<RedactionType>(["PRIVATE_KEY", "JWT", "API_KEY", "CREDENTIALS", "SECRET"])
+
+export function credentialTypes(types: readonly RedactionType[]): RedactionType[] {
+  return types.filter((type) => CREDENTIAL_TYPES.has(type))
 }
 
 const placeholder = (type: RedactionType) => `[REDACTED_${type}]`
@@ -94,9 +116,9 @@ const RULES: Rule[] = [
     replace: (_m, scheme) => `${scheme}${placeholder("CREDENTIALS")}@`,
   },
   {
-    // "password: x", "token=x" - the label stays so the question still makes sense.
+    // "password: x", "token=x", {"password": "x"} - the label stays so the question still makes sense.
     type: "SECRET",
-    pattern: new RegExp(`${SECRET_LABEL}(\\s*[:=]\\s*)${NOT_PLACEHOLDER}("[^"]*"|'[^']*'|\\S+)`, "gi"),
+    pattern: new RegExp(`${SECRET_LABEL}(["']?\\s*[:=]\\s*)${NOT_PLACEHOLDER}("[^"]*"|'[^']*'|\\S+)`, "gi"),
     replace: (_m, label, sep) => `${label}${sep}${placeholder("SECRET")}`,
   },
   {
@@ -128,6 +150,14 @@ const RULES: Rule[] = [
   {
     type: "IP",
     pattern: /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/g,
+    replace: () => placeholder("IP"),
+  },
+  {
+    // IPv6: full (2001:db8:0:0:0:0:0:1) and compressed (2001:db8::1, ::1). Needs "::" or eight
+    // groups, so clock times like 10:30:45 are left alone.
+    type: "IP",
+    pattern:
+      /(?<![\w:])(?:(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}|(?:[A-Fa-f0-9]{1,4}:){1,7}:(?:[A-Fa-f0-9]{1,4}(?::[A-Fa-f0-9]{1,4}){0,6})?|::(?:[A-Fa-f0-9]{1,4}:){0,6}[A-Fa-f0-9]{1,4})(?![\w:])/g,
     replace: () => placeholder("IP"),
   },
   {
@@ -173,6 +203,19 @@ export function sanitize(input: string): string {
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim()
+}
+
+const PLACEHOLDER_PATTERN = /\[REDACTED_[A-Z_]+\]/g
+
+/**
+ * How long a message is for the 1,000 character limit: normalised and redacted, with each
+ * placeholder counted as one character. The browser sends already-redacted text, so counting a
+ * placeholder at its full width would reject a message the person was allowed to type. Every
+ * redacted span is at least one character in the original, so a message that fit the input box
+ * always fits here, and one that did not is over the limit however it is padded.
+ */
+export function typedLength(input: string): number {
+  return redact(sanitize(input)).text.replace(PLACEHOLDER_PATTERN, "#").length
 }
 
 /**

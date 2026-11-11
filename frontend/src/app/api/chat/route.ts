@@ -1,14 +1,18 @@
 import Anthropic from "@anthropic-ai/sdk"
 import type { NextRequest } from "next/server"
-import { budgetStatus, estimateInputTokens, reserve, settle, totalTokens, type UsageLike } from "@/lib/assistant/budget"
+import { verifySession } from "@/lib/assistant/auth"
+import { readBodyLimited } from "@/lib/assistant/body"
+import { budgetStatus, inputTokenUpperBound, reserve, settle, totalTokens, type UsageLike } from "@/lib/assistant/budget"
 import { ASSISTANT_SYSTEM_PROMPT } from "@/lib/assistant/knowledge"
 import type { AssistantErrorBody, AssistantErrorCode, AssistantEvent } from "@/lib/assistant/protocol"
-import { allowRequest, clientIp } from "@/lib/assistant/rate-limit"
+import { checkRate } from "@/lib/assistant/rate-limit"
+import { isOnTopic, OFF_TOPIC_REPLY } from "@/lib/assistant/topic"
 import { parseChatRequest } from "@/lib/assistant/validate"
 
 /**
- * The in-app assistant. It only forwards a redacted conversation to Claude and streams the reply.
- * It never calls the Spring backend or the database, and it never stores or logs message text.
+ * The in-app assistant. It forwards a redacted conversation to Claude and streams the reply.
+ * The only thing it asks the Spring backend is who the caller is (GET /api/auth/me, to verify the
+ * bearer token). It never touches the database, and it never stores or logs message text.
  */
 
 // Node, not Edge: the token budget is saved to a file.
@@ -17,18 +21,36 @@ export const runtime = "nodejs"
 const MODEL = "claude-haiku-5-5"
 // Answers are meant to be short; this also bounds the cost of each call.
 const MAX_OUTPUT_TOKENS = 800
-const MAX_BODY_CHARS = 64 * 1024
+// Bytes, enforced while the body is read.
+const MAX_BODY_BYTES = 64 * 1024
+// The SDK retries a failed request this many times. Each retry could be billed, so the budget
+// reserves for every attempt. With 0, a failed call is simply reported and the user retries.
+const MAX_RETRIES = 0
 
 let client: Anthropic | null = null
 function anthropic(apiKey: string): Anthropic {
   // The key is passed in explicitly so the SDK never falls back to a developer's local login.
-  client ??= new Anthropic({ apiKey, maxRetries: 1, timeout: 30_000 })
+  client ??= new Anthropic({ apiKey, maxRetries: MAX_RETRIES, timeout: 30_000 })
   return client
 }
 
-function fail(status: number, error: AssistantErrorCode, message: string): Response {
-  const body: AssistantErrorBody = { error, message }
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } })
+function fail(status: number, error: AssistantErrorCode, message: string, retryAfterSeconds?: number): Response {
+  const body: AssistantErrorBody = { error, message, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) }
+  const headers: Record<string, string> = { "Cache-Control": "no-store" }
+  if (retryAfterSeconds) headers["Retry-After"] = String(retryAfterSeconds)
+  return Response.json(body, { status, headers })
+}
+
+const STREAM_HEADERS = {
+  "Content-Type": "application/x-ndjson; charset=utf-8",
+  "Cache-Control": "no-store",
+  "X-Accel-Buffering": "no",
+}
+
+/** A complete answer in the same shape as a streamed one, for replies that never reach the model. */
+function fixedReply(text: string): Response {
+  const events: AssistantEvent[] = [{ type: "text", text }, { type: "done", stop: "end" }]
+  return new Response(events.map((event) => `${JSON.stringify(event)}\n`).join(""), { headers: STREAM_HEADERS })
 }
 
 function upstreamMessage(error: unknown): { code: AssistantErrorCode; message: string } {
@@ -45,29 +67,44 @@ function upstreamMessage(error: unknown): { code: AssistantErrorCode; message: s
 }
 
 export async function POST(request: NextRequest): Promise<Response> {
-  // The dashboard's sign-in marker. /api routes are outside the login redirect, so check it here.
-  if (request.cookies.get("gacs_logged_in")?.value !== "true") {
-    return fail(401, "unauthorized", "Sign in to use the assistant.")
+  // /api routes are outside the login redirect, and the gacs_logged_in cookie is only a hint that
+  // browser code writes, so the bearer token is verified with the backend instead.
+  const session = await verifySession(request.headers.get("authorization"))
+  if (!session.ok) {
+    if (session.reason === "unauthorized") return fail(401, "unauthorized", "Sign in to use the assistant.")
+    if (session.reason === "not_configured") return fail(503, "not_configured", "The assistant is not set up yet.")
+    return fail(503, "upstream", "Could not check your sign-in. Try again in a moment.")
   }
-  if (!allowRequest(clientIp(request.headers))) {
-    return fail(429, "rate_limited", "Too many messages. Wait a minute and try again.")
+  // Keyed by the verified user, not by an address the caller can choose.
+  const rate = checkRate(`user:${session.userId}`)
+  if (!rate.allowed) {
+    return fail(429, "rate_limited", `Too many messages. Try again in ${rate.retryAfterSeconds} seconds.`, rate.retryAfterSeconds)
   }
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) return fail(503, "not_configured", "The assistant is not set up yet.")
 
+  const read = await readBodyLimited(request, MAX_BODY_BYTES)
+  if (!read.ok) {
+    return read.reason === "too_large"
+      ? fail(413, "invalid_request", "The conversation is too long.")
+      : fail(400, "invalid_request", "The request could not be read.")
+  }
   let body: unknown
   try {
-    const text = await request.text()
-    if (text.length > MAX_BODY_CHARS) return fail(413, "invalid_request", "The conversation is too long.")
-    body = JSON.parse(text)
+    body = JSON.parse(read.text)
   } catch {
     return fail(400, "invalid_request", "The request could not be read.")
   }
   const parsed = parseChatRequest(body)
-  if (!parsed.ok) return fail(400, "invalid_request", parsed.error)
+  // A credential in a message, or a malformed request: refused here, before the model is reached.
+  if (!parsed.ok) return fail(400, parsed.sensitive ? "sensitive_input" : "invalid_request", parsed.error)
 
-  const inputChars = ASSISTANT_SYSTEM_PROMPT.length + parsed.messages.reduce((n, m) => n + m.content.length, 0)
-  const reservation = reserve(estimateInputTokens(inputChars) + MAX_OUTPUT_TOKENS)
+  // Nothing about GACS in the conversation: answer without spending tokens.
+  if (!isOnTopic(parsed.messages)) return fixedReply(OFF_TOPIC_REPLY)
+
+  // A conservative ceiling for every attempt the SDK may make, replaced by real usage afterwards.
+  const perAttempt = inputTokenUpperBound([ASSISTANT_SYSTEM_PROMPT, ...parsed.messages.map((m) => m.content)]) + MAX_OUTPUT_TOKENS
+  const reservation = reserve(perAttempt * (1 + MAX_RETRIES))
   if (!reservation) {
     return fail(429, "budget_exhausted", "The assistant has reached its usage limit.")
   }
@@ -154,11 +191,5 @@ export async function POST(request: NextRequest): Promise<Response> {
     },
   })
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "application/x-ndjson; charset=utf-8",
-      "Cache-Control": "no-store",
-      "X-Accel-Buffering": "no",
-    },
-  })
+  return new Response(stream, { headers: STREAM_HEADERS })
 }

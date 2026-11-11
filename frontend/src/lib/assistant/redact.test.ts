@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { cleanUserMessage, MAX_CLEAN_CHARS, passesLuhn, redact, sanitize } from "./redact"
+import { cleanUserMessage, credentialTypes, MAX_CLEAN_CHARS, passesLuhn, redact, sanitize, typedLength } from "./redact"
 
 describe("redact", () => {
   it.each([
@@ -79,5 +79,89 @@ describe("sanitize and cleanUserMessage", () => {
     const { text } = cleanUserMessage(input)
     expect(text.length).toBeLessThanOrEqual(MAX_CLEAN_CHARS)
     expect(text).not.toContain("sk-ant-api03-abc")
+  })
+})
+
+describe("IPv6 addresses", () => {
+  it.each([
+    ["full", "host 2001:0db8:85a3:0000:0000:8a2e:0370:7334 is down"],
+    ["compressed", "the router is 2001:db8::1 today"],
+    ["loopback", "connect to ::1 please"],
+    ["link-local", "fe80::1ff:fe23:4567:890a failed"],
+  ])("removes a %s address", (_name, input) => {
+    const result = redact(input)
+    expect(result.types).toEqual(["IP"])
+    expect(result.text).toContain("[REDACTED_IP]")
+    expect(result.text).not.toMatch(/db8|::1|fe80|8a2e/)
+  })
+
+  it.each([
+    "The window is 10:30:45 CT",
+    "Ratio 3:1 or 16:9",
+    "Use std::vector here",
+    "Start 2026-11-11T09:00:00-06:00",
+    "A :: B",
+  ])("leaves times and ordinary colons alone: %s", (input) => {
+    expect(redact(input)).toEqual({ text: input, types: [] })
+  })
+})
+
+describe("formats that matter for this app", () => {
+  it.each([
+    ["an email with a plus tag", "ops+night@gacs-datacenter.com.sg"],
+    ["an email in angle brackets", "from <Jane Tan> <jane.tan@corp.example.org>"],
+    ["an uppercase email", "JANE@DATACENTER.IO"],
+    ["a refresh token in a header", "X-Refresh-Token: 7d8f2b1c9a3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e"],
+    ["a quoted secret", 'client_secret="abc 123 def"'],
+    ["a JSON password", '{"password": "hunter2"}'],
+    ["a Singapore number with country code", "WhatsApp +65 8123 4567"],
+  ])("removes %s", (_name, input) => {
+    expect(redact(input).types.length).toBeGreaterThan(0)
+  })
+
+  it("redacts the same text the same way twice (safe to run in the browser and on the server)", () => {
+    const once = redact("mail jane@datacenter.io from 10.0.0.1 with password: hunter2").text
+    expect(redact(once).text).toBe(once)
+  })
+})
+
+describe("known limits (best effort)", () => {
+  // These are documented gaps, not features. If a rule is added for one, move it up.
+  it.each([
+    ["a spelled-out email", "jane at datacenter dot io"],
+    ["a password with no label", "it is Tr0ub4dor&3"],
+    ["a name and address", "Jane Tan, 12 Orchard Road"],
+  ])("does not catch %s", (_name, input) => {
+    expect(redact(input).types).toEqual([])
+  })
+})
+
+describe("typedLength", () => {
+  it("counts a placeholder as one character", () => {
+    expect(typedLength("a 1.1.1.1 b")).toBe("a # b".length)
+  })
+
+  it("ignores characters normalisation removes", () => {
+    expect(typedLength("  hi\u200b\u200b  ")).toBe(2)
+  })
+
+  it("never counts more than the text that was typed", () => {
+    const typed = "mail jane@datacenter.io or 10.0.0.1, key sk-ant-api03-abcdefghijklmnopqrstuvwxyz1"
+    expect(typedLength(typed)).toBeLessThan(typed.length)
+  })
+})
+
+describe("credentialTypes", () => {
+  it("picks out passwords, keys, tokens and logins in links", () => {
+    expect(credentialTypes(["PRIVATE_KEY", "JWT", "API_KEY", "CREDENTIALS", "SECRET"])).toHaveLength(5)
+  })
+
+  it("leaves personal details to be redacted and sent", () => {
+    expect(credentialTypes(["EMAIL", "PHONE", "CARD", "NRIC", "IP"])).toEqual([])
+  })
+
+  it("is what redact reports for a credential and for a plain email", () => {
+    expect(credentialTypes(redact("password: hunter2").types)).toEqual(["SECRET"])
+    expect(credentialTypes(redact("ask jane@datacenter.io").types)).toEqual([])
   })
 })

@@ -1,8 +1,9 @@
 "use client"
 
 import * as React from "react"
+import { authApi, getAccessToken } from "@/lib/api"
 import type { AssistantErrorBody, AssistantErrorCode, AssistantEvent } from "@/lib/assistant/protocol"
-import { cleanUserMessage, type RedactionType } from "@/lib/assistant/redact"
+import { cleanUserMessage, credentialTypes, type RedactionType } from "@/lib/assistant/redact"
 import { MAX_HISTORY_MESSAGES } from "@/lib/assistant/validate"
 
 export interface ChatMessage {
@@ -19,6 +20,50 @@ export interface ChatMessage {
 export interface ChatBlocker {
   code: Extract<AssistantErrorCode, "unauthorized" | "rate_limited" | "budget_exhausted" | "not_configured">
   message: string
+  /**
+   * Only for "rate_limited", which is a pause: when sending is allowed again (ms since epoch).
+   * The other blockers do not end by themselves.
+   */
+  retryAt?: number
+}
+
+/** Used when a rate-limit answer carries no Retry-After. */
+const DEFAULT_COOLDOWN_SECONDS = 60
+const MAX_COOLDOWN_SECONDS = 15 * 60
+
+function cooldownSeconds(header: string | null, body: number | undefined): number {
+  const fromHeader = header !== null && /^\d+$/.test(header.trim()) ? Number(header) : undefined
+  const seconds = fromHeader ?? body ?? DEFAULT_COOLDOWN_SECONDS
+  return Math.min(MAX_COOLDOWN_SECONDS, Math.max(1, Math.ceil(seconds)))
+}
+
+/** A fresh access token from the refresh cookie, or null when the session is over. */
+async function refreshedAccessToken(): Promise<string | null> {
+  try {
+    return (await authApi.refreshToken()).accessToken ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Posts the conversation with the user's real access token: the server checks it with the backend.
+ * An expired token is refreshed once and the request is sent again.
+ */
+async function postChat(payload: unknown, signal: AbortSignal): Promise<Response> {
+  const post = (token: string | null) =>
+    fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      credentials: "same-origin",
+      body: JSON.stringify(payload),
+      signal,
+    })
+  const token = getAccessToken() ?? (await refreshedAccessToken())
+  const response = await post(token)
+  if (response.status !== 401) return response
+  const fresh = await refreshedAccessToken()
+  return fresh && fresh !== token ? post(fresh) : response
 }
 
 const BLOCKING: ReadonlySet<AssistantErrorCode> = new Set(["unauthorized", "rate_limited", "budget_exhausted", "not_configured"])
@@ -45,12 +90,27 @@ export function useAssistantChat() {
   const [busy, setBusy] = React.useState(false)
   const messagesRef = React.useRef<ChatMessage[]>([])
   const abortRef = React.useRef<AbortController | null>(null)
+  const blockerRef = React.useRef<ChatBlocker | null>(null)
 
   React.useEffect(() => {
     messagesRef.current = messages
   }, [messages])
+  React.useEffect(() => {
+    blockerRef.current = blocker
+  }, [blocker])
 
   React.useEffect(() => () => abortRef.current?.abort(), [])
+
+  // A rate limit is a pause: lift it when the wait is over. Budget and set-up blockers stay.
+  const retryAt = blocker?.code === "rate_limited" ? blocker.retryAt : undefined
+  React.useEffect(() => {
+    if (retryAt === undefined) return
+    const timer = window.setTimeout(
+      () => setBlocker((current) => (current?.code === "rate_limited" ? null : current)),
+      Math.max(0, retryAt - Date.now()),
+    )
+    return () => window.clearTimeout(timer)
+  }, [retryAt])
 
   const run = React.useCallback(async (history: ChatMessage[]) => {
     const replyId = nextId()
@@ -65,19 +125,17 @@ export function useAssistantChat() {
       setMessages((prev) => prev.map((m) => (m.id === replyId ? { ...m, ...patch(m) } : m)))
 
     try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ messages: toPayload(history) }),
-        signal: controller.signal,
-      })
+      const response = await postChat({ messages: toPayload(history) }, controller.signal)
       if (!response.ok || !response.body) {
         const data = (await response.json().catch(() => null)) as AssistantErrorBody | null
         const code = data?.error ?? "upstream"
         const message = data?.message ?? "Something went wrong. Try again."
         if (BLOCKING.has(code)) {
-          setBlocker({ code: code as ChatBlocker["code"], message })
+          const retryAt =
+            code === "rate_limited"
+              ? Date.now() + cooldownSeconds(response.headers.get("Retry-After"), data?.retryAfterSeconds) * 1000
+              : undefined
+          setBlocker({ code: code as ChatBlocker["code"], message, ...(retryAt ? { retryAt } : {}) })
           setMessages((prev) => prev.filter((m) => m.id !== replyId))
         } else {
           update(() => ({ state: "error", error: message }))
@@ -113,7 +171,10 @@ export function useAssistantChat() {
             update(() => ({ state }))
           } else if (event.type === "error") {
             finished = true
-            if (BLOCKING.has(event.code)) setBlocker({ code: event.code as ChatBlocker["code"], message: event.message })
+            if (BLOCKING.has(event.code)) {
+              const retryAt = event.code === "rate_limited" ? Date.now() + DEFAULT_COOLDOWN_SECONDS * 1000 : undefined
+              setBlocker({ code: event.code as ChatBlocker["code"], message: event.message, ...(retryAt ? { retryAt } : {}) })
+            }
             update(() => ({ state: "error", error: event.message }))
           }
         }
@@ -130,12 +191,14 @@ export function useAssistantChat() {
     }
   }, [])
 
-  /** Cleans and redacts the text, then sends it. Returns false when there was nothing to send. */
+  /** Cleans and redacts the text, then sends it. Returns false when there was nothing to send or it held a credential. */
   const send = React.useCallback(
     (raw: string): boolean => {
-      if (abortRef.current) return false
+      if (abortRef.current || blockerRef.current?.code === "rate_limited") return false
       const { text, types } = cleanUserMessage(raw)
       if (!text) return false
+      // A password, key or token is never sent, not even redacted: the widget tells the person why.
+      if (credentialTypes(types).length > 0) return false
       const user: ChatMessage = { id: nextId(), role: "user", content: text, redacted: types }
       void run([...messagesRef.current, user])
       return true
@@ -145,7 +208,7 @@ export function useAssistantChat() {
 
   /** Asks again for the last failed answer. */
   const retry = React.useCallback(() => {
-    if (abortRef.current) return
+    if (abortRef.current || blockerRef.current?.code === "rate_limited") return
     const current = messagesRef.current
     const last = current[current.length - 1]
     if (!last || last.role !== "assistant" || last.state !== "error") return
@@ -158,8 +221,14 @@ export function useAssistantChat() {
     messagesRef.current = []
     setMessages([])
     setBusy(false)
-    setBlocker((current) => (current?.code === "budget_exhausted" || current?.code === "not_configured" ? current : null))
+    // Clearing the chat does not lift a stop, nor skip a rate-limit wait.
+    setBlocker((current) =>
+      current?.code === "budget_exhausted" || current?.code === "not_configured" || current?.code === "rate_limited" ? current : null,
+    )
   }, [])
 
-  return { messages, blocker, busy, send, retry, clear }
+  /** True while a rate-limit wait is running: sending is paused, not stopped for good. */
+  const cooling = blocker?.code === "rate_limited"
+
+  return { messages, blocker, busy, cooling, send, retry, clear }
 }

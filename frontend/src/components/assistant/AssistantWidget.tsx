@@ -6,7 +6,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
-import { cleanUserMessage, MAX_MESSAGE_CHARS, REDACTION_LABELS, type RedactionType } from "@/lib/assistant/redact"
+import { cleanUserMessage, credentialTypes, MAX_MESSAGE_CHARS, REDACTION_LABELS, type RedactionType } from "@/lib/assistant/redact"
 import { Markdown } from "./markdown"
 import { useAssistantChat, type ChatMessage } from "./use-assistant-chat"
 
@@ -119,13 +119,18 @@ export function AssistantWidget() {
     bubbleRef.current?.focus()
   }
 
+  // Kept in the box when it holds a credential, so the person can take it out and send the rest.
   const submit = (text: string) => {
     if (chat.send(text)) setInput("")
   }
 
+  // `stopped` is for good (until an admin acts); `chat.cooling` is a short rate-limit wait.
   const stopped = chat.blocker?.code === "budget_exhausted" || chat.blocker?.code === "not_configured" || chat.blocker?.code === "unauthorized"
   // Shown while typing, so the user sees what will be removed before they send it.
-  const pendingRedactions = input.trim() ? cleanUserMessage(input).types : []
+  const pending = input.trim() ? cleanUserMessage(input).types : []
+  // A credential stops the message; other private details are removed and the message is sent.
+  const withheld = credentialTypes(pending)
+  const pendingRedactions = pending.filter((type) => !withheld.includes(type))
 
   return (
     <>
@@ -170,7 +175,7 @@ export function AssistantWidget() {
           <div ref={logRef} role="log" aria-live="polite" aria-busy={chat.busy} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
             {chat.messages.length === 0 ? (
               <div className="space-y-3">
-                <p className="text-sm text-muted-foreground">Ask how to use GACS. I can&apos;t see your jobs, plans or account.</p>
+                <p className="text-sm text-muted-foreground">Ask how to use GACS. I can&apos;t see your jobs, plans or account. Answers can be incomplete or wrong, so check anything important in the app.</p>
                 <div className="flex flex-col items-stretch gap-2">
                   {ASSISTANT_PROMPTS.map((prompt) => (
                     <Button
@@ -178,7 +183,7 @@ export function AssistantWidget() {
                       variant="outline"
                       size="sm"
                       className="h-auto justify-start whitespace-normal py-2 text-left"
-                      disabled={stopped || chat.busy}
+                      disabled={stopped || chat.cooling || chat.busy}
                       onClick={() => submit(prompt)}
                     >
                       {prompt}
@@ -188,17 +193,28 @@ export function AssistantWidget() {
               </div>
             ) : (
               chat.messages.map((message) => (
-                <MessageRow key={message.id} message={message} canRetry={!chat.busy && !stopped} onRetry={chat.retry} />
+                <MessageRow key={message.id} message={message} canRetry={!chat.busy && !stopped && !chat.cooling} onRetry={chat.retry} />
               ))
             )}
           </div>
 
-          {chat.blocker && (
-            <div className="border-t p-3">
-              <Alert variant="warning">
-                <TriangleAlert className="size-4" aria-hidden="true" />
-                <AlertDescription>{chat.blocker.message}</AlertDescription>
-              </Alert>
+          {(chat.blocker || withheld.length > 0) && (
+            <div className="space-y-2 border-t p-3">
+              {chat.blocker && (
+                <Alert variant="warning">
+                  <TriangleAlert className="size-4" aria-hidden="true" />
+                  <AlertDescription className="break-words">{chat.blocker.message}</AlertDescription>
+                </Alert>
+              )}
+              {withheld.length > 0 && (
+                // role="status": announced politely once, not on every keystroke like an alert would be.
+                <Alert variant="warning" role="status">
+                  <TriangleAlert className="size-4" aria-hidden="true" />
+                  <AlertDescription className="break-words">
+                    Remove the {describe(withheld)} to send this. Messages that contain one are never sent.
+                  </AlertDescription>
+                </Alert>
+              )}
             </div>
           )}
 
@@ -234,7 +250,7 @@ export function AssistantWidget() {
                 className="size-10 shrink-0"
                 aria-label="Send"
                 title="Send"
-                disabled={!input.trim() || chat.busy || stopped}
+                disabled={!input.trim() || chat.busy || stopped || chat.cooling || withheld.length > 0}
               >
                 <SendHorizontal className="size-4" />
               </Button>
@@ -248,7 +264,7 @@ export function AssistantWidget() {
               ) : input.length > MAX_MESSAGE_CHARS - 100 ? (
                 <span className="tabular-nums">{input.length} / {MAX_MESSAGE_CHARS} characters</span>
               ) : (
-                <span>Messages are not saved. Don&apos;t share passwords or personal data.</span>
+                <span>Messages are not saved. Removing private details is automatic but best-effort, so don&apos;t share passwords or personal data.</span>
               )}
             </p>
           </form>

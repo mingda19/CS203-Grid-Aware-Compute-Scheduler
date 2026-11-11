@@ -9,6 +9,7 @@ export type AssistantErrorCode =
   | "budget_exhausted"
   | "not_configured"
   | "invalid_request"
+  | "sensitive_input"
   | "upstream"
 
 export type AssistantEvent =
@@ -19,4 +20,9 @@ export type AssistantEvent =
 export interface AssistantErrorBody {
   error: AssistantErrorCode
   message: string
+  /**
+   * For "rate_limited": seconds to wait. Also sent as the Retry-After header. A rate limit is a
+   * short pause; "budget_exhausted" has no such value because it does not end by itself.
+   */
+  retryAfterSeconds?: number
 }
