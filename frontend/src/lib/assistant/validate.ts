@@ -1,3 +1,4 @@
+import { looksLikeOverride } from "./injection"
 import { cleanUserMessage, credentialTypes, MAX_CLEAN_CHARS, MAX_MESSAGE_CHARS, typedLength, type RedactionType } from "./redact"
 
 /** Only the most recent messages are sent; older ones add cost and slow the reply. */
@@ -30,6 +31,13 @@ export const SENSITIVE_INPUT_MESSAGE =
  *    here so a modified client cannot exceed it.
  * 3. Redaction may then make the text longer (a placeholder is wider than an IPv4 address), up to
  *    MAX_CLEAN_CHARS.
+ *
+ * The history is written by the browser, assistant turns included, and the server cannot prove an
+ * assistant turn came from itself. So it is treated as untrusted: it is capped, redacted and
+ * limited to the last few turns, an assistant turn that tries to change the assistant's rules is
+ * dropped, and the topic check looks at the user's messages only. A forged but harmless-looking
+ * assistant turn is still passed on. That is accepted: the model has no tools and no data to
+ * misuse, and signing each reply is the step to take if that stops being enough.
  *
  * A user message that holds a credential (password, key, token, private key, login in a link) is
  * refused as a whole. Nothing is sent to the model, so no tokens are spent on it.
@@ -77,6 +85,7 @@ export function parseChatRequest(body: unknown): ParseResult {
       if (turn.role === "user") return { ok: false, error: "A message is empty." }
       continue
     }
+    if (turn.role === "assistant" && looksLikeOverride(clean.text)) continue
     messages.push({ role: turn.role, content: clean.text })
   }
   return { ok: true, messages, redacted }

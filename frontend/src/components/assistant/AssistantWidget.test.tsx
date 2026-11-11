@@ -373,6 +373,10 @@ describe("a rate limit", () => {
   const limited = (seconds: number | null) => () =>
     refusedWith(429, "rate_limited", "Too many messages. Try again in 30 seconds.", seconds === null ? {} : { "Retry-After": String(seconds) })
 
+  // The clock also follows real time (shouldAdvanceTime), which findBy* needs, so a slow machine
+  // moves it a little on its own. The checks below keep several seconds of slack on both sides.
+  const wait = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+
   async function hitTheLimit(seconds: number | null) {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     chatHandler = limited(seconds)
@@ -392,11 +396,11 @@ describe("a rate limit", () => {
     fireEvent.keyDown(box(), { key: "Enter" })
     expect(chatCalls).toHaveLength(1)
 
-    act(() => vi.advanceTimersByTime(29_000))
+    await wait(20_000)
     expect(screen.getByText("Too many messages. Try again in 30 seconds.")).toBeTruthy()
     expect((sendButton() as HTMLButtonElement).disabled).toBe(true)
 
-    act(() => vi.advanceTimersByTime(1_500))
+    await wait(15_000)
     expect(screen.queryByText("Too many messages. Try again in 30 seconds.")).toBeNull()
     expect((sendButton() as HTMLButtonElement).disabled).toBe(false)
 
@@ -408,9 +412,9 @@ describe("a rate limit", () => {
 
   it("waits a default minute when the server gives no Retry-After", async () => {
     await hitTheLimit(null)
-    act(() => vi.advanceTimersByTime(59_000))
+    await wait(50_000)
     expect(screen.getByText("Too many messages. Try again in 30 seconds.")).toBeTruthy()
-    act(() => vi.advanceTimersByTime(1_500))
+    await wait(15_000)
     expect(screen.queryByText("Too many messages. Try again in 30 seconds.")).toBeNull()
   })
 

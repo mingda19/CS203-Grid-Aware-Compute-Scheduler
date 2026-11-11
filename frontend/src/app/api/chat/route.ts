@@ -11,8 +11,8 @@ import { parseChatRequest } from "@/lib/assistant/validate"
 
 /**
  * The in-app assistant. It forwards a redacted conversation to Claude and streams the reply.
- * The only thing it asks the Spring backend is who the caller is (GET /api/auth/me, to verify the
- * bearer token). It never touches the database, and it never stores or logs message text.
+ * It never calls the Spring backend or the database (the caller is identified from the signed
+ * bearer token alone, see auth.ts), and it never stores or logs message text.
  */
 
 // Node, not Edge: the token budget is saved to a file.
@@ -68,12 +68,12 @@ function upstreamMessage(error: unknown): { code: AssistantErrorCode; message: s
 
 export async function POST(request: NextRequest): Promise<Response> {
   // /api routes are outside the login redirect, and the gacs_logged_in cookie is only a hint that
-  // browser code writes, so the bearer token is verified with the backend instead.
-  const session = await verifySession(request.headers.get("authorization"))
+  // browser code writes, so the bearer token itself is checked: signature and expiry, locally.
+  const session = verifySession(request.headers.get("authorization"))
   if (!session.ok) {
-    if (session.reason === "unauthorized") return fail(401, "unauthorized", "Sign in to use the assistant.")
-    if (session.reason === "not_configured") return fail(503, "not_configured", "The assistant is not set up yet.")
-    return fail(503, "upstream", "Could not check your sign-in. Try again in a moment.")
+    return session.reason === "unauthorized"
+      ? fail(401, "unauthorized", "Sign in to use the assistant.")
+      : fail(503, "not_configured", "The assistant is not set up yet.")
   }
   // Keyed by the verified user, not by an address the caller can choose.
   const rate = checkRate(`user:${session.userId}`)

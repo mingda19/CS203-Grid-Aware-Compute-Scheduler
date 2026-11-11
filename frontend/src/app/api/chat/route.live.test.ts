@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { budgetStatus, resetBudgetForTests } from "@/lib/assistant/budget"
 import type { AssistantEvent } from "@/lib/assistant/protocol"
 import { resetRateLimitForTests } from "@/lib/assistant/rate-limit"
+import { signToken, TEST_JWT_SECRET } from "@/lib/assistant/test-jwt"
 import { POST } from "./route"
 
 /**
@@ -14,7 +15,8 @@ import { POST } from "./route"
  *
  *   LIVE_ANTHROPIC_TEST=1 ANTHROPIC_API_KEY=sk-ant-... npx vitest run src/app/api/chat/route.live.test.ts
  *
- * Only the Spring backend's /api/auth/me is faked; every other request goes out for real.
+ * Nothing is faked: the request carries a token signed with a test key, which the route checks
+ * itself (it makes no call to the backend), and every request to Anthropic goes out for real.
  */
 const live = process.env.LIVE_ANTHROPIC_TEST === "1" && !!process.env.ANTHROPIC_API_KEY
 
@@ -27,13 +29,13 @@ describe.skipIf(!live)("POST /api/chat against the real Anthropic API", () => {
   beforeAll(() => {
     process.env.CHAT_USAGE_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "gacs-live-")), "usage.json")
     process.env.CHAT_TOKEN_BUDGET = "250000"
-    process.env.BACKEND_API_URL = "http://backend.test"
+    process.env.JWT_SECRET_KEY = TEST_JWT_SECRET
     process.env.ANTHROPIC_API_KEY = realKey
     resetBudgetForTests()
     resetRateLimitForTests()
     vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
-      if (url.startsWith("http://backend.test")) return Promise.resolve(Response.json({ success: true, data: { id: 1 } }))
+      if (!url.startsWith("https://api.anthropic.com/")) throw new Error(`The route must only talk to Anthropic, not ${url}`)
       if (url.startsWith("https://api.anthropic.com/")) anthropicRequests++
       return realFetch(input, init)
     })
@@ -43,14 +45,14 @@ describe.skipIf(!live)("POST /api/chat against the real Anthropic API", () => {
     vi.unstubAllGlobals()
     delete process.env.CHAT_USAGE_FILE
     delete process.env.CHAT_TOKEN_BUDGET
-    delete process.env.BACKEND_API_URL
+    delete process.env.JWT_SECRET_KEY
   })
 
   const ask = (content: string) =>
     POST(
       new NextRequest("http://localhost/api/chat", {
         method: "POST",
-        headers: { authorization: "Bearer good-1", "content-type": "application/json" },
+        headers: { authorization: `Bearer ${signToken(1)}`, "content-type": "application/json" },
         body: JSON.stringify({ messages: [{ role: "user", content }] }),
       }),
     )
@@ -58,7 +60,7 @@ describe.skipIf(!live)("POST /api/chat against the real Anthropic API", () => {
     (await response.text()).split("\n").filter(Boolean).map((line) => JSON.parse(line) as AssistantEvent)
 
   it("answers a GACS question, streams it, and records the real usage", async () => {
-    const response = await ask("How do I create a job in GACS? Answer in one sentence.")
+    const response = await ask("In one sentence, how do I create a job in GACS?")
     expect(response.status).toBe(200)
 
     const list = await eventsOf(response)

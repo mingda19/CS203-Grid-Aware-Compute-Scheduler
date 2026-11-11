@@ -95,22 +95,36 @@ export function useAssistantChat() {
   React.useEffect(() => {
     messagesRef.current = messages
   }, [messages])
-  React.useEffect(() => {
-    blockerRef.current = blocker
-  }, [blocker])
+  const cooldownTimer = React.useRef<number | null>(null)
 
-  React.useEffect(() => () => abortRef.current?.abort(), [])
+  React.useEffect(
+    () => () => {
+      abortRef.current?.abort()
+      if (cooldownTimer.current !== null) window.clearTimeout(cooldownTimer.current)
+    },
+    [],
+  )
 
-  // A rate limit is a pause: lift it when the wait is over. Budget and set-up blockers stay.
-  const retryAt = blocker?.code === "rate_limited" ? blocker.retryAt : undefined
-  React.useEffect(() => {
-    if (retryAt === undefined) return
-    const timer = window.setTimeout(
-      () => setBlocker((current) => (current?.code === "rate_limited" ? null : current)),
-      Math.max(0, retryAt - Date.now()),
-    )
-    return () => window.clearTimeout(timer)
-  }, [retryAt])
+  /**
+   * Sets or lifts the blocker. A rate limit is a pause, so it also starts its timer here, at the
+   * moment the limit is applied, and lifts itself when the wait is over. It is not left to an
+   * effect: when React happens to run an effect would then decide when the wait starts. Budget and
+   * set-up blockers have no timer and stay until the page is reloaded or an admin acts.
+   */
+  const applyBlocker = React.useCallback((next: ChatBlocker | null) => {
+    blockerRef.current = next
+    setBlocker(next)
+    if (cooldownTimer.current !== null) {
+      window.clearTimeout(cooldownTimer.current)
+      cooldownTimer.current = null
+    }
+    if (next?.code === "rate_limited" && next.retryAt !== undefined) {
+      cooldownTimer.current = window.setTimeout(() => {
+        cooldownTimer.current = null
+        if (blockerRef.current?.code === "rate_limited") applyBlocker(null)
+      }, Math.max(0, next.retryAt - Date.now()))
+    }
+  }, [])
 
   const run = React.useCallback(async (history: ChatMessage[]) => {
     const replyId = nextId()
@@ -118,7 +132,7 @@ export function useAssistantChat() {
     messagesRef.current = withReply
     setMessages(withReply)
     setBusy(true)
-    setBlocker(null)
+    applyBlocker(null)
     const controller = new AbortController()
     abortRef.current = controller
     const update = (patch: (m: ChatMessage) => Partial<ChatMessage>) =>
@@ -135,7 +149,7 @@ export function useAssistantChat() {
             code === "rate_limited"
               ? Date.now() + cooldownSeconds(response.headers.get("Retry-After"), data?.retryAfterSeconds) * 1000
               : undefined
-          setBlocker({ code: code as ChatBlocker["code"], message, ...(retryAt ? { retryAt } : {}) })
+          applyBlocker({ code: code as ChatBlocker["code"], message, ...(retryAt ? { retryAt } : {}) })
           setMessages((prev) => prev.filter((m) => m.id !== replyId))
         } else {
           update(() => ({ state: "error", error: message }))
@@ -173,7 +187,7 @@ export function useAssistantChat() {
             finished = true
             if (BLOCKING.has(event.code)) {
               const retryAt = event.code === "rate_limited" ? Date.now() + DEFAULT_COOLDOWN_SECONDS * 1000 : undefined
-              setBlocker({ code: event.code as ChatBlocker["code"], message: event.message, ...(retryAt ? { retryAt } : {}) })
+              applyBlocker({ code: event.code as ChatBlocker["code"], message: event.message, ...(retryAt ? { retryAt } : {}) })
             }
             update(() => ({ state: "error", error: event.message }))
           }
@@ -189,7 +203,7 @@ export function useAssistantChat() {
         setBusy(false)
       }
     }
-  }, [])
+  }, [applyBlocker])
 
   /** Cleans and redacts the text, then sends it. Returns false when there was nothing to send or it held a credential. */
   const send = React.useCallback(
@@ -222,10 +236,9 @@ export function useAssistantChat() {
     setMessages([])
     setBusy(false)
     // Clearing the chat does not lift a stop, nor skip a rate-limit wait.
-    setBlocker((current) =>
-      current?.code === "budget_exhausted" || current?.code === "not_configured" || current?.code === "rate_limited" ? current : null,
-    )
-  }, [])
+    const code = blockerRef.current?.code
+    if (code !== "budget_exhausted" && code !== "not_configured" && code !== "rate_limited") applyBlocker(null)
+  }, [applyBlocker])
 
   /** True while a rate-limit wait is running: sending is paused, not stopped for good. */
   const cooling = blocker?.code === "rate_limited"
