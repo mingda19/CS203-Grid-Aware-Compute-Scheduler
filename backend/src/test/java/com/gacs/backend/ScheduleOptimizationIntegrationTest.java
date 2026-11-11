@@ -200,11 +200,12 @@ class ScheduleOptimizationIntegrationTest {
 
     @Test
     @WithMockUser
-    void forecastLocationIgnoresANewerRunFromTheOtherModel() throws Exception {
+    void forecastLocationPricesAgainstLearWhenItCoversTheWindow() throws Exception {
         LocalDateTime baseline = DAY.plusHours(8);
         seedPrice(baseline, 70.0, GENERATED_AT);
         seedPrice(baseline.plusHours(1), 20.0, GENERATED_AT);
-        // LEAR ran later and disagrees; the optimizer prices against LSTM only (gacs.optimiser.forecast-model)
+        // Both models cover the same hours and disagree; the optimizer prices against LEAR only
+        // (gacs.optimiser.forecast-model), never a mix of the two.
         seedPrice(baseline, 1.0, GENERATED_AT.plusMinutes(5), "lear_y0_contract-test");
         seedPrice(baseline.plusHours(1), 90.0, GENERATED_AT.plusMinutes(5), "lear_y0_contract-test");
 
@@ -212,11 +213,12 @@ class ScheduleOptimizationIntegrationTest {
                 .content(locationRequest(baseline, baseline.plusHours(3), 1)))
             .andExpect(status().isOk())
             // Same fixture as the test above: 2 forecast hours, the rest of the horizon filled from the
-            // fallback, so the run is provisional. The costs show the optimizer used LSTM, not LEAR.
+            // fallback, so the run is provisional. The fixed clock is 09:00, so the job must move there.
+            // The costs are LEAR's ($1 -> 0.0256, $90 -> 2.304), not LSTM's (1.792, 0.512).
             .andExpect(jsonPath("$.data.usedSeededFallbackPrices", is(true)))
             .andExpect(jsonPath("$.data.items[0].scheduledStart", is("2026-10-20T09:00:00Z")))
-            .andExpect(jsonPath("$.data.items[0].baselineCostUsd", is(1.792)))
-            .andExpect(jsonPath("$.data.items[0].optimizedCostUsd", is(0.512)));
+            .andExpect(jsonPath("$.data.items[0].baselineCostUsd", is(0.0256)))
+            .andExpect(jsonPath("$.data.items[0].optimizedCostUsd", is(2.304)));
     }
 
     @Test
@@ -375,6 +377,7 @@ class ScheduleOptimizationIntegrationTest {
         assertThat(scheduleRuns.count()).isEqualTo(before);
     }
 
+    // LSTM rows only: with no LEAR rows, the tests using this also run through the LSTM fallback.
     private void seedPrice(LocalDateTime intervalStart, double price, LocalDateTime generatedAt) {
         seedPrice(intervalStart, price, generatedAt, "lstm_y0_contract-test");
     }

@@ -7,6 +7,7 @@ import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 
 
+import { AssistantWidget } from "@/components/assistant/AssistantWidget"
 import { Button } from "@/components/ui/button"
 
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
@@ -541,6 +542,9 @@ export function AppShell({ children }: AppShellProps) {
           {children}
         </main>
       </div>
+
+      {/* Help assistant, signed-in pages only */}
+      <AssistantWidget />
     </div>
   )
 }
