@@ -19,6 +19,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -90,6 +92,72 @@ class AuthServiceTest {
                 .when(emailService).sendOtpEmail(anyString(), anyString());
 
         assertThrows(IllegalStateException.class, () -> authService.register(registerRequest));
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    @Test
+    void resendDoesNotReportEmailSentWhenDeliveryFails() {
+        User user = new User(registerRequest.getEmail(), "encoded", "User", "ROLE_USER");
+        when(userRepository.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        doThrow(new IllegalStateException("Gmail API unavailable"))
+                .when(emailService).sendOtpEmail(anyString(), anyString());
+
+        assertThrows(IllegalStateException.class, () -> authService.resendOtp(
+                new com.gacs.backend.dto.ResendOtpRequest(user.getEmail())));
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    @Test
+    void unverifiedLoginDoesNotReportEmailSentOrIssueTokensWhenDeliveryFails() {
+        User user = new User(registerRequest.getEmail(), passwordEncoder.encode(registerRequest.getPassword()),
+                "User", "ROLE_USER");
+        when(userRepository.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        doThrow(new IllegalStateException("Gmail API unavailable"))
+                .when(emailService).sendOtpEmail(anyString(), anyString());
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertThrows(IllegalStateException.class, () -> authService.login(
+                new LoginRequest(user.getEmail(), registerRequest.getPassword()),
+                new MockHttpServletRequest(), response));
+        verifyNoInteractions(jwtUtils, refreshTokenService);
+        assertNull(response.getHeader("Set-Cookie"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Asia/Singapore", "UTC"})
+    void otpUsesUtcAcrossServersAndExpiresAfterTenMinutes(String issuingZone) {
+        User user = new User(registerRequest.getEmail(), "encoded", "User", "ROLE_USER");
+        when(userRepository.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT, ZoneId.of(issuingZone)));
+
+        authService.resendOtp(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
+
+        ArgumentCaptor<OtpVerification> savedOtp = ArgumentCaptor.forClass(OtpVerification.class);
+        verify(otpRepository).save(savedOtp.capture());
+        OtpVerification otp = savedOtp.getValue();
+        assertEquals(RECOVERY_NOW.plusMinutes(10), otp.getExpiresAt());
+        when(otpRepository.findTopByEmailAndOtpCodeAndIsUsedFalseOrderByCreatedAtDesc(
+                user.getEmail(), otp.getOtpCode())).thenReturn(Optional.of(otp));
+        var request = new VerifyOtpRequest(user.getEmail(), otp.getOtpCode());
+        ZoneId verifyingZone = ZoneId.of(issuingZone.equals("UTC") ? "Asia/Singapore" : "UTC");
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT.plusSeconds(600), verifyingZone));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> authService.verifyOtp(request));
+        assertTrue(error.getMessage().contains("expired"));
+        assertFalse(otp.isUsed());
+        assertFalse(user.isVerified());
+        verify(userRepository, never()).save(any(User.class));
+
+        // The same code is still valid one second before its UTC expiry.
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT.plusSeconds(599), verifyingZone));
+        when(userRepository.save(user)).thenReturn(user);
+        assertTrue(authService.verifyOtp(request).isSuccess());
+        assertTrue(otp.isUsed());
+        assertTrue(user.isVerified());
     }
 
     @Test
@@ -263,7 +331,7 @@ class AuthServiceTest {
 
     @Test
     void verifyOtp_ShouldMarkUserVerified_WhenOtpIsValid() {
-        OtpVerification otp = new OtpVerification("elena.vance@datacenter.io", "123456", LocalDateTime.now().plusMinutes(10));
+        OtpVerification otp = new OtpVerification("elena.vance@datacenter.io", "123456", RECOVERY_NOW.plusMinutes(10));
         User unverifiedUser = new User("elena.vance@datacenter.io", "hashedPass", "Elena", "Role");
         unverifiedUser.setVerified(false);
 
@@ -284,7 +352,7 @@ class AuthServiceTest {
 
     @Test
     void verifyOtp_ShouldThrowException_WhenOtpExpired() {
-        OtpVerification expiredOtp = new OtpVerification("elena.vance@datacenter.io", "123456", LocalDateTime.now().minusMinutes(1));
+        OtpVerification expiredOtp = new OtpVerification("elena.vance@datacenter.io", "123456", RECOVERY_NOW.minusMinutes(1));
 
         when(otpRepository.findTopByEmailAndOtpCodeAndIsUsedFalseOrderByCreatedAtDesc("elena.vance@datacenter.io", "123456"))
                 .thenReturn(Optional.of(expiredOtp));

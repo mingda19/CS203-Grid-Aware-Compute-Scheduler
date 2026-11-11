@@ -75,7 +75,7 @@ public class AuthService {
         String email = request.getEmail().trim().toLowerCase(java.util.Locale.ROOT);
         User user = userRepository.lockByEmail(email).orElse(null);
         String message = "If this email has a verified account, a recovery code will be sent.";
-        LocalDateTime now = recoveryNowUtc();
+        LocalDateTime now = nowUtc();
         // Internal categories explain skipped sends without logging addresses or codes.
         // Keep the public response identical for every outcome.
         if (user == null) {
@@ -117,7 +117,7 @@ public class AuthService {
     public ApiResponse<String> resetPassword(ResetPasswordRequest request) {
         User user = userRepository.lockByEmail(request.email().trim().toLowerCase(java.util.Locale.ROOT))
                 .orElseThrow(() -> new IllegalArgumentException("Invalid or expired recovery code. Request a new code."));
-        LocalDateTime now = recoveryNowUtc();
+        LocalDateTime now = nowUtc();
         if (!user.isVerified() || user.getPasswordResetHash() == null ||
                 user.getPasswordResetExpiresAt() == null ||
                 !user.getPasswordResetExpiresAt().isAfter(now) ||
@@ -135,7 +135,7 @@ public class AuthService {
         return ApiResponse.ok("Password updated. Sign in with your new password.");
     }
 
-    private LocalDateTime recoveryNowUtc() {
+    private LocalDateTime nowUtc() {
         return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
     }
 
@@ -150,6 +150,7 @@ public class AuthService {
         String email = request.getEmail().trim().toLowerCase();
 
         Optional<User> existingUserOpt = userRepository.findByEmail(email);
+        User userToSave;
         if (existingUserOpt.isPresent()) {
             User existingUser = existingUserOpt.get();
             if (existingUser.isVerified()) {
@@ -161,18 +162,19 @@ public class AuthService {
                 existingUser.setFullName(request.getFullName().trim());
             }
             existingUser.setRole("ROLE_USER");
-            userRepository.save(existingUser);
+            userToSave = existingUser;
         } else {
             // New user registration - encrypt password with BCrypt, always assign ROLE_USER
             String encryptedPassword = passwordEncoder.encode(request.getPassword());
             User newUser = new User(email, encryptedPassword, request.getFullName(), "ROLE_USER");
             newUser.setVerified(false);
-            userRepository.save(newUser);
+            userToSave = newUser;
         }
 
         // Generate and send OTP
         String otpCode = generateAndSaveOtp(email);
         emailService.sendOtpEmail(email, otpCode);
+        userRepository.save(userToSave);
 
         return AuthResponse.otpRequired("Registration initiated. A 6-digit OTP has been sent to " + email + ". Please verify to complete registration.", email);
     }
@@ -188,7 +190,7 @@ public class AuthService {
         OtpVerification otp = otpRepository.findTopByEmailAndOtpCodeAndIsUsedFalseOrderByCreatedAtDesc(email, code)
                 .orElseThrow(() -> new IllegalArgumentException("Invalid OTP verification code."));
 
-        if (otp.isExpired()) {
+        if (!otp.getExpiresAt().isAfter(nowUtc())) {
             throw new IllegalArgumentException("OTP verification code has expired. Please request a new OTP.");
         }
 
@@ -427,7 +429,7 @@ public class AuthService {
         OtpVerification otp = new OtpVerification(
                 email,
                 otpCode,
-                LocalDateTime.now().plusMinutes(OTP_EXPIRY_MINUTES)
+                nowUtc().plusMinutes(OTP_EXPIRY_MINUTES)
         );
         otpRepository.save(otp);
         return otpCode;
