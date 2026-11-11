@@ -62,18 +62,43 @@ class BacktestRun {
         PlanSolver solver = PlanSolver.repeatable(new EnergyCostModel(properties), config.exactBudget());
         BacktestRunner.Result result = new BacktestRunner(properties, solver).run(config);
         JsonNode manifest = BacktestOutput.write(result, config, properties, runDir, REPO);
+        BacktestMetrics.Result metrics = MetricsFiles.write(runDir, REPO);
         long seconds = (System.nanoTime() - started) / 1_000_000_000;
 
         System.out.printf("Backtest %s: %d day rows, %d skipped, %d violations, %.1f%% proven optimal, %d s. Output: %s%n",
                 runId, result.days().size(), result.skipped().size(), manifest.path("summary").path("violations").asInt(),
                 100 * manifest.path("summary").path("provenOptimalShare").asDouble(), seconds, runDir);
 
+        printHeadline(metrics);
+
         if (reproduce != null) {
             Map<String, String> expected = BacktestOutput.outputHashes(BacktestOutput.read(Path.of(reproduce)));
             assertThat(BacktestOutput.outputHashes(manifest))
                     .as("results of the rerun must be byte-identical to %s", reproduce)
                     .isEqualTo(expected);
+            Path originalMetrics = Path.of(reproduce).resolveSibling("metrics.json");
+            if (Files.exists(originalMetrics)) {
+                assertThat(BacktestOutput.read(runDir.resolve("metrics.json")).path("outputs"))
+                        .as("metrics of the rerun must be byte-identical to %s", originalMetrics)
+                        .isEqualTo(BacktestOutput.read(originalMetrics).path("outputs"));
+            }
         }
+    }
+
+    /** Realised savings per profile and source, with the 95% interval, on the console. */
+    static void printHeadline(BacktestMetrics.Result metrics) {
+        System.out.println("Realised savings vs the fixed schedule (95% block-bootstrap interval):");
+        for (BacktestMetrics.Summary s : metrics.summaries()) {
+            System.out.printf(java.util.Locale.ROOT, "  %-28s %-9s %7.2f%%  [%6.2f%%, %6.2f%%]  perfect %6.2f%%  "
+                            + "projected %6.2f%%  negative days %4.1f%%%n",
+                    s.profile(), s.source(), nz(s.realisedSavingsPct()), nz(s.realisedSavingsCiLow()),
+                    nz(s.realisedSavingsCiHigh()), nz(s.perfectSavingsPct()), nz(s.projectedSavingsPct()),
+                    100 * s.negativeDaysShare());
+        }
+    }
+
+    private static double nz(Double value) {
+        return value == null ? Double.NaN : value;
     }
 
     private static BacktestConfig configFromProperties() {

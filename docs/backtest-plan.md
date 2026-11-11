@@ -39,6 +39,29 @@ reduction, throughput, and constraint violations".
   The UTC day ends at 19:00 Texas time, so these jobs can't move into cheap overnight hours. Ticket 3 should
   test D5 directly.
 
+**Ticket 2: done** on `feat/backtest` (2026-10-29).
+
+- **Energy used (kWh) in the optimiser response (PRD FR-21):**
+  - run-level `energyKwh` (scheduled jobs only, like the cost totals) and per-item `energyKwh` (0 for
+    `NO_FEASIBLE_SLOT`), rounded to 4 dp
+  - the frontend types (`frontend/src/lib/api.ts`) are updated too
+  - **Not in the contract yet.** Proposed wording for the contract owner: *Response: `energyKwh` (number, kWh):
+    energy the scheduled jobs use; the same for the baseline and the plan, because rescheduling changes when
+    energy is used, not how much. `items[].energyKwh`: the job's energy, `cpuHours × cpu-kwh-per-hour +
+    gpuHours × gpu-kwh-per-hour`; 0 for `NO_FEASIBLE_SLOT`.*
+- **Backtest metrics:** `BacktestMetrics` / `MetricsFiles` compute every metric in section 4.2 per day and for
+  the whole period. They write `metrics_daily.csv`, `metrics_summary.csv` and `metrics.json`. The savings rule
+  leaves days with unscheduled jobs out of savings figures. The bootstrap matches `model/evaluate.py`.
+- **Checks:** a hand-computed two-day backtest covers every metric. The headline numbers were cross-checked in
+  Python (they agree to 1e-8). The metric files are byte-identical on rerun.
+- **First full-period numbers** (run `full-v4`; realised savings, 95% interval):
+  - `mixed`: XGBoost 12.5% [9.1, 16.0], perfect foresight 18.6%
+  - `business-hours-training`: XGBoost 20.3% [14.5, 25.9], perfect 28.1%
+  - `nightly-batch`: XGBoost 1.9% [−3.1, 4.8], perfect 7.0%
+  - `tight`: XGBoost 11.8% [8.1, 15.7], perfect 18.2%
+  - On about 18–25% of days the forecast-based plan costs more than the fixed schedule.
+  - These are inputs for ticket 3, not conclusions: the forecast is still the one-day-ahead one (see above).
+
 ## 1. What already exists
 
 | Piece | Where | Use in the backtest |
