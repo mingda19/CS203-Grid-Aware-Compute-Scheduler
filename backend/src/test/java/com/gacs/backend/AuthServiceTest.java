@@ -31,6 +31,9 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.time.Instant;
+import java.time.Clock;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
@@ -42,6 +45,9 @@ import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class AuthServiceTest {
+
+    private static final Instant RECOVERY_INSTANT = Instant.parse("2026-11-12T00:00:00Z");
+    private static final LocalDateTime RECOVERY_NOW = LocalDateTime.ofInstant(RECOVERY_INSTANT, ZoneOffset.UTC);
 
     @Mock
     private UserRepository userRepository;
@@ -68,6 +74,8 @@ class AuthServiceTest {
 
     @BeforeEach
     void setUp() {
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT, ZoneOffset.UTC));
         registerRequest = new RegisterRequest(
                 "elena.vance@datacenter.io",
                 "river lantern orbit meadow",
@@ -108,11 +116,11 @@ class AuthServiceTest {
         User user = new User("user@example.com", "old", "User", "ROLE_USER");
         user.setVerified(true);
         user.setPasswordResetHash(passwordEncoder.encode("correct"));
-        user.setPasswordResetExpiresAt(LocalDateTime.now().minusMinutes(1));
+        user.setPasswordResetExpiresAt(RECOVERY_NOW.minusMinutes(1));
         when(userRepository.lockByEmail(user.getEmail())).thenReturn(Optional.of(user));
         var request = new com.gacs.backend.dto.ResetPasswordRequest(user.getEmail(), "correct", "meadow lantern orbit river");
         assertThrows(IllegalArgumentException.class, () -> authService.resetPassword(request));
-        user.setPasswordResetExpiresAt(LocalDateTime.now().plusMinutes(10));
+        user.setPasswordResetExpiresAt(RECOVERY_NOW.plusMinutes(10));
         assertThrows(IllegalArgumentException.class, () -> authService.resetPassword(
                 new com.gacs.backend.dto.ResetPasswordRequest(user.getEmail(), "incorrect", "meadow lantern orbit river")));
         assertEquals("old", user.getPassword());
@@ -128,7 +136,7 @@ class AuthServiceTest {
         var unverified = authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
         assertEquals(missing.getMessage(), unverified.getMessage());
         user.setVerified(true);
-        user.setPasswordResetRequestedAt(LocalDateTime.now());
+        user.setPasswordResetRequestedAt(RECOVERY_NOW);
         authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
         verifyNoInteractions(emailService);
     }
@@ -142,10 +150,74 @@ class AuthServiceTest {
         doThrow(new IllegalStateException("SMTP unavailable")).when(emailService).sendPasswordResetEmail(anyString(), anyString());
         authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
         assertEquals("previous", user.getPasswordResetHash());
-        user.setPasswordResetRequestedAt(LocalDateTime.now().minusMinutes(2));
+        user.setPasswordResetRequestedAt(RECOVERY_NOW.minusMinutes(2));
         doNothing().when(emailService).sendPasswordResetEmail(anyString(), anyString());
         authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
         assertNotEquals("previous", user.getPasswordResetHash());
+    }
+
+    @Test
+    void recoveryUsesUtcAcrossSingaporeAndUtcServersAndExpiresAfterTenMinutes() {
+        User user = new User("user@example.com", "old", "User", "ROLE_USER");
+        user.setVerified(true);
+        when(userRepository.lockByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT, ZoneId.of("Asia/Singapore")));
+
+        authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
+
+        assertEquals(RECOVERY_NOW, user.getPasswordResetRequestedAt());
+        assertEquals(RECOVERY_NOW.plusMinutes(10), user.getPasswordResetExpiresAt());
+        ArgumentCaptor<String> code = ArgumentCaptor.forClass(String.class);
+        verify(emailService).sendPasswordResetEmail(eq(user.getEmail()), code.capture());
+        var request = new com.gacs.backend.dto.ResetPasswordRequest(
+                user.getEmail(), code.getValue(), "meadow lantern orbit river");
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT.plusSeconds(600), ZoneOffset.UTC));
+        assertThrows(IllegalArgumentException.class, () -> authService.resetPassword(request));
+        assertEquals("old", user.getPassword());
+        // One second before expiry, the same code is valid on a UTC server.
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT.plusSeconds(599), ZoneOffset.UTC));
+        authService.resetPassword(request);
+        assertNull(user.getPasswordResetHash());
+        verify(refreshTokenService).revokeAllUserTokens(user);
+    }
+
+    @Test
+    void singaporeLegacyTimestampDoesNotBlockRecoveryAndNormalCooldownStillApplies() {
+        User user = new User("user@example.com", "old", "User", "ROLE_USER");
+        user.setVerified(true);
+        user.setPasswordResetRequestedAt(RECOVERY_NOW.plusHours(8));
+        when(userRepository.lockByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        var request = new com.gacs.backend.dto.ResendOtpRequest(user.getEmail());
+
+        authService.forgotPassword(request);
+        assertEquals(RECOVERY_NOW, user.getPasswordResetRequestedAt());
+        authService.forgotPassword(request);
+        verify(emailService, times(1)).sendPasswordResetEmail(eq(user.getEmail()), anyString());
+
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT.plusSeconds(60), ZoneOffset.UTC));
+        authService.forgotPassword(request);
+        verify(emailService, times(2)).sendPasswordResetEmail(eq(user.getEmail()), anyString());
+    }
+
+    @Test
+    void recoveryRejectsImplausibleLegacyExpiryAndPreservesCooldownForSmallClockSkew() {
+        User user = new User("user@example.com", "old", "User", "ROLE_USER");
+        user.setVerified(true);
+        user.setPasswordResetHash(passwordEncoder.encode("correct"));
+        user.setPasswordResetExpiresAt(RECOVERY_NOW.plusHours(8).plusMinutes(10));
+        user.setPasswordResetRequestedAt(RECOVERY_NOW.plusSeconds(30));
+        when(userRepository.lockByEmail(user.getEmail())).thenReturn(Optional.of(user));
+
+        assertThrows(IllegalArgumentException.class, () -> authService.resetPassword(
+                new com.gacs.backend.dto.ResetPasswordRequest(user.getEmail(), "correct", "meadow lantern orbit river")));
+        authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
+
+        verifyNoInteractions(emailService, refreshTokenService);
+        assertEquals("old", user.getPassword());
     }
 
     // login() sets the thread-global SecurityContextHolder; clear it so later MockMvc tests on this thread start anonymous.

@@ -1,6 +1,7 @@
 package com.gacs.backend;
 
 import com.gacs.backend.service.GmailApiMailSender;
+import com.gacs.backend.service.EmailService;
 import jakarta.mail.Session;
 import jakarta.mail.internet.MimeMessage;
 import java.io.ByteArrayInputStream;
@@ -14,6 +15,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.ObjectMapper;
 
@@ -76,6 +78,31 @@ class GmailApiMailSenderTest {
                 .andRespond(withSuccess());
         sender.send(message());
         sender.send(message());
+        server.verify();
+    }
+
+    @Test
+    void passwordRecoveryUsesGmailApiWithTheRecoveryCode() {
+        expectToken("access", 3600);
+        server.expect(requestTo(SEND)).andExpect(method(HttpMethod.POST))
+                .andExpect(header("Authorization", "Bearer access"))
+                .andExpect(request -> assertDoesNotThrow(() -> {
+                    String body = ((org.springframework.mock.http.client.MockClientHttpRequest) request)
+                            .getBodyAsString(StandardCharsets.UTF_8);
+                    String raw = new ObjectMapper().readTree(body).get("raw").asText();
+                    byte[] bytes = Base64.getUrlDecoder().decode(raw);
+                    var decoded = new MimeMessage(Session.getInstance(new Properties()),
+                            new ByteArrayInputStream(bytes));
+                    assertEquals("Reset your GACS password", decoded.getSubject());
+                    assertEquals("recipient@example.com", decoded.getAllRecipients()[0].toString());
+                    assertTrue(new String(bytes, StandardCharsets.UTF_8).contains("recovery-test-code"));
+                })).andRespond(withSuccess("{\"id\":\"sent\"}", MediaType.APPLICATION_JSON));
+        var service = new EmailService();
+        ReflectionTestUtils.setField(service, "mailSender", sender);
+        ReflectionTestUtils.setField(service, "fromEmail", "sender@gmail.com");
+
+        service.sendPasswordResetEmail("recipient@example.com", "recovery-test-code");
+
         server.verify();
     }
 

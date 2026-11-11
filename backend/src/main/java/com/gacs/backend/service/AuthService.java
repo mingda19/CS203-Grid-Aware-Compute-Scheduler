@@ -28,7 +28,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
+import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
@@ -58,6 +60,9 @@ public class AuthService {
     @Autowired
     private RefreshTokenService refreshTokenService;
 
+    @Autowired
+    private Clock clock = Clock.systemUTC();
+
     @Value("${security.jwt.cookie-secure:false}")
     private boolean cookieSecure;
 
@@ -70,10 +75,24 @@ public class AuthService {
         String email = request.getEmail().trim().toLowerCase(java.util.Locale.ROOT);
         User user = userRepository.lockByEmail(email).orElse(null);
         String message = "If this email has a verified account, a recovery code will be sent.";
-        LocalDateTime now = LocalDateTime.now();
-        if (user == null || !user.isVerified() ||
-                (user.getPasswordResetRequestedAt() != null &&
-                 user.getPasswordResetRequestedAt().isAfter(now.minusSeconds(60)))) {
+        LocalDateTime now = recoveryNowUtc();
+        // Internal categories explain skipped sends without logging addresses or codes.
+        // Keep the public response identical for every outcome.
+        if (user == null) {
+            logger.info("Password recovery email skipped: account not found");
+            return ApiResponse.ok(message);
+        }
+        if (!user.isVerified()) {
+            logger.info("Password recovery email skipped: account is not verified");
+            return ApiResponse.ok(message);
+        }
+        LocalDateTime requestedAt = user.getPasswordResetRequestedAt();
+        // Older local servers wrote Singapore wall time into these timezone-less
+        // columns. A far-future value must not impose an eight-hour cooldown.
+        // Allow a minute of clock skew between servers without bypassing throttling.
+        if (requestedAt != null && !requestedAt.isAfter(now.plusSeconds(60)) &&
+                requestedAt.isAfter(now.minusSeconds(60))) {
+            logger.info("Password recovery email skipped: 60-second cooldown is active");
             return ApiResponse.ok(message);
         }
         byte[] bytes = new byte[32];
@@ -82,6 +101,7 @@ public class AuthService {
         // Do not log recovery tokens, including when Gmail API delivery fails.
         try {
             emailService.sendPasswordResetEmail(email, token);
+            logger.info("Password recovery email accepted by Gmail API");
             user.setPasswordResetHash(passwordEncoder.encode(token));
             user.setPasswordResetExpiresAt(now.plusMinutes(10));
         } catch (RuntimeException ex) {
@@ -97,9 +117,12 @@ public class AuthService {
     public ApiResponse<String> resetPassword(ResetPasswordRequest request) {
         User user = userRepository.lockByEmail(request.email().trim().toLowerCase(java.util.Locale.ROOT))
                 .orElseThrow(() -> new IllegalArgumentException("Invalid or expired recovery code. Request a new code."));
+        LocalDateTime now = recoveryNowUtc();
         if (!user.isVerified() || user.getPasswordResetHash() == null ||
                 user.getPasswordResetExpiresAt() == null ||
-                !user.getPasswordResetExpiresAt().isAfter(LocalDateTime.now()) ||
+                !user.getPasswordResetExpiresAt().isAfter(now) ||
+                // Do not extend legacy Singapore-local codes to eight hours in UTC.
+                user.getPasswordResetExpiresAt().isAfter(now.plusMinutes(10)) ||
                 !passwordEncoder.matches(request.token(), user.getPasswordResetHash())) {
             throw new IllegalArgumentException("Invalid or expired recovery code. Request a new code.");
         }
@@ -110,6 +133,10 @@ public class AuthService {
         userRepository.save(user);
         refreshTokenService.revokeAllUserTokens(user);
         return ApiResponse.ok("Password updated. Sign in with your new password.");
+    }
+
+    private LocalDateTime recoveryNowUtc() {
+        return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
     }
 
     /**
