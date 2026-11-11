@@ -63,8 +63,9 @@ export function NeedsApprovalCard() {
               {rec && (
                 <div className="flex min-w-0 items-center gap-2 text-sm leading-5">
                   <span className="min-w-0 truncate">
-                    {data.count > 1 ? "Newest plan: projected savings " : "Projected savings "}
-                    {money(rec.projectedSavingsUsd)} ({rec.projectedSavingsPercent.toFixed(1)}%)
+                    {data.count > 1 ? "Newest plan: " : ""}
+                    {rec.projectedSavingsUsd >= 0 ? `${data.count > 1 ? "saves" : "Saves"} ${money(rec.projectedSavingsUsd)}` : `${data.count > 1 ? "costs" : "Costs"} ${money(-rec.projectedSavingsUsd)} more`}
+                    {" "}({rec.projectedSavingsPercent.toFixed(1)}%)
                   </span>
                   {rec.usedSeededFallbackPrices && <span className="shrink-0"><EstimatedPriceBadge /></span>}
                 </div>

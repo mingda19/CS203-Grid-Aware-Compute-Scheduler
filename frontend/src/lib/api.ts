@@ -76,6 +76,9 @@ export interface WorkloadSchedule {
   ownerName: string
   /** True for the signed-in user's own entries, the only ones they may change. */
   mine: boolean
+  /** The approved plan and the job behind this entry. Null for a row added through POST /api/workload-schedules. */
+  runId: string | null
+  jobId: number | null
 }
 
 export type JobPriority = "CRITICAL" | "HIGH" | "NORMAL" | "LOW"
@@ -83,8 +86,8 @@ export type JobPriority = "CRITICAL" | "HIGH" | "NORMAL" | "LOW"
 export type ConfirmationOutcome = "PENDING" | "CONFIRMED" | "REJECTED"
 
 /**
- * What kind of workload a job is. Matches the categories the workload-schedule calendar view
- * (GoogleCalendarView.tsx's WorkloadType) already colors and filters by - WORKLOAD_CATEGORY_LABELS
+ * What kind of workload a job is. Matches the categories the workload-schedule calendar shows
+ * as text in a job's details - WORKLOAD_CATEGORY_LABELS
  * below is the exact mapping the backend's WorkloadCategory enum uses to label a dispatched
  * calendar entry, so a job's chosen category always renders consistently with the calendar.
  */

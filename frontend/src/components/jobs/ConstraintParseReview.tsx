@@ -71,13 +71,13 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
         <span className="text-xs text-muted-foreground">{raw.length}/1,000 characters</span>
       </div>
       {loading && <p role="status" className="text-sm">Parsing constraints for review…</p>}
-      {error && <p role="alert" className="text-sm text-destructive">{error} Use “Parse and review” to retry.</p>}
+      {error && <p role="alert" className="text-sm text-destructive-foreground">{error} Use “Parse and review” to retry.</p>}
       {review && <>
         <ConstraintComparison raw={review.raw} result={review.result} />
         <DisagreementChoices disagreements={review.result.disagreements ?? []} answers={answers}
           onAnswer={(field, option) => setAnswers(prev => ({ ...prev, [field]: option }))} />
         <Suggestions suggestions={review.result.suggestions ?? []} />
-        {blocker && <p role="alert" className="text-sm text-destructive">{blocker}</p>}
+        {blocker && <p role="alert" className="text-sm text-destructive-foreground">{blocker}</p>}
         <Button type="button" disabled={!!blocker} onClick={() => {
           if (constraintReviewBlocker(review.result, review.draft, draft, answers)) return
           const disagreements = review.result.disagreements ?? []
@@ -89,7 +89,7 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
         }}>Confirm and apply proposed values</Button>
         <p className="text-xs text-muted-foreground">Confirm applies these values to the form. Use “Create job” or “Save changes” below to save the job.</p>
       </>}
-      {confirmed && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-400">Constraints confirmed and applied. Review the form below, then save the job.</p>}
+      {confirmed && <p role="status" className="text-sm text-success-foreground">Constraints confirmed and applied. Review the form below, then save the job.</p>}
     </section>
   )
 }
@@ -139,7 +139,7 @@ export function DisagreementChoices({ disagreements, answers, onAnswer }: {
 }) {
   if (!disagreements.length) return null
   return (
-    <div className="space-y-4 rounded-md border border-amber-300 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/30">
+    <div className="space-y-4 rounded-md border border-warning/40 bg-warning/10 p-4">
       <div>
         <p className="text-sm font-medium">What does your text mean?</p>
         <p className="text-xs text-muted-foreground">
