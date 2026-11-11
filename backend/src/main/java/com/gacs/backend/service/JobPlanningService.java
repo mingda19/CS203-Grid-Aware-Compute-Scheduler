@@ -41,8 +41,8 @@ public class JobPlanningService {
 
     private static final Logger log = LoggerFactory.getLogger(JobPlanningService.class);
 
-    /** @param runIds the plans this call created, @param failed how many jobs it recorded a failure for */
-    public record Result(List<String> runIds, int failed) {}
+    /** The created plans and the jobs this attempt could not plan. */
+    public record Result(List<String> runIds, int failed, List<Long> failedJobIds) {}
 
     private final UserRepository users;
     private final JobRepository jobs;
@@ -76,13 +76,13 @@ public class JobPlanningService {
 
     public Result plan(String email, boolean retry) {
         List<Job> candidates = transactions.execute(status -> candidates(email, retry));
-        Result result = new Result(new ArrayList<>(), 0);
+        Result result = new Result(new ArrayList<>(), 0, List.of());
         if (candidates == null || candidates.isEmpty()) return result;
         var facility = facilities.getOrCreateFacility(email);
         var cluster = new ClusterCapacityInput(facility.getMaxCpuHours(), facility.getMaxGpuHours());
-        int[] failed = {0};
-        solve(email, candidates, cluster, facility.getLocation(), result.runIds(), failed);
-        return new Result(result.runIds(), failed[0]);
+        List<Long> failedJobIds = new ArrayList<>();
+        solve(email, candidates, cluster, facility.getLocation(), result.runIds(), failedJobIds);
+        return new Result(result.runIds(), failedJobIds.size(), List.copyOf(failedJobIds));
     }
 
     /**
@@ -108,27 +108,59 @@ public class JobPlanningService {
 
     /**
      * Plans {@code batch} together. A 400, a 422 or a solver crash (503) means some job cannot be planned, and
-     * the request does not say which, so the batch is split and each job tried alone. A crash left uncaught
+     * the request does not say which, so independent groups are retried separately. Related jobs stay
+     * together: splitting them would discard their saved relationships. A crash left uncaught
      * would be retried every tick with no reason on the job. Any other failure, such as a missing
      * forecast or a database error, records nothing on the jobs and propagates: the next tick tries again.
      */
     private void solve(String email, List<Job> batch, ClusterCapacityInput cluster, String location,
-                       List<String> runIds, int[] failed) {
+                       List<String> runIds, List<Long> failedJobIds) {
         try {
             var response = review.optimize(request(batch, cluster, location), email, true);
             // A run that placed nothing was ended as it was recorded, and its jobs got a reason.
-            if (OptimizeResponseDto.STATUS_INFEASIBLE.equals(response.status())) failed[0] += batch.size();
+            if (OptimizeResponseDto.STATUS_INFEASIBLE.equals(response.status()))
+                batch.forEach(job -> failedJobIds.add(job.getId()));
             else runIds.add(response.runId());
         } catch (IllegalArgumentException | UnprocessableDataException | OptimizationFailedException ex) {
-            if (batch.size() > 1) {
-                for (Job job : batch) solve(email, List.of(job), cluster, location, runIds, failed);
+            var groups = constraintGroups(batch);
+            if (groups.size() > 1) {
+                for (var group : groups) solve(email, group, cluster, location, runIds, failedJobIds);
             } else {
-                recordFailure(batch.get(0), ex instanceof OptimizationFailedException crash
+                String reason = ex instanceof OptimizationFailedException crash
                     ? "The optimiser failed on this job (run " + crash.getRunId() + "). Edit the job or use Recompute to try again."
-                    : ex.getMessage());
-                failed[0]++;
+                    : ex.getMessage();
+                for (Job job : batch) recordFailure(job, reason);
+                batch.forEach(job -> failedJobIds.add(job.getId()));
             }
         }
+    }
+
+    /** Connected components, treating every saved pair rule as an undirected edge for batching. */
+    static List<List<Job>> constraintGroups(List<Job> batch) {
+        var byId = new java.util.LinkedHashMap<Long, Job>();
+        batch.forEach(job -> byId.put(job.getId(), job));
+        var neighbours = new java.util.HashMap<Long, java.util.Set<Long>>();
+        for (Job job : batch) for (var rule : job.getPairConstraints()) {
+            if (!byId.containsKey(rule.referencedJobId())) continue;
+            neighbours.computeIfAbsent(job.getId(), key -> new java.util.HashSet<>()).add(rule.referencedJobId());
+            neighbours.computeIfAbsent(rule.referencedJobId(), key -> new java.util.HashSet<>()).add(job.getId());
+        }
+        var visited = new java.util.HashSet<Long>();
+        List<List<Job>> groups = new ArrayList<>();
+        for (Job job : batch) {
+            if (!visited.add(job.getId())) continue;
+            var pending = new java.util.ArrayDeque<Long>();
+            pending.add(job.getId());
+            List<Job> group = new ArrayList<>();
+            while (!pending.isEmpty()) {
+                long id = pending.remove();
+                group.add(byId.get(id));
+                for (long next : neighbours.getOrDefault(id, java.util.Set.of()))
+                    if (visited.add(next)) pending.add(next);
+            }
+            groups.add(group);
+        }
+        return groups;
     }
 
     private void recordFailure(Job planned, String message) {

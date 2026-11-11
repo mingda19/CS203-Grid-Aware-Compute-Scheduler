@@ -83,13 +83,56 @@ class ConstraintParseClassifierWiringTest {
         }
     }
 
-    private ConstraintParseService serviceWith(Stub stub) {
+    private ConstraintParseService serviceWith(ConstraintClassifier stub) {
         return new ConstraintParseService(new RuleBasedConstraintParser(), jobService, CLOCK,
                 "America/Chicago", Optional.of(stub), Optional.of(new ConstraintGuardrail(0.7, 0.3)));
     }
 
     private static ConstraintParseRequestDto request(String text) {
         return new ConstraintParseRequestDto(text, null, "America/Chicago");
+    }
+
+    @Test
+    void recognisedPrecedenceIsReadyForReviewInsteadOfUnsupported() {
+        String text = "this job must finish before DeepSeek-R1 Distillation Batch starts";
+        when(repository.findByOwnerEmailOrderByOriginalStartTimeAsc("me@example.com"))
+                .thenReturn(List.of(com.gacs.backend.model.Job.builder().id(9L)
+                        .name("DeepSeek-R1 Distillation Batch").build()));
+        Stub stub = new Stub(List.of(new ClassifiedConstraint(ConstraintType.PRECEDENCE,
+                .94, text, 0, text.length(), "DeepSeek-R1 Distillation Batch")), null);
+        var result = serviceWith(stub).parse(request(text), "me@example.com");
+        assertThat(result.status()).isEqualTo(ConstraintParseResponseDto.PARSED);
+        assertThat(result.unsupported()).isEmpty();
+        assertThat(result.suggestions()).singleElement().satisfies(s -> {
+            assertThat(s.type()).isEqualTo("PRECEDENCE");
+            assertThat(s.referencedJobId()).isEqualTo(9L);
+        });
+        assertThat(result.classificationStatus()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void wholeMessagePairEvidenceDoesNotHideAnUnrelatedUnsupportedClause() {
+        String text = "Finish before render-batch starts; needs 16 GPUs";
+        when(repository.findByOwnerEmailOrderByOriginalStartTimeAsc("me@example.com"))
+                .thenReturn(List.of(com.gacs.backend.model.Job.builder().id(9L).name("render-batch").build()));
+        Stub stub = new Stub(List.of(new ClassifiedConstraint(ConstraintType.PRECEDENCE,
+                .94, text, 0, text.length(), "render-batch")), null);
+        var result = serviceWith(stub).parse(request(text), "me@example.com");
+        assertThat(result.unsupported()).anyMatch(u -> u.phrase().equals("needs 16 GPUs"));
+    }
+
+    @Test
+    void mixedTextClaimsOnlyTheRelationshipClause() {
+        String text = "high priority; this job must finish before render-batch starts; needs 16 GPUs";
+        when(repository.findByOwnerEmailOrderByOriginalStartTimeAsc("me@example.com"))
+                .thenReturn(List.of(com.gacs.backend.model.Job.builder().id(9L).name("render-batch").build()));
+        ConstraintClassifier stub = (source, allowed) -> source.contains("finish before")
+                ? List.of(new ClassifiedConstraint(ConstraintType.PRECEDENCE, .94, source, 0, source.length(), "render-batch"))
+                : List.of();
+        var result = serviceWith(stub).parse(request(text), "me@example.com");
+        assertThat(result.unsupported()).singleElement().extracting(u -> u.phrase()).isEqualTo("needs 16 GPUs");
+        assertThat(result.suggestions()).singleElement().extracting(s -> s.phrase())
+                .isEqualTo("this job must finish before render-batch starts");
     }
 
     private static JobResponseDto job(long id, String name) {
@@ -120,6 +163,8 @@ class ConstraintParseClassifierWiringTest {
         assertThat(result.suggestions()).isEmpty();
         assertThat(result.disagreements()).isEmpty();
         assertThat(result.status()).isEqualTo(ConstraintParseResponseDto.PARSED);
+        assertThat(result.classificationStatus()).isEqualTo("FAILED");
+        assertThat(result.warnings()).isNotEmpty();
     }
 
     @Test

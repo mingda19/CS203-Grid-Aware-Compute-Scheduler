@@ -109,6 +109,7 @@ public class JobService {
      */
     @Transactional
     public JobResponseDto createJob(JobRequestDto request, String ownerEmail) {
+        if (request.getPairConstraints() != null && !request.getPairConstraints().isEmpty()) inputs.lock(ownerEmail);
         validateJobConstraints(request);
         validateNotInThePast(request.getOriginalStartTime(), request.getDeadline());
 
@@ -136,6 +137,9 @@ public class JobService {
                 .build();
 
         applyParseMetadata(job, request);
+        applyPairConstraints(job, request);
+        if (!job.getPairConstraints().isEmpty())
+            validatePairConstraints(job, ownerEmail);
         Job saved = jobRepository.save(job);
         return dto(saved, statuses.resolve(List.of(saved)));
     }
@@ -166,6 +170,9 @@ public class JobService {
 
         var before = ScheduleInputs.state(existing);
         applyParseMetadata(existing, request);
+        applyPairConstraints(existing, request);
+        if (!existing.getPairConstraints().isEmpty())
+            validatePairConstraints(existing, ownerEmail);
 
         existing.setName(request.getName().trim());
         // Not a scheduling input, so it is outside the ScheduleInputs comparison below.
@@ -202,10 +209,33 @@ public class JobService {
         return value == null || value.isBlank() ? null : value.trim();
     }
 
+    private static void applyPairConstraints(Job job, JobRequestDto request) {
+        if (request.getPairConstraints() != null) {
+            if (request.getPairConstraints().stream().anyMatch(Objects::isNull))
+                throw new IllegalArgumentException("A pair constraint must not be null");
+            job.setPairConstraints(java.util.List.copyOf(new java.util.LinkedHashSet<>(request.getPairConstraints())));
+        }
+    }
+
+    private void validatePairConstraints(Job job, String ownerEmail) {
+        List<Job> owned = jobRepository.findByOwnerEmailOrderByOriginalStartTimeAsc(ownerEmail);
+        JobConstraintRules.validate(job, owned);
+        var derived = statuses.resolve(owned);
+        for (var rule : job.getPairConstraints()) {
+            var state = derived.get(rule.referencedJobId());
+            if (state != null && (state.approved() || state.status() == JobStatusResolver.Status.COMPLETED
+                    || state.status() == JobStatusResolver.Status.RUNNING))
+                throw new ConflictException("Referenced job " + rule.referencedJobId()
+                        + " is already approved, running or completed. End its plan before adding a relationship.");
+        }
+    }
+
     /** Resolve and validate provenance before changing the managed entity. */
     private void applyParseMetadata(Job job, JobRequestDto request) {
         String source = request.hasRawConstraints() ? request.getRawConstraints() : job.getRawConstraints();
         boolean sourceChanged = !Objects.equals(source, job.getRawConstraints());
+        // Old relationships belong to the old source. A new confirmed parse supplies replacements.
+        if (sourceChanged) job.setPairConstraints(List.of());
         var parsedAt = sourceChanged ? null : job.getParsedAt();
         var outcome = sourceChanged ? null : job.getConfirmationOutcome();
         if (request.hasParsedAt()) {
@@ -242,6 +272,11 @@ public class JobService {
         User owner = inputs.lock(ownerEmail);
         Job existing = jobRepository.findByIdAndOwnerEmail(id, ownerEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("Job not found with id: " + id));
+        boolean referenced = jobRepository.findByOwnerEmailOrderByOriginalStartTimeAsc(ownerEmail).stream()
+                .filter(job -> !Objects.equals(job.getId(), id))
+                .anyMatch(job -> job.getPairConstraints().stream().anyMatch(rule -> Objects.equals(rule.referencedJobId(), id)));
+        if (referenced)
+            throw new ConflictException("Another job has a saved constraint referring to this job. Remove that constraint before deleting it.");
         for (OptimizationPlan plan : plans.findByOwnerIdAndReviewState(owner.getId(), ReviewState.APPROVED)) {
             if (!plan.liveJobIds().contains(id)) continue;
             plan.removeJobs(List.of(id));

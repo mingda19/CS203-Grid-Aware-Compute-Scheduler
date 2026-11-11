@@ -40,7 +40,9 @@ public class ScheduleInputs {
 
     public record JobState(Double cpu, Double gpu, java.time.LocalDateTime start,
         java.time.LocalDateTime deadline, Integer flexibility, boolean exempt, JobPriority priority,
-        boolean cancelled, String constraints, ConfirmationOutcome confirmation) {}
+        boolean cancelled, String constraints, ConfirmationOutcome confirmation, List<JobConstraint> pairConstraints) {
+        public JobState { pairConstraints = pairConstraints == null ? List.of() : List.copyOf(pairConstraints); }
+    }
     public record JobVersion(long revision, JobState state) {}
     public record FacilityState(long revision, Double cpu, Double gpu, String location) {}
     /**
@@ -55,7 +57,31 @@ public class ScheduleInputs {
     public static JobState state(Job j) {
         return new JobState(j.getCpuHours(), j.getGpuHours(), j.getOriginalStartTime(), j.getDeadline(),
             j.getFlexibilityWindowHours(), j.isExempt(), j.getPriority(), "CANCELLED".equals(j.getStatus()),
-            j.getRawConstraints(), j.getConfirmationOutcome());
+            j.getRawConstraints(), j.getConfirmationOutcome(), j.getPairConstraints());
+    }
+
+    /** Every saved relationship touching the run is mandatory, including incoming relationships. */
+    @Transactional(readOnly = true)
+    public OptimizeRequestDto withStoredConstraints(OptimizeRequestDto request, String email) {
+        if (request == null || request.jobs() == null) return request;
+        Set<Long> submitted = new HashSet<>();
+        request.jobs().stream().filter(Objects::nonNull).map(OptimizeRequestDto.JobInput::id).forEach(submitted::add);
+        Set<OptimizeRequestDto.PairConstraintInput> rules = new LinkedHashSet<>(request.pairConstraintsOrEmpty());
+        for (Job job : jobs.findByOwnerEmailOrderByOriginalStartTimeAsc(email)) {
+            for (JobConstraint rule : job.getPairConstraints()) {
+                if (!submitted.contains(job.getId()) && !submitted.contains(rule.referencedJobId())) continue;
+                if (!submitted.contains(job.getId()) || !submitted.contains(rule.referencedJobId()))
+                    throw new IllegalArgumentException("Jobs " + job.getId() + " and " + rule.referencedJobId()
+                            + " have a saved pair constraint and must be planned together. Include both jobs; "
+                            + "if one is already awaiting approval or approved, end that plan before recomputing together.");
+                if (job.getConfirmationOutcome() != ConfirmationOutcome.CONFIRMED)
+                    throw new IllegalArgumentException("Confirm the saved constraints for job " + job.getId());
+                rules.add(new OptimizeRequestDto.PairConstraintInput(rule.type(), job.getId(), rule.referencedJobId()));
+            }
+        }
+        return new OptimizeRequestDto(request.jobs(), request.clusterCapacity(), request.forecastLocation(),
+                request.horizonHours(), request.forecast(), request.capacityOverrides(), request.rescheduleElapsedJobs(),
+                List.copyOf(rules));
     }
 
     public FacilityState facility() {
@@ -84,6 +110,8 @@ public class ScheduleInputs {
     @Transactional
     public String capture(OptimizeRequestDto request, String email, Map<LocalDateTime, CapacityLimit> reserved) {
         lock(email);
+        if (!new HashSet<>(request.pairConstraintsOrEmpty()).containsAll(withStoredConstraints(request, email).pairConstraintsOrEmpty()))
+            throw new ConflictException("Saved pair constraints changed. Recompute the schedule.");
         if (request.jobs() != null) {
             var ids = request.jobs().stream().filter(Objects::nonNull).map(OptimizeRequestDto.JobInput::id)
                 .filter(Objects::nonNull).toList();
@@ -140,6 +168,12 @@ public class ScheduleInputs {
                 s.jobs().size() != s.request().jobs().size() || !s.jobs().keySet().equals(plan.getJobIds()))
                 return "Incomplete input provenance";
             if (!s.facility().equals(facility())) return "Facility scheduling inputs changed";
+            try {
+                if (!new HashSet<>(s.request().pairConstraintsOrEmpty()).containsAll(withStoredConstraints(s.request(), email).pairConstraintsOrEmpty()))
+                    return "Saved job relationships changed; recompute the schedule";
+            } catch (IllegalArgumentException changed) {
+                return "Saved job relationships changed; recompute the schedule";
+            }
             for (var entry : s.jobs().entrySet()) {
                 if (plan.getRemovedJobIds().contains(entry.getKey())) continue;
                 Job j = jobs.findByIdAndOwnerEmail(entry.getKey(), email).orElse(null);
