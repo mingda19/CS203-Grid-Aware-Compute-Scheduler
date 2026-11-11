@@ -65,7 +65,9 @@ cd backend
 ./mvnw spring-boot:run
 ```
 
-The backend uses the database and mail settings from the root `.env`.
+The backend uses the database and Gmail API settings from the root `.env`.
+See [Gmail API setup](docs/gmail-api-setup.md) for the one-time sender authorization
+and Render environment variables.
 
 ## Frontend
 

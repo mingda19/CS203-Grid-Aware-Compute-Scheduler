@@ -76,6 +76,15 @@ class AuthServiceTest {
     }
 
     @Test
+    void registrationDoesNotReportEmailSentWhenDeliveryFails() {
+        when(userRepository.findByEmail(registerRequest.getEmail())).thenReturn(Optional.empty());
+        doThrow(new IllegalStateException("Gmail API is not configured"))
+                .when(emailService).sendOtpEmail(anyString(), anyString());
+
+        assertThrows(IllegalStateException.class, () -> authService.register(registerRequest));
+    }
+
+    @Test
     void recoveryCodeIsHashedSingleUseAndRevokesRefreshTokens() {
         User user = new User("user@example.com", "old", "User", "ROLE_USER");
         user.setVerified(true);

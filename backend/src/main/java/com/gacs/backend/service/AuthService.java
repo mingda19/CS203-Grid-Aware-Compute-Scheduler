@@ -79,7 +79,7 @@ public class AuthService {
         byte[] bytes = new byte[32];
         secureRandom.nextBytes(bytes);
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-        // Do not log recovery tokens, including when SMTP delivery fails.
+        // Do not log recovery tokens, including when Gmail API delivery fails.
         try {
             emailService.sendPasswordResetEmail(email, token);
             user.setPasswordResetHash(passwordEncoder.encode(token));
@@ -115,7 +115,7 @@ public class AuthService {
     /**
      * Registers a new user or refreshes registration for an unverified account.
      * Encrypts the password using BCrypt before storing in the database.
-     * Generates a 6-digit OTP and sends it to the user's email via SMTP.
+     * Generates a 6-digit OTP and sends it to the user's email via Gmail API.
      */
     @Transactional
     public AuthResponse register(RegisterRequest request) {
@@ -145,11 +145,7 @@ public class AuthService {
 
         // Generate and send OTP
         String otpCode = generateAndSaveOtp(email);
-        try {
-            emailService.sendOtpEmail(email, otpCode);
-        } catch (Exception e) {
-            logger.warn("Could not deliver OTP email: {}. OTP code for development is: {}", e.getMessage(), otpCode);
-        }
+        emailService.sendOtpEmail(email, otpCode);
 
         return AuthResponse.otpRequired("Registration initiated. A 6-digit OTP has been sent to " + email + ". Please verify to complete registration.", email);
     }
@@ -197,11 +193,7 @@ public class AuthService {
         }
 
         String otpCode = generateAndSaveOtp(email);
-        try {
-            emailService.sendOtpEmail(email, otpCode);
-        } catch (Exception e) {
-            logger.warn("Could not deliver OTP email: {}. OTP code for development is: {}", e.getMessage(), otpCode);
-        }
+        emailService.sendOtpEmail(email, otpCode);
 
         return ApiResponse.ok("A new OTP code has been sent to " + email + ".");
     }
@@ -229,11 +221,7 @@ public class AuthService {
         // Check if account has completed OTP verification
         if (!user.isVerified()) {
             String otpCode = generateAndSaveOtp(email);
-            try {
-                emailService.sendOtpEmail(email, otpCode);
-            } catch (Exception e) {
-                logger.warn("Could not deliver OTP email: {}. OTP code is: {}", e.getMessage(), otpCode);
-            }
+            emailService.sendOtpEmail(email, otpCode);
             return AuthResponse.otpRequired("Account is not yet verified. A fresh OTP has been sent to your email.", email);
         }
 

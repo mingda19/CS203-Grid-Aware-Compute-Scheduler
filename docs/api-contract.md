@@ -679,7 +679,7 @@ Returns the latest stored prediction from one model kind for each upcoming inter
     }
   }
   ```
-* `confidenceScore` (0-100, higher = more confident) is omitted when unavailable. `data_scripts/predictions.py` computes the final score itself (a normalized recent-error ratio mapped through `100 / (1 + ratio)`) before writing it to `predicted_price.confidence_score`; the API returns that stored value directly, with no further conversion. A backend check runs every minute and detects newly generated low-confidence forecasts without waiting for a page request. It creates unread alerts in the existing data-freshness notification feed and sends one email per recipient, location, and forecast run. Configure the threshold with `FORECAST_CONFIDENCE_THRESHOLD` (0-100 scale, default `40`); SMTP must be configured for email delivery.
+* `confidenceScore` (0-100, higher = more confident) is omitted when unavailable. `data_scripts/predictions.py` computes the final score itself (a normalized recent-error ratio mapped through `100 / (1 + ratio)`) before writing it to `predicted_price.confidence_score`; the API returns that stored value directly, with no further conversion. A backend check runs every minute and detects newly generated low-confidence forecasts without waiting for a page request. It creates unread alerts in the existing data-freshness notification feed and sends one email per recipient, location, and forecast run. Configure the threshold with `FORECAST_CONFIDENCE_THRESHOLD` (0-100 scale, default `40`); Gmail API must be configured for email delivery.
 * **Empty window**: `200` with `"points": []`. **Errors**: `400` for blank `location`, `hours` outside 1-168, or an unknown `model`; `403` without a valid token.
 
 #### `GET /api/forecasts/ercot`
