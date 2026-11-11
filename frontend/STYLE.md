@@ -153,7 +153,7 @@ Check every change at **320, 375, 768, 1024 and 1280 px**, in **light and dark**
 ## 12. Before you open a PR
 
 1. In `frontend/`: `npm run lint`, `npx tsc --noEmit`, `npm test` and `npm run build` all pass.
-2. Search `src` outside the Forecast, Audit, Admin and login pages. Each of these must find nothing:
+2. Search `src` outside the Forecast, Audit and Admin pages. Each of these must find nothing:
    `font-bold`, `tracking-tight`, `text-\[1[01]px\]`, `(bg|text)-(teal|blue|rose|amber)-`, `text-emerald-`, `bg-emerald-`.
 3. Look at the page at the five widths above, in both themes. Force an error, an empty list and a slow load, and compare them with the table in section 7.
 4. Say in the PR what you checked and what you did not.
@@ -173,4 +173,6 @@ Check every change at **320, 375, 768, 1024 and 1280 px**, in **light and dark**
 
 ## 14. Not covered yet
 
-The Forecast, Audit, Admin and login pages were not part of this pass and still use older styling (raw colours, bold titles, small text). When you change one, bring it up to this guide rather than copying what is there.
+The Forecast, Audit and Admin pages were not part of this pass and still use older styling (raw colours, bold titles, small text). When you change one, bring it up to this guide rather than copying what is there.
+
+The sign-in page shows a two-layer illustration (`public/login/`) beside the card, hidden below `lg`. The panel background `#f1f8f8`, the ground fill `#0e1313` and the sun's colours match the source image and are the only raw colours allowed on that page.
