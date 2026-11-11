@@ -1,16 +1,21 @@
 "use client"
 
 import * as React from "react"
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import { LegendItem, PER_MWH } from "@/components/forecasts/ForecastCard"
+import {
+  Bar, BarChart, CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis,
+} from "recharts"
+import { DashSwatch, LegendItem, PER_MWH } from "@/components/forecasts/ForecastCard"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { ForecastAccuracyPoint, ForecastModel } from "@/lib/api"
-import { formatMarketTime, formatShortDateTime, MARKET_ZONE_LABEL, marketDateLabelAnchor } from "@/lib/date-utils"
+import {
+  formatMarketChartTick, formatMarketTime, formatShortDateTime, MARKET_ZONE_LABEL, marketDateLabelAnchor, parseIsoDate,
+} from "@/lib/date-utils"
 import { money } from "@/lib/format"
 import {
-  accuracyStats, LOW_HOURS_PER_DAY, MIN_DAY_HOURS, MODEL_LABEL, type CheapHoursDay, type cheapHoursCheck,
+  accuracyStats, LOW_HOURS_PER_DAY, MIN_DAY_HOURS, MIN_HOUR_POINTS, missByHour, MODEL_LABEL, runningMiss, scatterDomain, timeTicks,
+  type CheapHoursDay, type cheapHoursCheck, type HourMissRow,
 } from "@/lib/price-forecast"
 
 const CHART_HEIGHT = 240
@@ -240,6 +245,246 @@ export function CheapHoursCard({ model, cheap, loading, error, onRetry }: CheapH
       </div>
       <ChartLegend>
         <LegendItem swatch={BAR_SWATCH}>Extra cost of the forecast&apos;s picks</LegendItem>
+      </ChartLegend>
+    </ChartCard>
+  )
+}
+
+/** "+$3", "−$2", "$0": axis ticks where the sign says too high or too low. */
+export const signedDollars = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}$${Math.abs(Math.round(v))}`
+
+/** The axis look shared by the analysis charts. */
+const AXIS = { tickLine: false, axisLine: false, tick: { fontSize: 12, fill: "var(--muted-foreground)" } } as const
+const AXIS_LABEL = { fontSize: 12, fill: "var(--muted-foreground)" } as const
+
+interface PointsCardProps {
+  model: ForecastModel
+  /** The chosen model's past hours inside the page window. */
+  points: ForecastAccuracyPoint[]
+  loading: boolean
+  error: boolean
+  onRetry: () => void
+}
+
+/** The scatter needs this many hours before a pattern means anything. */
+const MIN_SCATTER_POINTS = 24
+
+/** Each past hour as a dot: forecast across, day-ahead price up. On the dashed line the forecast was exact. */
+export function ScatterCard({ points, loading, error, onRetry }: PointsCardProps) {
+  const domain = React.useMemo(() => scatterDomain(points), [points])
+  const dots = React.useMemo(
+    () => points.map((p) => ({
+      t: parseIsoDate(p.intervalStartUtc).getTime(), forecast: p.predictedPrice, actual: p.actualPrice, miss: p.predictedPrice - p.actualPrice,
+    })),
+    [points],
+  )
+
+  return (
+    <ChartCard
+      title="Forecast vs Actual"
+      description="Each hour's forecast against its actual price."
+      height={CHART_HEIGHT}
+      subject="forecast accuracy"
+      loading={loading}
+      error={error}
+      onRetry={onRetry}
+      empty={points.length < MIN_SCATTER_POINTS || !domain ? "Not enough past forecasts yet." : null}
+    >
+      {domain && (
+        <>
+          <div className="min-w-0" style={{ height: CHART_HEIGHT }}>
+            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+              <ScatterChart margin={{ top: 8, right: 8, left: 8, bottom: 12 }}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+                <XAxis
+                  {...AXIS}
+                  dataKey="forecast"
+                  type="number"
+                  domain={domain}
+                  tickCount={5}
+                  tickMargin={6}
+                  tickFormatter={(v: number) => `$${Math.round(v)}`}
+                  label={{ value: "Forecast", position: "insideBottom", offset: -10, ...AXIS_LABEL }}
+                />
+                <YAxis
+                  {...AXIS}
+                  dataKey="actual"
+                  type="number"
+                  domain={domain}
+                  tickCount={5}
+                  tickMargin={6}
+                  tickFormatter={(v: number) => `$${Math.round(v)}`}
+                  label={{ value: "Day-ahead price", angle: -90, position: "insideLeft", offset: 0, style: { textAnchor: "middle" }, ...AXIS_LABEL }}
+                />
+                <Tooltip
+                  cursor={{ stroke: "var(--muted-foreground)", strokeDasharray: "3 3" }}
+                  isAnimationActive={false}
+                  content={({ active, payload }) => {
+                    const dot = active ? (payload?.find((p) => p?.payload)?.payload as (typeof dots)[number] | undefined) : undefined
+                    if (!dot) return null
+                    return (
+                      <TooltipBox title={`${formatShortDateTime(dot.t)} ${MARKET_ZONE_LABEL}`}>
+                        <TooltipRow label="Forecast">{money(dot.forecast)}{PER_MWH}</TooltipRow>
+                        <TooltipRow label="Day-ahead price">{money(dot.actual)}{PER_MWH}</TooltipRow>
+                        <TooltipRow label="Miss">{signedMoney(dot.miss)}{PER_MWH}</TooltipRow>
+                      </TooltipBox>
+                    )
+                  }}
+                />
+                <ReferenceLine
+                  segment={[{ x: domain[0], y: domain[0] }, { x: domain[1], y: domain[1] }]}
+                  stroke="var(--muted-foreground)"
+                  strokeDasharray="5 3"
+                  ifOverflow="hidden"
+                />
+                <Scatter data={dots} fill="var(--primary)" fillOpacity={0.5} isAnimationActive={false} />
+              </ScatterChart>
+            </ResponsiveContainer>
+          </div>
+          <ChartLegend>
+            <LegendItem swatch={<span className="size-2 shrink-0 rounded-full bg-primary/50" aria-hidden="true" />}>One hour</LegendItem>
+            <LegendItem swatch={<DashSwatch color="var(--muted-foreground)" />}>Perfect forecast</LegendItem>
+          </ChartLegend>
+        </>
+      )}
+    </ChartCard>
+  )
+}
+
+const hourTick = (hour: number) => String(hour).padStart(2, "0")
+
+/** Average miss and lean for each CT hour of the day. */
+export function HourOfDayCard({ points, loading, error, onRetry }: PointsCardProps) {
+  const rows = React.useMemo(() => missByHour(points), [points])
+
+  return (
+    <ChartCard
+      title="Miss by Hour of Day"
+      description="Where in the day the forecast misses most, in Central time."
+      height={CHART_HEIGHT}
+      subject="forecast accuracy"
+      loading={loading}
+      error={error}
+      onRetry={onRetry}
+      empty={rows.every((r) => r.averageMiss == null) ? `No hour of the day has ${MIN_HOUR_POINTS} past forecasts yet.` : null}
+    >
+      <div className="min-w-0" style={{ height: CHART_HEIGHT }}>
+        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+          <ComposedChart data={rows} margin={{ top: 8, right: 8, left: -4, bottom: 4 }}>
+            <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+            <XAxis {...AXIS} dataKey="hour" ticks={[0, 3, 6, 9, 12, 15, 18, 21]} interval={0} tickMargin={8} tickFormatter={hourTick} />
+            <YAxis {...AXIS} tickCount={5} tickMargin={6} tickFormatter={signedDollars} />
+            <Tooltip
+              cursor={{ fill: "var(--muted)", opacity: 0.6 }}
+              isAnimationActive={false}
+              content={({ active, payload }) => {
+                const row = active ? (payload?.find((p) => p?.payload)?.payload as HourMissRow | undefined) : undefined
+                if (!row) return null
+                return (
+                  <TooltipBox title={`${hourTick(row.hour)}:00 ${MARKET_ZONE_LABEL}`}>
+                    {row.averageMiss == null || row.bias == null ? (
+                      <div className="text-muted-foreground">{row.count} of {MIN_HOUR_POINTS} hours needed</div>
+                    ) : (
+                      <>
+                        <TooltipRow label="Average miss">{money(row.averageMiss)}{PER_MWH}</TooltipRow>
+                        <TooltipRow label="Bias">{signedMoney(row.bias)}{PER_MWH}</TooltipRow>
+                        <TooltipRow label="Hours counted">{row.count}</TooltipRow>
+                      </>
+                    )}
+                  </TooltipBox>
+                )
+              }}
+            />
+            <ReferenceLine y={0} stroke="var(--foreground)" strokeOpacity={0.6} />
+            <Bar dataKey="averageMiss" fill="var(--primary)" isAnimationActive={false} />
+            <Line
+              dataKey="bias"
+              stroke="var(--foreground)"
+              strokeWidth={2}
+              dot={{ r: 2.5, fill: "var(--foreground)", strokeWidth: 0 }}
+              activeDot={{ r: 4, stroke: "var(--foreground)", strokeWidth: 2, fill: "var(--card)" }}
+              isAnimationActive={false}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+      <ChartLegend>
+        <LegendItem swatch={BAR_SWATCH}>Average miss</LegendItem>
+        <LegendItem swatch={<span className="h-0.5 w-5 shrink-0 bg-foreground" aria-hidden="true" />}>Bias (above 0: too high)</LegendItem>
+      </ChartLegend>
+    </ChartCard>
+  )
+}
+
+/** The running total needs this many hours before a trend shows. */
+const MIN_DRIFT_POINTS = 48
+
+interface DriftCardProps extends PointsCardProps {
+  /** The page window, so the line spans the same dates as the deviation chart. */
+  from: number
+  nowMs: number
+}
+
+/** The running sum of forecast minus price. Rising: the forecast keeps running high. */
+export function DriftCard({ points, from, nowMs, loading, error, onRetry }: DriftCardProps) {
+  const rows = React.useMemo(() => runningMiss(points), [points])
+  const ticks = React.useMemo(() => timeTicks(from, nowMs), [from, nowMs])
+
+  return (
+    <ChartCard
+      title="Forecast Drift"
+      description="Running total of the miss. Rising means the forecast keeps running high."
+      height={CHART_HEIGHT}
+      subject="forecast accuracy"
+      loading={loading}
+      error={error}
+      onRetry={onRetry}
+      empty={rows.length < MIN_DRIFT_POINTS ? "Not enough past forecasts yet." : null}
+    >
+      <div className="min-w-0" style={{ height: CHART_HEIGHT }}>
+        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+          <ComposedChart data={rows} margin={{ top: 8, right: 8, left: -4, bottom: 4 }}>
+            <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+            <XAxis
+              {...AXIS}
+              dataKey="t"
+              type="number"
+              scale="time"
+              domain={[from, nowMs]}
+              ticks={ticks}
+              tickMargin={8}
+              minTickGap={24}
+              tickFormatter={(t: number) => formatMarketChartTick(new Date(t).toISOString(), true)}
+            />
+            <YAxis {...AXIS} tickCount={5} tickMargin={6} tickFormatter={signedDollars} />
+            <Tooltip
+              cursor={{ stroke: "var(--muted-foreground)", strokeWidth: 1, strokeDasharray: "3 3" }}
+              isAnimationActive={false}
+              content={({ active, payload }) => {
+                const row = active ? (payload?.find((p) => p?.payload)?.payload as (typeof rows)[number] | undefined) : undefined
+                if (!row) return null
+                return (
+                  <TooltipBox title={`${formatShortDateTime(row.t)} ${MARKET_ZONE_LABEL}`}>
+                    <TooltipRow label="Running total">{signedMoney(row.total)}{PER_MWH}</TooltipRow>
+                    <TooltipRow label="This hour's miss">{signedMoney(row.miss)}{PER_MWH}</TooltipRow>
+                  </TooltipBox>
+                )
+              }}
+            />
+            <ReferenceLine y={0} stroke="var(--foreground)" strokeOpacity={0.6} />
+            <Line
+              dataKey="total"
+              stroke="var(--primary)"
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4, stroke: "var(--primary)", strokeWidth: 2, fill: "var(--card)" }}
+              isAnimationActive={false}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+      <ChartLegend>
+        <LegendItem swatch={<span className="h-0.5 w-5 shrink-0 bg-primary" aria-hidden="true" />}>Running total of forecast minus price</LegendItem>
       </ChartLegend>
     </ChartCard>
   )

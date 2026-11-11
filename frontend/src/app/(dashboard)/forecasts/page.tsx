@@ -6,7 +6,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { unwrap, useLoad } from "@/components/home/use-load"
 import { AccuracyCard } from "@/components/forecasts/AccuracyCard"
-import { CheapHoursCard, KeyFigures } from "@/components/forecasts/AnalysisCards"
+import { CheapHoursCard, DriftCard, HourOfDayCard, KeyFigures, ScatterCard } from "@/components/forecasts/AnalysisCards"
 import { ForecastCard } from "@/components/forecasts/ForecastCard"
 import { latestRun, STALE_AFTER_MS, useForecastCard } from "@/components/forecasts/use-forecast-card"
 import { Segmented } from "@/components/ui/segmented"
@@ -94,8 +94,14 @@ export default function ForecastsPage() {
 
       <AccuracyCard {...accuracyProps} points={points} from={from} nowMs={nowMs} />
 
-      {/* Two columns at lg. Phase 4 puts the running total of the miss beside this card. */}
+      {/* Two columns at lg, stacked below. */}
       <div className="grid min-w-0 gap-6 lg:grid-cols-2">
+        <ScatterCard {...accuracyProps} points={points} />
+        <HourOfDayCard {...accuracyProps} points={points} />
+      </div>
+
+      <div className="grid min-w-0 gap-6 lg:grid-cols-2">
+        <DriftCard {...accuracyProps} points={points} from={from} nowMs={nowMs} />
         <CheapHoursCard {...accuracyProps} cheap={cheap} />
       </div>
     </div>

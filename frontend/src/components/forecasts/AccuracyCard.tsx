@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { Bar, CartesianGrid, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import { BAR_SWATCH, ChartCard, ChartLegend, TooltipBox, TooltipRow } from "@/components/forecasts/AnalysisCards"
+import { BAR_SWATCH, ChartCard, ChartLegend, signedDollars, TooltipBox, TooltipRow } from "@/components/forecasts/AnalysisCards"
 import { DashSwatch, LegendItem, PER_MWH } from "@/components/forecasts/ForecastCard"
 import type { ForecastAccuracyPoint, ForecastModel } from "@/lib/api"
 import { formatMarketChartTick, formatShortDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
@@ -10,9 +10,6 @@ import { money } from "@/lib/format"
 import { accuracyStats, deviationRows, MODEL_LABEL, timeTicks, type DeviationRow } from "@/lib/price-forecast"
 
 const CHART_HEIGHT = 240
-
-/** "+$3", "−$2", "$0": the sign says over or under. */
-const signedDollars = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}$${Math.abs(Math.round(v))}`
 
 interface AccuracyCardProps {
   model: ForecastModel
