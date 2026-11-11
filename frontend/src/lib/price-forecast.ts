@@ -1,5 +1,5 @@
 import type { PriceForecastPoint, PricePoint } from "./api"
-import { parseIsoDate } from "./date-utils"
+import { getMarketDateString, parseIsoDate } from "./date-utils"
 
 export const HOUR_MS = 3_600_000
 /** The Forecast page covers the next 72 hours, the same window plans are priced on. */
@@ -79,6 +79,41 @@ export function buildForecastRows(
   }
 
   return [...rows.values()].sort((a, b) => a.t - b.t)
+}
+
+/** Cheapest hours marked per CT day. */
+export const LOW_HOURS_PER_DAY = 4
+
+/**
+ * The start times of the cheapest LOW_HOURS_PER_DAY hours of each CT day, counting hours from
+ * `fromHour` on and using the known price, else the forecast. A day with no more priced hours than
+ * that (the tail of today) marks none, since marking every hour says nothing.
+ */
+export function cheapestHours(rows: ForecastRow[], fromHour: number): Set<number> {
+  const days = new Map<string, Array<{ t: number; price: number }>>()
+  for (const r of rows) {
+    const price = r.price ?? r.forecast
+    if (r.t < fromHour || price == null) continue
+    const day = getMarketDateString(r.t)
+    days.set(day, [...(days.get(day) ?? []), { t: r.t, price }])
+  }
+  const low = new Set<number>()
+  for (const priced of days.values()) {
+    if (priced.length <= LOW_HOURS_PER_DAY) continue
+    priced.sort((a, b) => a.price - b.price).slice(0, LOW_HOURS_PER_DAY).forEach((h) => low.add(h.t))
+  }
+  return low
+}
+
+/** Joins consecutive hours into [start, end) spans, so the chart draws one shaded area per run. */
+export function hourSpans(hours: Set<number>): Array<[number, number]> {
+  const spans: Array<[number, number]> = []
+  for (const t of [...hours].sort((a, b) => a - b)) {
+    const last = spans[spans.length - 1]
+    if (last && last[1] === t) last[1] = t + HOUR_MS
+    else spans.push([t, t + HOUR_MS])
+  }
+  return spans
 }
 
 /** Tick positions on whole hours, with a step that gives at most 7 labels. */

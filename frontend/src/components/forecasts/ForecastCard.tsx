@@ -6,6 +6,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -19,7 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { formatMarketChartTick, formatMarketDateTime, formatShortDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { formatConfidence } from "@/lib/forecast-confidence"
 import { money } from "@/lib/format"
-import { timeTicks, type ForecastRow } from "@/lib/price-forecast"
+import { hourSpans, LOW_HOURS_PER_DAY, timeTicks, type ForecastRow } from "@/lib/price-forecast"
 
 const CHART_HEIGHT = 320
 
@@ -32,6 +33,8 @@ interface ForecastCardProps {
   /** The plan model's latest run, for the caption. */
   run: { generatedAt: string } | null
   status: DataStatusType
+  /** Start times of the cheapest hours of each day, shaded on the chart. */
+  lowHours: Set<number>
   showCompare: boolean
   loading: boolean
   error: boolean
@@ -52,9 +55,10 @@ function LegendItem({ swatch, children }: { swatch: React.ReactNode; children: R
 
 /** Card 1 of the Forecast page: the next 72 hours with the plan model's typical error as a band. */
 export function ForecastCard({
-  zone, rows, nowMs, from, to, run, status, showCompare, loading, error, onRetry,
+  zone, rows, nowMs, from, to, run, status, lowHours, showCompare, loading, error, onRetry,
 }: ForecastCardProps) {
   const ticks = React.useMemo(() => timeTicks(from, to), [from, to])
+  const lowSpans = React.useMemo(() => hourSpans(lowHours), [lowHours])
 
   return (
     <Card className="min-w-0 overflow-hidden">
@@ -124,6 +128,9 @@ export function ForecastCard({
                       return (
                         <div className="w-max max-w-[calc(100vw-2rem)] space-y-1 rounded-lg border border-border bg-popover p-3 text-xs leading-4 text-popover-foreground shadow-lg">
                           <div className="font-semibold">{formatShortDateTime(row.t)} {MARKET_ZONE_LABEL}</div>
+                          {lowHours.has(row.t) && (
+                            <div className="text-muted-foreground">One of the day&apos;s {LOW_HOURS_PER_DAY} cheapest hours</div>
+                          )}
                           {lines.map(([label, value]) => (
                             <div key={label} className="flex items-baseline justify-between gap-4">
                               <span className="text-muted-foreground">{label}</span>
@@ -135,6 +142,10 @@ export function ForecastCard({
                     }}
                   />
 
+                  {/* Cheapest hours of each day: neutral full-height columns behind the lines. */}
+                  {lowSpans.map(([x1, x2]) => (
+                    <ReferenceArea key={x1} x1={x1} x2={x2} ifOverflow="hidden" fill="var(--muted-foreground)" fillOpacity={0.12} stroke="none" />
+                  ))}
                   <Area dataKey="band" stroke="none" fill="var(--primary)" fillOpacity={0.15} isAnimationActive={false} activeDot={false} />
                   <ReferenceLine
                     x={nowMs}
@@ -160,6 +171,11 @@ export function ForecastCard({
                 <LegendItem swatch={<DashSwatch color="var(--primary)" />}>Forecast (LEAR)</LegendItem>
                 <LegendItem swatch={<span className="h-3 w-5 shrink-0 rounded-sm bg-primary/15" aria-hidden="true" />}>Typical error</LegendItem>
                 {showCompare && <LegendItem swatch={<DashSwatch color="var(--muted-foreground)" />}>Forecast (LSTM)</LegendItem>}
+                {lowSpans.length > 0 && (
+                  <LegendItem swatch={<span className="h-3 w-5 shrink-0 rounded-sm bg-muted-foreground/15" aria-hidden="true" />}>
+                    Cheapest {LOW_HOURS_PER_DAY} h each day
+                  </LegendItem>
+                )}
                 <LegendItem swatch={<span className="h-3 w-0 shrink-0 border-l border-dashed border-foreground" aria-hidden="true" />}>Now</LegendItem>
               </ul>
               <span className="ml-auto whitespace-nowrap">$/MWh · {MARKET_ZONE_LABEL}</span>

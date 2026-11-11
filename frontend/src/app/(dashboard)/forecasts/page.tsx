@@ -8,8 +8,8 @@ import { Toggle } from "@/components/ui/toggle"
 import { unwrap, useLoad } from "@/components/home/use-load"
 import { ForecastCard } from "@/components/forecasts/ForecastCard"
 import { facilityApi, priceApi, type ForecastModel } from "@/lib/api"
-import { formatRelativeAgo, parseIsoDate } from "@/lib/date-utils"
-import { buildForecastRows, FORECAST_HOURS, HOUR_MS } from "@/lib/price-forecast"
+import { currentMarketHourStart, formatRelativeAgo, parseIsoDate } from "@/lib/date-utils"
+import { buildForecastRows, cheapestHours, FORECAST_HOURS, HOUR_MS } from "@/lib/price-forecast"
 import { cn } from "@/lib/utils"
 
 const DEFAULT_ZONE = "LZ_NORTH"
@@ -64,6 +64,8 @@ export default function ForecastsPage() {
     () => buildForecastRows(history.data?.points ?? [], lear.data?.points ?? [], compare ? lstm.data?.points ?? null : null, from, to),
     [history.data, lear.data, lstm.data, compare, from, to],
   )
+  const hourStart = currentMarketHourStart(nowMs).getTime()
+  const lowHours = React.useMemo(() => cheapestHours(rows, hourStart), [rows, hourStart])
 
   // The latest LEAR run decides the status and the alert.
   const learPoints = lear.data?.points ?? []
@@ -115,6 +117,7 @@ export default function ForecastsPage() {
         to={to}
         run={generatedAt ? { generatedAt } : null}
         status={status}
+        lowHours={lowHours}
         showCompare={compare && lstm.data != null}
         loading={loading}
         error={history.error && lear.error}
