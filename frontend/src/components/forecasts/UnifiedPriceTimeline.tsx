@@ -209,7 +209,7 @@ export function UnifiedPriceTimeline({
   }
 
   const [horizon, setHorizon] = React.useState<HorizonPreset>("24h")
-  const [model, setModel] = React.useState<ForecastModel>("lstm")
+  const [model, setModel] = React.useState<ForecastModel>("lear") // the optimiser's preferred model
   const [historyPoints, setHistoryPoints] = React.useState<PricePoint[]>([])
   const [forecastPoints, setForecastPoints] = React.useState<PriceForecastPoint[]>([])
   const [error, setError] = React.useState<string | null>(null)
