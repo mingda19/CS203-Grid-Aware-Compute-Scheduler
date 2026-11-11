@@ -23,7 +23,7 @@ public interface PlanSolver {
     static PlanSolver repeatable(EnergyCostModel costs, Duration exactBudget) {
         AnnealingAllocationSolver heuristic = new AnnealingAllocationSolver(costs);
         return problem -> {
-            Optional<AllocationResult> exact = new ExactAllocationSolver(costs, exactBudget).solve(problem);
+            Optional<AllocationResult> exact = new ExactAllocationSolver(costs).solve(problem, exactBudget);
             if (exact.isPresent() && exact.get().provenOptimal()) {
                 return exact.get();
             }

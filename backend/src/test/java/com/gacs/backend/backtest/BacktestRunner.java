@@ -17,6 +17,9 @@ import com.gacs.backend.service.allocation.OptimizerJob;
 import com.gacs.backend.service.allocation.OptimizerProperties;
 import com.gacs.backend.service.allocation.SlotCapacity;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -54,7 +57,9 @@ public final class BacktestRunner {
 
     public BacktestRunner(OptimizerProperties properties, PlanSolver solver) {
         this.costs = new EnergyCostModel(properties);
-        this.factory = new OptimizationProblemFactory(null, properties); // forecast[] path: no forecast service
+        // forecast[] path: no forecast service. The optimiser never plans into hours before "now", so the
+        // clock sits before any backtest day: every replayed hour is still in the future, as it was on the day.
+        this.factory = new OptimizationProblemFactory(null, properties, Clock.fixed(Instant.EPOCH, ZoneOffset.UTC));
         this.solver = solver;
     }
 
