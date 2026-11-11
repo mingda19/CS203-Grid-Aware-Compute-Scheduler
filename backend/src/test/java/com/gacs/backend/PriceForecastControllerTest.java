@@ -2,9 +2,12 @@ package com.gacs.backend;
 
 import com.gacs.backend.config.SecurityConfig;
 import com.gacs.backend.controller.PriceHistoryController;
+import com.gacs.backend.model.ElectricalPrice;
 import com.gacs.backend.model.PredictedPrice;
+import com.gacs.backend.model.RmseReference;
 import com.gacs.backend.repository.ElectricalPriceRepository;
 import com.gacs.backend.repository.PredictedPriceRepository;
+import com.gacs.backend.repository.RmseReferenceRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
@@ -36,6 +39,71 @@ class PriceForecastControllerTest {
 
     @MockitoBean
     private ElectricalPriceRepository prices;
+
+    @MockitoBean
+    private RmseReferenceRepository rmse;
+
+    private static PredictedPrice prediction(String interval, String version, String generated, double price) {
+        return PredictedPrice.builder()
+            .intervalStartUtc(LocalDateTime.parse(interval))
+            .location("LZ_NORTH")
+            .modelVersion(version)
+            .generatedAt(LocalDateTime.parse(generated))
+            .predictedPrice(price)
+            .build();
+    }
+
+    @Test
+    @WithMockUser
+    void addsTypicalError_ForThePointsTargetAndHour() throws Exception {
+        var y0At5 = prediction("2026-10-09T05:00:00", "lear_y0_2026-10-07", "2026-10-07T00:10:00", 30.0);
+        var y1At6 = prediction("2026-10-09T06:00:00", "lear_y1_2026-10-06", "2026-10-06T00:10:00", 31.0);
+        var noRef = prediction("2026-10-09T07:00:00", "lear_y0_2026-10-07", "2026-10-07T00:10:00", 32.0);
+        when(predictions.findLatestForecastForModel(eq("LZ_NORTH"), eq("lear"), any(), any()))
+            .thenReturn(List.of(y0At5, y1At6, noRef));
+        when(rmse.findByModelKind("lear")).thenReturn(List.of(
+            RmseReference.builder().modelKind("lear").target("y0").hourUtc(5).rmse(4.5).build(),
+            RmseReference.builder().modelKind("lear").target("y0").hourUtc(6).rmse(99.0).build(),
+            RmseReference.builder().modelKind("lear").target("y1").hourUtc(6).rmse(7.25).build()));
+
+        mockMvc.perform(get("/api/prices/forecast").param("model", "lear"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.points[0].typicalErrorUsdMwh").value(4.5))
+            .andExpect(jsonPath("$.data.points[1].typicalErrorUsdMwh").value(7.25))
+            .andExpect(jsonPath("$.data.points[2].typicalErrorUsdMwh").doesNotExist());
+    }
+
+    @Test
+    @WithMockUser
+    void accuracy_UsesLatestRunBeforeTheHour_AndSkipsHoursWithoutActuals() throws Exception {
+        var hour = "2026-10-09T05:00:00";
+        when(predictions.findByLocationAndIntervalStartUtcBetweenOrderByIntervalStartUtcAsc(eq("LZ_NORTH"), any(), any()))
+            .thenReturn(List.of(
+                prediction(hour, "lear_y1_2026-10-06", "2026-10-06T00:10:00", 20.0),
+                prediction(hour, "lear_y0_2026-10-07", "2026-10-07T00:10:00", 25.0), // latest before the hour: used
+                prediction(hour, "lear_y0_2026-10-09", "2026-10-09T06:00:00", 99.0), // made after the hour: ignored
+                prediction(hour, "lstm_y0_2026-10-08", "2026-10-08T00:10:00", 50.0), // other model: ignored
+                prediction("2026-10-09T06:00:00", "lear_y0_2026-10-07", "2026-10-07T00:10:00", 26.0))); // no actual
+        when(prices.findByLocationAndIntervalStartUtcBetweenOrderByIntervalStartUtcAsc(eq("LZ_NORTH"), any(), any()))
+            .thenReturn(List.of(ElectricalPrice.builder()
+                .intervalStartUtc(LocalDateTime.parse(hour)).location("LZ_NORTH").sppUsdMwh(28.0).build()));
+
+        mockMvc.perform(get("/api/prices/forecast-accuracy"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.modelKind").value("lear"))
+            .andExpect(jsonPath("$.data.days").value(7))
+            .andExpect(jsonPath("$.data.points.length()").value(1))
+            .andExpect(jsonPath("$.data.points[0].predictedPrice").value(25.0))
+            .andExpect(jsonPath("$.data.points[0].actualPrice").value(28.0))
+            .andExpect(jsonPath("$.data.points[0].modelVersion").value("lear_y0_2026-10-07"));
+    }
+
+    @Test
+    @WithMockUser
+    void accuracy_Returns400_WhenDaysOutOfRange() throws Exception {
+        mockMvc.perform(get("/api/prices/forecast-accuracy").param("days", "0")).andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/prices/forecast-accuracy").param("days", "31")).andExpect(status().isBadRequest());
+    }
 
     @Test
     @WithMockUser
