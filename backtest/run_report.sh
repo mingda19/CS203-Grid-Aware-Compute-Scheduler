@@ -10,8 +10,8 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PY="${PYTHON:-$REPO/.venv/bin/python3}"
-DATA="$REPO/backtest/data/y0"
-OUT="$REPO/backtest/output/report"
+DATA="$REPO/backtest/data/y0_lear"
+OUT="$REPO/backtest/output/report_lear"   # the 1 Nov XGBoost runs stay in output/report
 FROM=2024-01-03   # first target day the 48h walk-forward covers
 TO=2026-08-29
 SENSITIVITY="$REPO/backend/src/test/resources/backtest/profiles/sensitivity"
@@ -19,10 +19,10 @@ SENSITIVITY="$REPO/backend/src/test/resources/backtest/profiles/sensitivity"
 cd "$REPO"
 echo "== 1/4 features, forecasts, prices"
 "$PY" backtest/build_features.py --out backtest/data/features
-"$PY" model/evaluate.py --mode walkforward --target y0 --models naive_last_known,naive_w1,xgb \
-    --data-dir backtest/data/features --out-dir backtest/data/walkforward_y0 > backtest/data/walkforward_y0.log
-"$PY" backtest/export_prices.py --forecasts backtest/data/walkforward_y0/forecasts_walkforward_y0.parquet \
-    --models xgb,naive_last_known,naive_w1 --out "$DATA"
+"$PY" model/evaluate.py --mode walkforward --target y0 --models naive_last_known,naive_w1,lear \
+    --data-dir backtest/data/features --out-dir backtest/data/walkforward_y0_lear > backtest/data/walkforward_y0_lear.log
+"$PY" backtest/export_prices.py --forecasts backtest/data/walkforward_y0_lear/forecasts_walkforward_y0.parquet \
+    --models lear,naive_last_known,naive_w1 --out "$DATA"
 
 run() { # run <runId> [extra -D settings...]
     local id="$1"; shift
@@ -34,18 +34,18 @@ run() { # run <runId> [extra -D settings...]
 }
 
 echo "== 2/4 headline run"
-run main -Dbacktest.sources=xgb,naive_last_known,naive_w1
+run main -Dbacktest.sources=lear,naive_last_known,naive_w1
 
 echo "== 3/4 assumption reruns"
-run a2-flexibility -Dbacktest.sources=xgb -Dbacktest.profiles="$(ls "$SENSITIVITY"/mixed-flex-*.json | paste -sd, -)"
-run a3-cpu-kwh-0.5x -Dbacktest.sources=xgb -Dbacktest.cpuKwhPerHour=0.025
-run a3-cpu-kwh-2x   -Dbacktest.sources=xgb -Dbacktest.cpuKwhPerHour=0.10
-run a3-gpu-kwh-0.5x -Dbacktest.sources=xgb -Dbacktest.gpuKwhPerHour=0.20
-run a3-gpu-kwh-2x   -Dbacktest.sources=xgb -Dbacktest.gpuKwhPerHour=0.80
-run a4-capacity-0.5x -Dbacktest.sources=xgb -Dbacktest.capacityCpu=128 -Dbacktest.capacityGpu=32
-run a4-capacity-2x   -Dbacktest.sources=xgb -Dbacktest.capacityCpu=512 -Dbacktest.capacityGpu=128
-run a8-heuristic -Dbacktest.sources=xgb -Dbacktest.solver=heuristic
+run a2-flexibility -Dbacktest.sources=lear -Dbacktest.profiles="$(ls "$SENSITIVITY"/mixed-flex-*.json | paste -sd, -)"
+run a3-cpu-kwh-0.5x -Dbacktest.sources=lear -Dbacktest.cpuKwhPerHour=0.025
+run a3-cpu-kwh-2x   -Dbacktest.sources=lear -Dbacktest.cpuKwhPerHour=0.10
+run a3-gpu-kwh-0.5x -Dbacktest.sources=lear -Dbacktest.gpuKwhPerHour=0.20
+run a3-gpu-kwh-2x   -Dbacktest.sources=lear -Dbacktest.gpuKwhPerHour=0.80
+run a4-capacity-0.5x -Dbacktest.sources=lear -Dbacktest.capacityCpu=128 -Dbacktest.capacityGpu=32
+run a4-capacity-2x   -Dbacktest.sources=lear -Dbacktest.capacityCpu=512 -Dbacktest.capacityGpu=128
+run a8-heuristic -Dbacktest.sources=lear -Dbacktest.solver=heuristic
 
 echo "== 4/4 report"
 "$PY" backtest/report.py --runs "$OUT" --prices "$DATA/actual_prices.csv" \
-    --forecast-eval backtest/data/walkforward_y0 --out docs/reports
+    --forecast-eval backtest/data/walkforward_y0_lear --out docs/reports

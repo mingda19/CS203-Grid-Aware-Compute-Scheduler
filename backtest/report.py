@@ -1,7 +1,7 @@
 """
 Write the backtest report (docs/backtest-plan.md ticket 3) from the runs backtest/run_report.sh makes:
 
-  <runs>/main                 headline run: four profiles, XGBoost + two naive forecasts + perfect foresight
+  <runs>/main                 headline run: four profiles, LEAR + two naive forecasts + perfect foresight
   <runs>/a2-flexibility       mixed with flexibility fixed at 0-24 h
   <runs>/a3-{cpu,gpu}-kwh-*   kWh factors halved and doubled
   <runs>/a4-capacity-*        facility capacity halved and doubled
@@ -30,8 +30,8 @@ REPO = Path(__file__).resolve().parent.parent
 
 PROFILES = ["business-hours-training", "mixed", "nightly-batch", "tight"]
 REALISTIC = ["business-hours-training", "mixed", "nightly-batch"]  # tight is a deliberate lower bound
-SOURCES = ["perfect", "xgb", "naive_last_known", "naive_w1"]
-LABEL = {"perfect": "Perfect foresight", "xgb": "XGBoost (served model)",
+SOURCES = ["perfect", "lear", "naive_last_known", "naive_w1"]
+LABEL = {"perfect": "Perfect foresight", "lear": "LEAR (served model)",
          "naive_last_known": "Naive: last known day", "naive_w1": "Naive: same day last week"}
 TARGET = (15.0, 25.0)
 
@@ -48,8 +48,8 @@ BOOT_BLOCK, BOOT_DRAWS, BOOT_SEED = 7, 2000, 20261029  # same settings as Backte
 
 # Chart style (dataviz reference palette; model colours match model/evaluate.py)
 INK, INK2, MUTED, GRID, AXIS, SURFACE = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7", "#fcfcfb"
-COLOR = {"perfect": MUTED, "xgb": "#eb6834", "naive_last_known": "#1baf7a", "naive_w1": "#eda100"}
-MARKER = {"perfect": "D", "xgb": "o", "naive_last_known": "s", "naive_w1": "^"}
+COLOR = {"perfect": MUTED, "lear": "#eb6834", "naive_last_known": "#1baf7a", "naive_w1": "#eda100"}
+MARKER = {"perfect": "D", "lear": "o", "naive_last_known": "s", "naive_w1": "^"}
 BAND = "#f0efec"
 
 
@@ -81,7 +81,7 @@ class Run:
             raise KeyError(f"{self.id}: no summary for {profile}/{source}")
         return hit.iloc[0]
 
-    def savings(self, profile: str, source: str = "xgb") -> float:
+    def savings(self, profile: str, source: str = "lear") -> float:
         return float(self.row(profile, source)["realised_savings_pct"])
 
 
@@ -189,8 +189,8 @@ def chart_headline(main: Run, path: Path, plt) -> None:
                     lw=2, solid_capstyle="round", zorder=2)
             ax.plot(r["realised_savings_pct"], yy, MARKER[source], color=COLOR[source], ms=8, zorder=3,
                     markeredgecolor=SURFACE, markeredgewidth=1.5, label=LABEL[source] if i == 0 else None)
-        xgb = main.row(profile, "xgb")
-        ax.annotate(f"XGBoost {xgb['realised_savings_pct']:.1f}%", (max(main.row(profile, s)["realised_savings_ci_high"] for s in SOURCES), y + offsets["xgb"]),
+        lear = main.row(profile, "lear")
+        ax.annotate(f"LEAR {lear['realised_savings_pct']:.1f}%", (max(main.row(profile, s)["realised_savings_ci_high"] for s in SOURCES), y + offsets["lear"]),
                     xytext=(6, 0), textcoords="offset points", ha="left", va="center", fontsize=8.5, color=INK)
     ax.set_yticks(range(len(PROFILES)), list(reversed(PROFILES)))
     ax.tick_params(axis="y", colors=INK, length=0)
@@ -214,7 +214,7 @@ def monthly(daily: pd.DataFrame, profile: str, source: str) -> pd.Series:
 def chart_monthly(main: Run, path: Path, plt) -> None:
     fig, axes = plt.subplots(1, len(PROFILES), figsize=(11, 3.4), sharey=True)
     for ax, profile in zip(axes, PROFILES):
-        for source in ("perfect", "xgb"):
+        for source in ("perfect", "lear"):
             series = monthly(main.daily, profile, source)
             x = series.index.to_timestamp()
             ax.plot(x, series.to_numpy(), color=COLOR[source], lw=2, label=LABEL[source])
@@ -228,7 +228,7 @@ def chart_monthly(main: Run, path: Path, plt) -> None:
         ax.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter("%Y"))
     axes[0].set_ylabel("Realised savings per month (%)")
     axes[0].legend(loc="upper left", fontsize=8)
-    fig.suptitle("Monthly realised savings: XGBoost vs perfect foresight (shaded: 15–25% target)", x=0.01,
+    fig.suptitle("Monthly realised savings: LEAR vs perfect foresight (shaded: 15–25% target)", x=0.01,
                  ha="left", fontsize=11, fontweight="bold")
     fig.tight_layout()
     fig.savefig(path, dpi=160)
@@ -238,7 +238,7 @@ def chart_monthly(main: Run, path: Path, plt) -> None:
 def chart_flexibility(flex: pd.DataFrame, path: Path, plt) -> None:
     fig, ax = plt.subplots(figsize=(6.4, 3.8))
     ax.axhspan(*TARGET, color=BAND, zorder=0, lw=0)
-    for source, column in (("perfect", "perfect"), ("xgb", "xgb")):
+    for source, column in (("perfect", "perfect"), ("lear", "lear")):
         ax.plot(flex["hours"], flex[column], color=COLOR[source], lw=2, marker=MARKER[source], ms=7,
                 markeredgecolor=SURFACE, markeredgewidth=1.5)
         last = flex.iloc[-1]
@@ -289,13 +289,13 @@ def build(args) -> str:
     # ---------------- A1 headline
     head_rows, a1_ok = [], {}
     for profile in PROFILES:
-        r = main.row(profile, "xgb")
+        r = main.row(profile, "lear")
         lo, hi = r["realised_savings_ci_low"], r["realised_savings_ci_high"]
         overlaps = hi >= TARGET[0] and lo <= TARGET[1]
         if profile in REALISTIC:
             a1_ok[profile] = overlaps
         head_rows.append({
-            "Profile": profile, "XGBoost realised": p(r["realised_savings_pct"]),
+            "Profile": profile, "LEAR realised": p(r["realised_savings_pct"]),
             "95% interval": f"[{lo:.1f}, {hi:.1f}]",
             "Perfect foresight": p(main.savings(profile, "perfect")),
             "Naive last known": p(main.savings(profile, "naive_last_known")),
@@ -312,17 +312,17 @@ def build(args) -> str:
     # A1
     n_ok = sum(a1_ok.values())
     assumptions.append(("A1", "Savings of 15–25% are achievable",
-                        f"XGBoost-planned savings interval overlaps 15–25% for {n_ok} of {len(a1_ok)} realistic "
+                        f"LEAR-planned savings interval overlaps 15–25% for {n_ok} of {len(a1_ok)} realistic "
                         f"profiles ({', '.join(p_ for p_, ok in a1_ok.items() if ok) or 'none'}).",
                         verdict(n_ok == len(a1_ok), "Pass", "Partly met" if n_ok else "Fail")))
 
     # A2
     flex_run = runs["a2-flexibility"]
-    flex = pd.DataFrame([{"hours": int(prof.rsplit("-", 1)[1]), "xgb": flex_run.savings(prof, "xgb"),
+    flex = pd.DataFrame([{"hours": int(prof.rsplit("-", 1)[1]), "lear": flex_run.savings(prof, "lear"),
                           "perfect": flex_run.savings(prof, "perfect"),
-                          "xgb_lo": flex_run.row(prof, "xgb")["realised_savings_ci_low"],
-                          "xgb_hi": flex_run.row(prof, "xgb")["realised_savings_ci_high"],
-                          "jobs": int(flex_run.row(prof, "xgb")["jobs"])}
+                          "lear_lo": flex_run.row(prof, "lear")["realised_savings_ci_low"],
+                          "lear_hi": flex_run.row(prof, "lear")["realised_savings_ci_high"],
+                          "jobs": int(flex_run.row(prof, "lear")["jobs"])}
                          for prof in sorted(flex_run.summary["profile"].unique())]).sort_values("hours")
     chart_flexibility(flex, figures / "flexibility.png", plt)
     kept_start_rows = []
@@ -340,12 +340,12 @@ def build(args) -> str:
             kept_start_rows.append({"Run": label, "Profile": q, "Jobs that kept their start": f"{kept[mine].mean():.0%}",
                                     "Their share of savings": f"{jobs.loc[mine & kept, 'saved'].sum() / total:.0%}"
                                     if total else "-"})
-    rises = bool((np.diff(flex["perfect"]) >= -0.5).all() and (np.diff(flex["xgb"]) >= -0.5).all())
+    rises = bool((np.diff(flex["perfect"]) >= -0.5).all() and (np.diff(flex["lear"]) >= -0.5).all())
     zero_at_0 = abs(flex.iloc[0]["perfect"]) < 1.0
     assumptions.append(("A2", "Flexibility is what drives savings",
                         f"Perfect-foresight savings go from {p(flex.iloc[0]['perfect'])} at 0 h to "
-                        f"{p(flex.iloc[-1]['perfect'])} at 24 h; XGBoost from {p(flex.iloc[0]['xgb'])} to "
-                        f"{p(flex.iloc[-1]['xgb'])}. Rising throughout: {'yes' if rises else 'no'}; about 0 at 0 h: "
+                        f"{p(flex.iloc[-1]['perfect'])} at 24 h; LEAR from {p(flex.iloc[0]['lear'])} to "
+                        f"{p(flex.iloc[-1]['lear'])}. Rising throughout: {'yes' if rises else 'no'}; about 0 at 0 h: "
                         f"{'yes' if zero_at_0 else 'no'}"
                         + ("" if zero_at_0 else " (deadline slack still lets jobs reshape their work, section 6)")
                         + ".", verdict(rises and zero_at_0, "Pass", "Partly met" if rises else "Fail")))
@@ -362,7 +362,7 @@ def build(args) -> str:
             row[profile] = pts(move, 2)
         a3_rows.append(row)
     assumptions.append(("A3", "Results don't hinge on the kWh factors (0.05 / 0.40)",
-                        f"Halving or doubling either factor moves XGBoost savings by at most {a3_worst:.2f} points "
+                        f"Halving or doubling either factor moves LEAR savings by at most {a3_worst:.2f} points "
                         f"(limit ±{A3_MAX_MOVE:.0f}).", verdict(a3_worst < A3_MAX_MOVE)))
 
     # A4
@@ -373,7 +373,7 @@ def build(args) -> str:
         a4_violations += int(run.summary["violations"].sum())
         row = {"Capacity": f"{scale} ({c['capacityCpuHoursPerHour']:.0f} CPU / {c['capacityGpuHoursPerHour']:.0f} GPU)"}
         for profile in PROFILES:
-            r = run.row(profile, "xgb")
+            r = run.row(profile, "lear")
             row[profile] = f"{r['realised_savings_pct']:.1f}% ({int(r['jobs']):,} jobs)"
         a4_rows.append(row)
     assumptions.append(("A4", "Capacity doesn't distort the result",
@@ -386,30 +386,30 @@ def build(args) -> str:
     for profile in PROFILES:
         row = {"Profile": profile}
         for naive in ("naive_last_known", "naive_w1"):
-            d = paired_difference(daily, profile, "xgb", naive)
-            row[f"XGBoost − {LABEL[naive].lower()}"] = f"{d['diff']:+.1f} pts [{d['lo']:+.1f}, {d['hi']:+.1f}]"
+            d = paired_difference(daily, profile, "lear", naive)
+            row[f"LEAR − {LABEL[naive].lower()}"] = f"{d['diff']:+.1f} pts [{d['lo']:+.1f}, {d['hi']:+.1f}]"
             a5_diffs.append(d)
             if profile in REALISTIC and d["diff"] < 0:
                 a5_ok = False
-        gap = main.savings(profile, "perfect") - main.savings(profile, "xgb")
+        gap = main.savings(profile, "perfect") - main.savings(profile, "lear")
         row["Gap to perfect foresight"] = f"{gap:.1f} pts"
         a5_rows.append(row)
     assumptions.append(("A5", "The forecast is good enough to act on",
-                        f"XGBoost saves {min(x['diff'] for x in a5_diffs):+.1f} to {max(x['diff'] for x in a5_diffs):+.1f} "
-                        f"points more than the naive forecasts, but the 95% interval is above 0 in only "
-                        f"{sum(x['lo'] > 0 for x in a5_diffs)} of {len(a5_diffs)} comparisons, so the edge is small. "
+                        f"LEAR saves {min(x['diff'] for x in a5_diffs):+.1f} to {max(x['diff'] for x in a5_diffs):+.1f} "
+                        f"points more than the naive forecasts; the 95% interval is above 0 in "
+                        f"{sum(x['lo'] > 0 for x in a5_diffs)} of {len(a5_diffs)} comparisons. "
                         "It leaves "
                         f"{min(main.savings(q, 'perfect') - main.savings(q) for q in REALISTIC):.1f}–"
                         f"{max(main.savings(q, 'perfect') - main.savings(q) for q in REALISTIC):.1f} points of the "
                         "possible savings on the table (section 4)."
-                        + ("" if a5_ok else " XGBoost does not beat both naive forecasts on every realistic profile."),
+                        + ("" if a5_ok else " LEAR does not beat both naive forecasts on every realistic profile."),
                         verdict(a5_ok)))
 
     # A6
     a6_rows, a6_ok = [], True
     for profile in PROFILES:
-        r = main.row(profile, "xgb")
-        d = savings_days(daily, profile, "xgb")
+        r = main.row(profile, "lear")
+        d = savings_days(daily, profile, "lear")
         over_days = float((d["projection_gap_pct"] > 0).mean())
         gap = float(r["projection_gap_pct"])
         if profile in REALISTIC and gap > A6_MAX_GAP:
@@ -420,9 +420,9 @@ def build(args) -> str:
                         "Days projected > realised": f"{over_days:.0%}"})
     assumptions.append(("A6", "The app's projected savings are honest",
                         "Projected minus realised savings over the period ranges from "
-                        f"{min(main.row(q, 'xgb')['projection_gap_pct'] for q in PROFILES):+.1f} to "
-                        f"{max(main.row(q, 'xgb')['projection_gap_pct'] for q in PROFILES):+.1f} points: the app "
-                        "under-promises on daytime workloads and over-promises on the night batch (limit: no more "
+                        f"{min(main.row(q, 'lear')['projection_gap_pct'] for q in PROFILES):+.1f} to "
+                        f"{max(main.row(q, 'lear')['projection_gap_pct'] for q in PROFILES):+.1f} points (negative = the app "
+                        "under-promises, positive = it over-promises; limit: no more "
                         f"than {A6_MAX_GAP:.0f} points of over-promise on a realistic profile). Planning on the naive "
                         "forecasts would over-promise by "
                         f"{min(main.row(q, s)['projection_gap_pct'] for q in REALISTIC for s in ('naive_last_known', 'naive_w1')):+.1f} to "
@@ -432,7 +432,7 @@ def build(args) -> str:
     # A7
     a7_rows, a7_worst = [], 0.0
     for profile in PROFILES:
-        d = savings_days(daily, profile, "xgb")
+        d = savings_days(daily, profile, "lear")
         negative = d["realised_savings_usd"] < -1e-12
         share = float(negative.mean())
         a7_worst = max(a7_worst, share if profile in REALISTIC else 0.0)
@@ -450,7 +450,7 @@ def build(args) -> str:
 
     # A8
     heur = runs["a8-heuristic"].days
-    exact = main.days[main.days["source"].isin(["xgb", "perfect"])]
+    exact = main.days[main.days["source"].isin(["lear", "perfect"])]
     merged = exact.merge(heur, on=["profile", "date", "source"], suffixes=("_exact", "_heur"))
     proven = merged[merged["proven_optimal_exact"] & (merged["optimised_cost_planned_exact"] > 1e-9)
                     & (merged["scheduled_exact"] == merged["scheduled_heur"])]
@@ -481,7 +481,7 @@ def build(args) -> str:
     spike_days = set(period.loc[period["price"] > threshold, "interval_start_utc"].dt.floor("D"))
     a9_rows, a9_worst = [], 0.0
     for profile in PROFILES:
-        d = savings_days(daily, profile, "xgb")
+        d = savings_days(daily, profile, "lear")
         is_spike = d.index.isin(list(spike_days))
         total = d["realised_savings_usd"].sum()
         share = float(d.loc[is_spike, "realised_savings_usd"].sum() / total) if total else float("nan")
@@ -504,12 +504,12 @@ def build(args) -> str:
     add("## 1. Headline")
     add("")
     best = max(REALISTIC, key=lambda q: main.savings(q))
-    add(f"Planning on the **served XGBoost 48-hour forecast**, the optimiser cut energy cost against the fixed "
+    add(f"Planning on the **served LEAR 48-hour forecast**, the optimiser cut energy cost against the fixed "
         f"schedule by **{p(main.savings('mixed'))}** for the `mixed` workload, from "
         f"{p(min(main.savings(q) for q in REALISTIC))} to {p(main.savings(best))} across the realistic profiles. "
         f"With perfect price foresight the same jobs would have saved "
         f"{p(min(main.savings(q, 'perfect') for q in REALISTIC))}–{p(max(main.savings(q, 'perfect') for q in REALISTIC))}. "
-        f"Period: {cfg['from']} to {cfg['to']} ({int(main.row('mixed', 'xgb')['days'])} days), ERCOT LZ_NORTH "
+        f"Period: {cfg['from']} to {cfg['to']} ({int(main.row('mixed', 'lear')['days'])} days), ERCOT LZ_NORTH "
         "day-ahead prices.")
     add("")
     add(table(head_rows))
@@ -520,7 +520,7 @@ def build(args) -> str:
     add("")
     add(f"![Realised savings by profile](backtest-{today}/headline.png)")
     add("")
-    mixed_days = savings_days(daily, "mixed", "xgb")
+    mixed_days = savings_days(daily, "mixed", "lear")
     by_season = {s: pct(mixed_days[mixed_days.index.month.isin(months)])
                  for s, months in (("winter", [12, 1, 2]), ("summer", [6, 7, 8]))}
     add("**Key findings**")
@@ -533,13 +533,16 @@ def build(args) -> str:
         f"to ${winter.loc[17:21].min():.0f} by evening), so delaying daytime jobs pays. In summer they already "
         f"start in the cheapest hours (${summer.loc[13:15].min():.0f}–{summer.loc[13:15].max():.0f} at 13–15 UTC) "
         f"and prices only rise until midnight UTC (${summer[23]:.0f}), past which jobs can't move (section 7).")
-    add(f"- **The forecast captures about {main.row('mixed', 'xgb')['share_of_possible_savings_captured']:.0%} of "
-        f"what was possible** (`mixed`). XGBoost beats the naive forecasts, but only by about a point (A5).")
-    add(f"- **About {main.row('mixed', 'xgb')['negative_days_share']:.0%} of days cost slightly more** than the fixed "
+    add(f"- **The forecast captures about {main.row('mixed', 'lear')['share_of_possible_savings_captured']:.0%} of "
+        f"what was possible** (`mixed`). LEAR beats the naive forecasts by "
+        f"{min(main.savings('mixed') - main.savings('mixed', n) for n in ('naive_last_known', 'naive_w1')):.1f} to "
+        f"{max(main.savings('mixed') - main.savings('mixed', n) for n in ('naive_last_known', 'naive_w1')):.1f} "
+        "points (A5).")
+    add(f"- **About {main.row('mixed', 'lear')['negative_days_share']:.0%} of days cost slightly more** than the fixed "
         "schedule: days with little to gain where the forecast saw a spread that wasn't there (A7).")
     add(f"- **The app's projected savings are off** by "
-        f"{min(main.row(q, 'xgb')['projection_gap_pct'] for q in REALISTIC):+.1f} to "
-        f"{max(main.row(q, 'xgb')['projection_gap_pct'] for q in REALISTIC):+.1f} points on the realistic profiles (A6).")
+        f"{min(main.row(q, 'lear')['projection_gap_pct'] for q in REALISTIC):+.1f} to "
+        f"{max(main.row(q, 'lear')['projection_gap_pct'] for q in REALISTIC):+.1f} points on the realistic profiles (A6).")
     add("- **The optimiser itself is sound:** 0 rule violations, 100% of jobs scheduled by their deadline, "
         f"{main.manifest['summary']['provenOptimalShare']:.2%} of plans proven optimal.")
     add("")
@@ -559,11 +562,10 @@ def build(args) -> str:
     add("- **Planning:** one plan per UTC day per price source, by the production allocation code (exact solver "
         f"with a {cfg['exactBudgetSeconds']} s budget, else the deterministic heuristic). Every plan is settled at "
         "actual prices and checked against the contract rules.")
-    add("- **Forecasts:** walk-forward, out of sample: the y0 (48 h ahead) XGBoost model retrained on five "
-        "expanding windows by `model/evaluate.py`, plus two naive forecasts. Each day is planned with the forecast "
-        "made two days before it, which is what the app has. The training files were rebuilt in the current "
-        "feature layout by `backtest/build_features.py`; scoring the saved y0 model on them reproduces the "
-        "held-out error per hour recorded in `data_scripts/predictions.py` exactly.")
+    add("- **Forecasts:** walk-forward, out of sample: the y0 (48 h ahead) LEAR model, refitted every 7 days "
+        "on past data only by `model/evaluate.py` (`model/lear_model.py`, no pretrained file), plus two naive "
+        "forecasts. Each day is planned with the forecast made two days before it, which is what the app has. "
+        "The training files were rebuilt in the current feature layout by `backtest/build_features.py`.")
     add("- **Savings rule:** days with an unscheduled job are left out of savings figures (none were).")
     add("")
     add("Runs (all under `backtest/output/report/`, not committed):")
@@ -577,7 +579,7 @@ def build(args) -> str:
                          "Day rows": f"{m['summary']['dayRows']:,}", "Violations": m["summary"]["violations"],
                          "Proven optimal": f"{m['summary']['provenOptimalShare']:.2%}",
                          "actual_prices.csv": m["inputs"]["sha256"]["actual_prices.csv"][:12],
-                         "forecast_xgb.csv": m["inputs"]["sha256"].get("forecast_xgb.csv", "")[:12]})
+                         "forecast_lear.csv": m["inputs"]["sha256"].get("forecast_lear.csv", "")[:12]})
     add(table(run_rows))
     add("")
     add("Rerun everything: `backtest/run_report.sh` from the repo root (needs `model/train.csv` and `model/val.csv`). "
@@ -588,12 +590,12 @@ def build(args) -> str:
     # Savings
     add("## 3. Savings")
     add("")
-    add("### Daily distribution (XGBoost)")
+    add("### Daily distribution (LEAR)")
     add("")
     add(table([{"Profile": q, "Mean daily": p(r["daily_savings_mean_pct"]), "Median daily": p(r["daily_savings_median_pct"]),
                 "Std dev": f"{r['daily_savings_std_pct']:.1f}", "10th pct": p(r["daily_savings_p10_pct"]),
                 "90th pct": p(r["daily_savings_p90_pct"]), "Negative days": f"{r['negative_days_share']:.1%}"}
-               for q in PROFILES for r in [main.row(q, "xgb")]]))
+               for q in PROFILES for r in [main.row(q, "lear")]]))
     add("")
     add("The headline uses the ratio of totals (money saved / baseline money). Daily percentages swing much more "
         "because some days have a tiny baseline cost.")
@@ -608,7 +610,7 @@ def build(args) -> str:
     for season in ("Winter", "Spring", "Summer", "Autumn"):
         row = {"Season": season}
         for q in PROFILES:
-            d = savings_days(daily, q, "xgb")
+            d = savings_days(daily, q, "lear")
             row[q] = p(pct(d[d.index.month.map(seasons) == season]))
         season_rows.append(row)
     add(table(season_rows))
@@ -623,14 +625,14 @@ def build(args) -> str:
         row = {"Days by intraday price std dev": label,
                "Std dev range ($/MWh)": f"{vol[quartile == label].min():.0f}–{vol[quartile == label].max():.0f}"}
         for q in PROFILES:
-            d = savings_days(daily, q, "xgb")
+            d = savings_days(daily, q, "lear")
             row[q] = p(pct(d[d.index.isin(list(days_in))]))
         vol_rows.append(row)
     add(table(vol_rows))
     add("")
-    add("### Worst days (`mixed`, XGBoost)")
+    add("### Worst days (`mixed`, LEAR)")
     add("")
-    d = savings_days(daily, "mixed", "xgb").sort_values("realised_savings_usd").head(8)
+    d = savings_days(daily, "mixed", "lear").sort_values("realised_savings_usd").head(8)
     add(table([{"Date": i.date(), "Baseline": usd(r["baseline_cost"]), "Realised": usd(r["realised_cost"]),
                 "Saved": usd(r["realised_savings_usd"]), "Perfect foresight saved": usd(r["baseline_cost"] - r["perfect_cost"]),
                 "Forecast MAE, hours used ($/MWh)": f"{r['forecast_mae_used']:.0f}"} for i, r in d.iterrows()]))
@@ -642,13 +644,13 @@ def build(args) -> str:
     perfect_negative = float(main.summary.loc[main.summary["source"] == "perfect", "negative_days_share"].max())
     neg_rows = []
     for q in PROFILES:
-        d = savings_days(daily, q, "xgb")
+        d = savings_days(daily, q, "lear")
         neg = d["realised_savings_usd"] < -1e-12
         share = lambda g, col: 100 * g[col].sum() / g["baseline_cost"].sum()  # noqa: E731
         d = d.assign(perfect_usd=d["baseline_cost"] - d["perfect_cost"])
         neg_rows.append({"Profile": q, "Possible savings on negative days (perfect foresight)": p(share(d[neg], "perfect_usd")),
                          "on other days": p(share(d[~neg], "perfect_usd")),
-                         "Savings XGBoost expected on negative days": p(share(d[neg], "projected_savings_usd"))})
+                         "Savings LEAR expected on negative days": p(share(d[neg], "projected_savings_usd"))})
     add("Negative days are mostly days with little to gain. On them, perfect foresight could only have saved a few "
         "percent, yet the forecast still saw a price difference worth moving jobs for, and it wasn't there:")
     add("")
@@ -672,17 +674,17 @@ def build(args) -> str:
     add("")
     add(table([{"Forecast": LABEL[m], "MAE": f"{acc.loc[m, 'mae']:.2f}", "RMSE": f"{acc.loc[m, 'rmse']:.2f}",
                 "Bias": f"{acc.loc[m, 'bias']:+.2f}", "Hours": f"{int(acc.loc[m, 'hours']):,}"}
-               for m in ("xgb", "naive_last_known", "naive_w1") if m in acc.index]))
+               for m in ("lear", "naive_last_known", "naive_w1") if m in acc.index]))
     add("")
     add("Savings when planning on each forecast, against perfect foresight (realised savings difference in points "
         "of baseline cost, with a paired 95% block-bootstrap interval):")
     add("")
     add(table(a5_rows))
     add("")
-    add("Lost savings vs forecast error (`mixed`, XGBoost): days grouped by the forecast's error over the hours "
+    add("Lost savings vs forecast error (`mixed`, LEAR): days grouped by the forecast's error over the hours "
         "the plan used.")
     add("")
-    d = savings_days(daily, "mixed", "xgb")
+    d = savings_days(daily, "mixed", "lear")
     bins = pd.qcut(d["forecast_mae_used"], 4, labels=["Smallest error 25%", "2nd", "3rd", "Largest error 25%"])
     add(table([{"Days": label, "MAE range ($/MWh)": f"{g['forecast_mae_used'].min():.1f}–{g['forecast_mae_used'].max():.1f}",
                 "Realised": p(pct(g)), "Perfect foresight": p(float(100 * (g['baseline_cost'].sum() - g['perfect_cost'].sum()) / g['baseline_cost'].sum())),
@@ -702,7 +704,7 @@ def build(args) -> str:
                 "Deadline adherence": f"{r['deadline_adherence']:.1%}", "Rule violations": int(r["violations"]),
                 "Proven optimal": f"{r['proven_optimal_share']:.2%}",
                 "Energy, baseline = plan": "yes" if abs(r["energy_kwh_baseline"] - r["energy_kwh_optimised"]) < 1e-6 else "NO"}
-               for q in PROFILES for r in [main.row(q, "xgb")]]))
+               for q in PROFILES for r in [main.row(q, "lear")]]))
     add("")
     add(f"Solve time per plan (all profiles and sources, {len(timing):,} plans): median {timing.median():.0f} ms, "
         f"95th percentile {timing.quantile(0.95):.0f} ms, max {timing.max() / 1000:.1f} s. Not repeatable, so kept "
@@ -723,8 +725,8 @@ def build(args) -> str:
     add("")
     add(f"![Flexibility](backtest-{today}/flexibility.png)")
     add("")
-    add(table([{"Flexibility (h)": int(r["hours"]), "XGBoost": p(r["xgb"]),
-                "95% interval": f"[{r['xgb_lo']:.1f}, {r['xgb_hi']:.1f}]", "Perfect foresight": p(r["perfect"]),
+    add(table([{"Flexibility (h)": int(r["hours"]), "LEAR": p(r["lear"]),
+                "95% interval": f"[{r['lear_lo']:.1f}, {r['lear_hi']:.1f}]", "Perfect foresight": p(r["perfect"]),
                 "Jobs": f"{int(r['jobs']):,}"} for _, r in flex.iterrows()]))
     add("")
     add("Flexibility is capped at the end of the UTC day (decision D5), so 12 h and 24 h mostly mean \"until "
@@ -737,7 +739,7 @@ def build(args) -> str:
     add("")
     add(table(kept_start_rows))
     add("")
-    add("### A3: kWh factors (change in XGBoost savings vs the headline)")
+    add("### A3: kWh factors (change in LEAR savings vs the headline)")
     add("")
     add(table(a3_rows))
     add("")
@@ -747,18 +749,18 @@ def build(args) -> str:
         "`mixed` and `tight` move because the ratio changes how much the CPU-only batch jobs (which save little) "
         "weigh against the GPU training jobs (which save a lot).")
     add("")
-    add("### A4: facility capacity (XGBoost savings, jobs accepted)")
+    add("### A4: facility capacity (LEAR savings, jobs accepted)")
     add("")
     add(table(a4_rows))
     add("")
     add("Jobs are only accepted when the fixed schedule fits, so a smaller facility accepts fewer and smaller "
         "jobs, and a larger one leaves more room to move them.")
     add("")
-    add("### A8: heuristic gap on proven-optimal plans (XGBoost and perfect-foresight plans, at planning prices)")
+    add("### A8: heuristic gap on proven-optimal plans (LEAR and perfect-foresight plans, at planning prices)")
     add("")
     add(table(a8_rows))
     add("")
-    add("### A9: price spikes (XGBoost)")
+    add("### A9: price spikes (LEAR)")
     add("")
     add(table(a9_rows))
     add("")
@@ -776,10 +778,14 @@ def build(args) -> str:
         "for jobs submitted after they clear, planning on them would be close to the perfect-foresight result. "
         "The app doesn't do that today.")
     add("- **Rebuilt training data.** The 48 h features were rebuilt from the old CSVs "
-        "(`backtest/build_features.py`) because the original build script isn't in the repo. They reproduce the "
-        "saved model's held-out error exactly, but the data/model owner should confirm them.")
-    add("- **LSTM not tested.** Only the served XGBoost model and two naive forecasts were run.")
-    add("- **Job priority** is not used by the solver yet, so it isn't reflected here.")
+        "(`backtest/build_features.py`) because the original build script isn't in the repo. In the 1 November "
+        "run they reproduced the saved XGBoost model's held-out error exactly; that check was not repeated for LEAR, "
+        "so the data/model owner should confirm them.")
+    add("- **LSTM not tested.** Only the served LEAR model and two naive forecasts were run.")
+    add("- **Job priority** is not exercised: the generated jobs don't set one, so every job has the default.")
+    add("- **Walk-forward LEAR, not the stored model.** The forecasts come from the current LEAR code refitted on "
+        "past data only. The model stored in Supabase was trained on data up to January 2026, so it can't be "
+        "tested fairly on earlier days.")
     add("")
     return "\n".join(lines) + "\n", today
 
