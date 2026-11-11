@@ -3,13 +3,15 @@
 import * as React from "react"
 import { AlertTriangle, Clock, Minus, TrendingDown, TrendingUp } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Skeleton } from "@/components/ui/skeleton"
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
 import { HelpTip } from "@/components/ui/help-tip"
 import { StatCard } from "@/components/home/StatCard"
 import { NeedsApprovalCard } from "@/components/home/NeedsApprovalCard"
 import { UpcomingJobsTable } from "@/components/home/UpcomingJobsTable"
 import { unwrap, useLoad } from "@/components/home/use-load"
-import { UnifiedPriceTimeline } from "@/components/forecasts/UnifiedPriceTimeline"
+import { ForecastCard } from "@/components/forecasts/ForecastCard"
+import { useForecastCard } from "@/components/forecasts/use-forecast-card"
 import { facilityApi, freshnessApi, priceApi, type FacilityUtilization } from "@/lib/api"
 import { datasetFreshnessText } from "@/lib/data-freshness"
 import { formatMarketTime } from "@/lib/date-utils"
@@ -56,6 +58,7 @@ export default function HomePage() {
   const zone = facility.loading ? null : facility.data?.location ?? DEFAULT_ZONE
 
   const prices = useLoad(zone ? `prices:${zone}` : null, () => loadPrices(zone ?? DEFAULT_ZONE), 15 * 60_000)
+  const forecast = useForecastCard(zone)
   const utilization = useLoad("utilization", () => unwrap(facilityApi.utilization(), "Unable to load utilization"), FIVE_MINUTES)
   const freshness = useLoad("freshness", () => unwrap(freshnessApi.getStatus(), "Unable to load data status"), FIVE_MINUTES)
 
@@ -130,13 +133,14 @@ export default function HomePage() {
         />
       </div>
 
-      <div className="min-w-0">
-        {zone ? (
-          <UnifiedPriceTimeline hubLocation={zone} variant="compact" height={320} />
-        ) : (
-          <Skeleton className="h-96 w-full rounded-xl" />
-        )}
-      </div>
+      <ForecastCard
+        {...forecast.card}
+        footerAction={
+          <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs leading-4">
+            <Link href="/forecasts">Details</Link>
+          </Button>
+        }
+      />
 
       <UpcomingJobsTable />
     </div>

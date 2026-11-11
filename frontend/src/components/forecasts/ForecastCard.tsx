@@ -16,13 +16,20 @@ import {
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { DataStatusBadge, type DataStatusType } from "@/components/ui/data-status-badge"
+import { Segmented } from "@/components/ui/segmented"
 import { Skeleton } from "@/components/ui/skeleton"
+import type { ForecastModel } from "@/lib/api"
 import { formatMarketChartTick, formatMarketDateTime, formatShortDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { formatConfidence } from "@/lib/forecast-confidence"
 import { money } from "@/lib/format"
-import { hourSpans, LOW_HOURS_PER_DAY, timeTicks, type ForecastRow } from "@/lib/price-forecast"
+import { hourSpans, LOW_HOURS_PER_DAY, MODEL_LABEL, MODEL_OPTIONS, MODEL_ROLE, timeTicks, type ForecastRow } from "@/lib/price-forecast"
 
 const CHART_HEIGHT = 320
+/** The unit after a price, in caption style (STYLE.md §2). */
+export const PER_MWH = <span className="font-normal text-muted-foreground"> /MWh</span>
+
+export type PastWindow = "24h" | "7d"
+const PAST_OPTIONS = [{ value: "24h", label: "24h" }, { value: "7d", label: "7d" }] as const
 
 interface ForecastCardProps {
   zone: string
@@ -30,15 +37,20 @@ interface ForecastCardProps {
   nowMs: number
   from: number
   to: number
-  /** The plan model's latest run, for the caption. */
+  model: ForecastModel
+  onModelChange: (model: ForecastModel) => void
+  pastWindow: PastWindow
+  onPastWindowChange: (window: PastWindow) => void
+  /** The shown model's latest run, for the caption. */
   run: { generatedAt: string } | null
   status: DataStatusType
   /** Start times of the cheapest hours of each day, shaded on the chart. */
   lowHours: Set<number>
-  showCompare: boolean
   loading: boolean
   error: boolean
   onRetry: () => void
+  /** A link at the bottom right, after the legend, for example Home's link to the Forecast page. */
+  footerAction?: React.ReactNode
 }
 
 function DashSwatch({ color }: { color: string }) {
@@ -53,23 +65,29 @@ function LegendItem({ swatch, children }: { swatch: React.ReactNode; children: R
   return <li className="inline-flex items-center gap-1.5 whitespace-nowrap">{swatch}{children}</li>
 }
 
-/** Card 1 of the Forecast page: the next 72 hours with the plan model's typical error as a band. */
+/** The next 72 hours with the model's typical error as a band. Home and the Forecast page both show it; `useForecastCard` feeds it. */
 export function ForecastCard({
-  zone, rows, nowMs, from, to, run, status, lowHours, showCompare, loading, error, onRetry,
+  zone, rows, nowMs, from, to, model, onModelChange, pastWindow, onPastWindowChange, run, status, lowHours, loading, error, onRetry, footerAction,
 }: ForecastCardProps) {
   const ticks = React.useMemo(() => timeTicks(from, to), [from, to])
   const lowSpans = React.useMemo(() => hourSpans(lowHours), [lowHours])
+  const name = MODEL_LABEL[model]
 
   return (
     <Card className="min-w-0 overflow-hidden">
-      <div className="flex min-w-0 items-start justify-between gap-3 p-4 pb-2 sm:p-5 sm:pb-2">
+      {/* Below sm the switches move under the title as one group; they never wrap one by one. */}
+      <div className="flex min-w-0 flex-col gap-3 p-4 pb-2 sm:flex-row sm:items-start sm:justify-between sm:p-5 sm:pb-2">
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold leading-5">Forecast, next 72 hours</h2>
           <p className="truncate text-xs leading-4 text-muted-foreground" title={run ? formatMarketDateTime(run.generatedAt) : undefined}>
-            {zone} · LEAR, used for plans{run ? ` · made ${formatShortDateTime(run.generatedAt)}` : ""}
+            {zone} · {name}, {MODEL_ROLE[model]}{run ? ` · made ${formatShortDateTime(run.generatedAt)}` : ""}
           </p>
         </div>
-        {!loading && <DataStatusBadge size="sm" status={status} updatedAt={run?.generatedAt ?? null} source={`LEAR forecast for ${zone}`} />}
+        <div className="flex shrink-0 flex-nowrap items-center gap-2">
+          {!loading && <DataStatusBadge size="sm" status={status} updatedAt={run?.generatedAt ?? null} source={`${name} forecast for ${zone}`} />}
+          <Segmented label="Forecast model" value={model} onChange={onModelChange} options={MODEL_OPTIONS} />
+          <Segmented label="Past window" value={pastWindow} onChange={onPastWindowChange} options={PAST_OPTIONS} />
+        </div>
       </div>
 
       <div className="min-w-0 px-2 pb-4 sm:px-4 sm:pb-5">
@@ -117,14 +135,13 @@ export function ForecastCard({
                     content={({ active, payload }) => {
                       const row = active ? (payload?.find((p) => p?.payload)?.payload as ForecastRow | undefined) : undefined
                       if (!row) return null
-                      const lines: Array<[string, string]> = []
-                      if (row.price != null) lines.push([row.t > nowMs ? "Day-ahead price (known)" : "Day-ahead price", money(row.price)])
+                      const lines: Array<[string, React.ReactNode]> = []
+                      if (row.price != null) lines.push([row.t > nowMs ? "Day-ahead price (known)" : "Day-ahead price", <>{money(row.price)}{PER_MWH}</>])
                       if (row.price == null && row.forecast != null) {
-                        lines.push(["Forecast (LEAR)", money(row.forecast)])
-                        if (row.typicalError != null) lines.push(["Typical error", `± ${money(row.typicalError)}`])
+                        lines.push([`Forecast (${name})`, <>{money(row.forecast)}{PER_MWH}</>])
+                        if (row.typicalError != null) lines.push(["Typical error", <>± {money(row.typicalError)}{PER_MWH}</>])
                         lines.push(["Confidence", formatConfidence(row.confidence)])
                       }
-                      if (showCompare && row.price == null && row.compare != null) lines.push(["Forecast (LSTM)", money(row.compare)])
                       return (
                         <div className="w-max max-w-[calc(100vw-2rem)] space-y-1 rounded-lg border border-border bg-popover p-3 text-xs leading-4 text-popover-foreground shadow-lg">
                           <div className="font-semibold">{formatShortDateTime(row.t)} {MARKET_ZONE_LABEL}</div>
@@ -157,10 +174,6 @@ export function ForecastCard({
                     activeDot={{ r: 4, stroke: "var(--primary)", strokeWidth: 2, fill: "var(--card)" }} />
                   <Line dataKey="forecast" stroke="var(--primary)" strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false}
                     activeDot={{ r: 4, stroke: "var(--primary)", strokeWidth: 2, fill: "var(--card)" }} />
-                  {showCompare && (
-                    <Line dataKey="compare" stroke="var(--muted-foreground)" strokeWidth={1.5} strokeDasharray="3 3" dot={false}
-                      isAnimationActive={false} activeDot={false} />
-                  )}
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -168,9 +181,8 @@ export function ForecastCard({
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 px-2 text-xs leading-4 text-muted-foreground">
               <ul className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 <LegendItem swatch={<span className="h-0.5 w-5 shrink-0 bg-primary" aria-hidden="true" />}>Day-ahead price</LegendItem>
-                <LegendItem swatch={<DashSwatch color="var(--primary)" />}>Forecast (LEAR)</LegendItem>
+                <LegendItem swatch={<DashSwatch color="var(--primary)" />}>Forecast ({name})</LegendItem>
                 <LegendItem swatch={<span className="h-3 w-5 shrink-0 rounded-sm bg-primary/15" aria-hidden="true" />}>Typical error</LegendItem>
-                {showCompare && <LegendItem swatch={<DashSwatch color="var(--muted-foreground)" />}>Forecast (LSTM)</LegendItem>}
                 {lowSpans.length > 0 && (
                   <LegendItem swatch={<span className="h-3 w-5 shrink-0 rounded-sm bg-muted-foreground/15" aria-hidden="true" />}>
                     Cheapest {LOW_HOURS_PER_DAY} h each day
@@ -178,7 +190,7 @@ export function ForecastCard({
                 )}
                 <LegendItem swatch={<span className="h-3 w-0 shrink-0 border-l border-dashed border-foreground" aria-hidden="true" />}>Now</LegendItem>
               </ul>
-              <span className="ml-auto whitespace-nowrap">$/MWh · {MARKET_ZONE_LABEL}</span>
+              {footerAction && <span className="ml-auto shrink-0">{footerAction}</span>}
             </div>
           </>
         )}

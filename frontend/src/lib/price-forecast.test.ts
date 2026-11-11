@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { buildForecastRows, cheapestHours, hourSpans, HOUR_MS, type ForecastRow } from "./price-forecast"
+import { accuracyStats, buildForecastRows, cheapestHours, deviationRows, hourSpans, HOUR_MS, type ForecastRow } from "./price-forecast"
 import type { PriceForecastPoint } from "./api"
 
 const at = (h: number) => `2026-11-11T${String(h).padStart(2, "0")}:00:00`
@@ -12,12 +12,12 @@ const fc = (h: number, price: number, error?: number): PriceForecastPoint => ({
 describe("buildForecastRows", () => {
   it("keeps known prices over forecasts and starts the forecast at the last known hour", () => {
     const history = [{ intervalStartUtc: at(1), sppUsdMwh: 20 }, { intervalStartUtc: at(2), sppUsdMwh: 22 }]
-    const rows = buildForecastRows(history, [fc(2, 99, 5), fc(3, 30, 4), fc(4, 31)], [fc(3, 40)], ms(0), ms(23))
+    const rows = buildForecastRows(history, [fc(2, 99, 5), fc(3, 30, 4), fc(4, 31)], ms(0), ms(23))
 
     expect(rows.map((r) => r.t)).toEqual([ms(1), ms(2), ms(3), ms(4)])
-    // Hour 2 is known, so its forecast of 99 is dropped; it anchors the dashed lines at the known price.
-    expect(rows[1]).toMatchObject({ price: 22, forecast: 22, band: [22, 22], compare: 22 })
-    expect(rows[2]).toMatchObject({ price: null, forecast: 30, band: [26, 34], typicalError: 4, compare: 40 })
+    // Hour 2 is known, so its forecast of 99 is dropped; it anchors the dashed line at the known price.
+    expect(rows[1]).toMatchObject({ price: 22, forecast: 22, band: [22, 22] })
+    expect(rows[2]).toMatchObject({ price: null, forecast: 30, band: [26, 34], typicalError: 4 })
     // No typical error: no band for that hour.
     expect(rows[3]).toMatchObject({ forecast: 31, band: null })
   })
@@ -26,7 +26,7 @@ describe("buildForecastRows", () => {
   const start = Date.parse("2026-11-12T06:00:00Z")
   const hourRows = (prices: Array<number | null>, knownCount = 0): ForecastRow[] => prices.map((p, i) => ({
     t: start + i * HOUR_MS, price: i < knownCount ? p : null, forecast: i < knownCount ? null : p,
-    band: null, typicalError: null, confidence: null, compare: null,
+    band: null, typicalError: null, confidence: null,
   }))
 
   it("cheapestHours marks the 4 cheapest hours of each CT day, known or forecast, from fromHour on", () => {
@@ -45,8 +45,28 @@ describe("buildForecastRows", () => {
     expect(hourSpans(new Set([h(3), h(1), h(2), h(6)]))).toEqual([[h(1), h(4)], [h(6), h(7)]])
   })
 
+  it("accuracyStats gives the average miss, typical error (RMSE) and biggest miss", () => {
+    const p = (h: number, predicted: number, actual: number) => ({
+      intervalStartUtc: at(h), predictedPrice: predicted, actualPrice: actual, modelVersion: "lear_y0_x", generatedAt: at(0),
+    })
+    const stats = accuracyStats([p(1, 10, 13), p(2, 20, 16), p(3, 30, 30)]) // misses 3, 4, 0
+    expect(stats.hours).toBe(3)
+    expect(stats.averageMiss).toBeCloseTo(7 / 3)
+    expect(stats.typicalError).toBeCloseTo(Math.sqrt(25 / 3))
+    expect(stats.biggestMiss).toEqual({ miss: 4, t: ms(2) })
+    expect(accuracyStats([])).toEqual({ hours: 0, averageMiss: null, typicalError: null, biggestMiss: null })
+  })
+
+  it("deviationRows fills every hour and signs forecast minus price", () => {
+    const p = (h: number, predicted: number, actual: number) => ({
+      intervalStartUtc: at(h), predictedPrice: predicted, actualPrice: actual, modelVersion: "lear_y0_x", generatedAt: at(0),
+    })
+    const rows = deviationRows([p(1, 21, 20), p(3, 18, 20)], ms(1), ms(3))
+    expect(rows.map((r) => r.deviation)).toEqual([1, null, -2])
+  })
+
   it("leaves out hours outside the window", () => {
-    const rows = buildForecastRows([{ intervalStartUtc: at(1), sppUsdMwh: 20 }], [fc(9, 30)], null, ms(2), ms(8))
+    const rows = buildForecastRows([{ intervalStartUtc: at(1), sppUsdMwh: 20 }], [fc(9, 30)], ms(2), ms(8))
     expect(rows).toEqual([])
   })
 })

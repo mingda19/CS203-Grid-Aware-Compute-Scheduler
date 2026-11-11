@@ -1,7 +1,12 @@
-import type { PriceForecastPoint, PricePoint } from "./api"
+import type { ForecastAccuracyPoint, ForecastModel, PriceForecastPoint, PricePoint } from "./api"
 import { getMarketDateString, parseIsoDate } from "./date-utils"
 
 export const HOUR_MS = 3_600_000
+
+/** The two forecast models, for the per-card switch. Plans use LEAR and fall back to LSTM. */
+export const MODEL_OPTIONS = [{ value: "lstm", label: "LSTM" }, { value: "lear", label: "LEAR" }] as const
+export const MODEL_LABEL: Record<ForecastModel, string> = { lear: "LEAR", lstm: "LSTM" }
+export const MODEL_ROLE: Record<ForecastModel, string> = { lear: "used for plans", lstm: "fallback for plans" }
 /** The Forecast page covers the next 72 hours, the same window plans are priced on. */
 export const FORECAST_HOURS = 72
 
@@ -17,8 +22,6 @@ export interface ForecastRow {
   typicalError: number | null
   /** 0-1, or null when the model has no score for the hour. */
   confidence: number | null
-  /** The comparison model's forecast, when it is loaded. */
-  compare: number | null
 }
 
 /**
@@ -29,7 +32,6 @@ export interface ForecastRow {
 export function buildForecastRows(
   history: PricePoint[],
   forecast: PriceForecastPoint[],
-  compare: PriceForecastPoint[] | null,
   from: number,
   to: number,
 ): ForecastRow[] {
@@ -37,7 +39,7 @@ export function buildForecastRows(
   const row = (t: number) => {
     let r = rows.get(t)
     if (!r) {
-      r = { t, price: null, forecast: null, band: null, typicalError: null, confidence: null, compare: null }
+      r = { t, price: null, forecast: null, band: null, typicalError: null, confidence: null }
       rows.set(t, r)
     }
     return r
@@ -62,11 +64,6 @@ export function buildForecastRows(
     r.band = error == null ? null : [p.predictedPrice - error, p.predictedPrice + error]
     r.confidence = p.confidenceScore ?? null
   }
-  for (const p of compare ?? []) {
-    const t = parseIsoDate(p.intervalStartUtc).getTime()
-    if (p.predictedPrice == null || !inWindow(t) || t <= lastKnown) continue
-    row(t).compare = p.predictedPrice
-  }
 
   const anchor = rows.get(lastKnown)
   if (anchor?.price != null) {
@@ -75,7 +72,6 @@ export function buildForecastRows(
       anchor.forecast = anchor.price
       if (after.some((r) => r.band != null)) anchor.band = [anchor.price, anchor.price]
     }
-    if (after.some((r) => r.compare != null)) anchor.compare = anchor.price
   }
 
   return [...rows.values()].sort((a, b) => a.t - b.t)
@@ -114,6 +110,49 @@ export function hourSpans(hours: Set<number>): Array<[number, number]> {
     else spans.push([t, t + HOUR_MS])
   }
   return spans
+}
+
+export interface AccuracyStats {
+  /** Hours with both a forecast and a recorded price. */
+  hours: number
+  /** Mean absolute miss, $/MWh. */
+  averageMiss: number | null
+  /** Root mean square miss, $/MWh: the same measure as Card 1's typical error. */
+  typicalError: number | null
+  biggestMiss: { miss: number; t: number } | null
+}
+
+export function accuracyStats(points: ForecastAccuracyPoint[]): AccuracyStats {
+  if (!points.length) return { hours: 0, averageMiss: null, typicalError: null, biggestMiss: null }
+  let abs = 0
+  let sq = 0
+  let biggest: { miss: number; t: number } | null = null
+  for (const p of points) {
+    const miss = Math.abs(p.predictedPrice - p.actualPrice)
+    abs += miss
+    sq += miss * miss
+    if (!biggest || miss > biggest.miss) biggest = { miss, t: parseIsoDate(p.intervalStartUtc).getTime() }
+  }
+  return { hours: points.length, averageMiss: abs / points.length, typicalError: Math.sqrt(sq / points.length), biggestMiss: biggest }
+}
+
+/** One past hour on the deviation chart: forecast minus the day-ahead price, null when not checked. */
+export interface DeviationRow { t: number; deviation: number | null; forecast: number | null; actual: number | null }
+
+/**
+ * Every hour from `from` to `to`, so the bars are evenly spaced and gaps show as gaps.
+ * Positive deviation: the forecast was too high. Negative: too low.
+ */
+export function deviationRows(points: ForecastAccuracyPoint[], from: number, to: number): DeviationRow[] {
+  const byT = new Map(points.map((p) => [parseIsoDate(p.intervalStartUtc).getTime(), p]))
+  const rows: DeviationRow[] = []
+  for (let t = Math.ceil(from / HOUR_MS) * HOUR_MS; t <= to; t += HOUR_MS) {
+    const p = byT.get(t)
+    rows.push(p
+      ? { t, deviation: p.predictedPrice - p.actualPrice, forecast: p.predictedPrice, actual: p.actualPrice }
+      : { t, deviation: null, forecast: null, actual: null })
+  }
+  return rows
 }
 
 /** Tick positions on whole hours, with a step that gives at most 7 labels. */

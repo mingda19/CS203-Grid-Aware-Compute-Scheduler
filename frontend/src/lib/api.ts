@@ -57,6 +57,21 @@ export interface PriceForecastPoint {
 
 export type ForecastModel = "lstm" | "lear"
 
+/** One past hour: what the model forecast (latest run made before the hour) and what the price was. */
+export interface ForecastAccuracyPoint {
+  intervalStartUtc: string
+  predictedPrice: number
+  actualPrice: number
+  modelVersion: string
+  generatedAt: string
+}
+
+export interface ForecastAccuracy {
+  points: ForecastAccuracyPoint[]
+  days: number
+  modelKind: ForecastModel
+}
+
 export interface PriceForecast {
   points: PriceForecastPoint[]
   horizonHours: number
@@ -654,6 +669,11 @@ export const priceApi = {
       }
     }
     return response
+  },
+
+  getForecastAccuracy(params: { location: string; model: ForecastModel; days?: number }): Promise<ApiResponse<ForecastAccuracy>> {
+    const query = new URLSearchParams({ location: params.location, model: params.model, days: String(params.days ?? 7) })
+    return fetchJson<ApiResponse<ForecastAccuracy>>(`/api/prices/forecast-accuracy?${query.toString()}`, { cache: "no-store" })
   },
 
   getHistory(params: { location: string; startDate: string; endDate: string; limit?: number; offset?: number }): Promise<ApiResponse<PriceHistory>> {
