@@ -122,6 +122,10 @@ export interface AccuracyStats {
   biggestMiss: { miss: number; t: number } | null
 }
 
+/** The points for hours that start at `from` or later: the page's 7d or 30d window. */
+export const withinWindow = (points: ForecastAccuracyPoint[], from: number) =>
+  points.filter((p) => parseIsoDate(p.intervalStartUtc).getTime() >= from)
+
 export function accuracyStats(points: ForecastAccuracyPoint[]): AccuracyStats {
   if (!points.length) return { hours: 0, averageMiss: null, typicalError: null, biggestMiss: null }
   let abs = 0

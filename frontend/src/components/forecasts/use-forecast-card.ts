@@ -41,9 +41,11 @@ export function latestRun(points: PriceForecastPoint[]): string | null {
 /**
  * Loads and shapes everything `ForecastCard` needs, so Home and the Forecast page show the same card.
  * `zone` is null while the facility loads. Both models load up front, so the model switch is instant.
+ * Pass `pageModel` when the page owns the model switch; the card then hides its own.
  */
-export function useForecastCard(zone: string | null) {
-  const [model, setModel] = React.useState<ForecastModel>("lear")
+export function useForecastCard(zone: string | null, pageModel?: ForecastModel) {
+  const [ownModel, setModel] = React.useState<ForecastModel>("lear")
+  const model = pageModel ?? ownModel
   const [pastWindow, setPastWindow] = React.useState<PastWindow>("24h")
 
   const history = useLoad(zone && `history:${zone}`, () => loadHistory(zone ?? DEFAULT_ZONE))
@@ -89,7 +91,7 @@ export function useForecastCard(zone: string | null) {
       from,
       to,
       model,
-      onModelChange: setModel,
+      onModelChange: pageModel ? undefined : setModel,
       pastWindow,
       onPastWindowChange: setPastWindow,
       run: run ? { generatedAt: run } : null,
