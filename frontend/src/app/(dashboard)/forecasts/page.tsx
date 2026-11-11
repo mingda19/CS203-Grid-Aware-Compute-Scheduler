@@ -6,12 +6,13 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { unwrap, useLoad } from "@/components/home/use-load"
 import { AccuracyCard } from "@/components/forecasts/AccuracyCard"
+import { CheapHoursCard, KeyFigures } from "@/components/forecasts/AnalysisCards"
 import { ForecastCard } from "@/components/forecasts/ForecastCard"
 import { latestRun, STALE_AFTER_MS, useForecastCard } from "@/components/forecasts/use-forecast-card"
 import { Segmented } from "@/components/ui/segmented"
 import { facilityApi, priceApi, type ForecastModel } from "@/lib/api"
 import { formatRelativeAgo, parseIsoDate } from "@/lib/date-utils"
-import { FORECAST_HOURS, HOUR_MS, MODEL_OPTIONS, withinWindow } from "@/lib/price-forecast"
+import { cheapHoursCheck, FORECAST_HOURS, HOUR_MS, MODEL_OPTIONS, withinWindow } from "@/lib/price-forecast"
 import { cn } from "@/lib/utils"
 
 const DEFAULT_ZONE = "LZ_NORTH"
@@ -44,6 +45,9 @@ export default function ForecastsPage() {
   const from = nowMs - WINDOW_DAYS[analysisWindow] * 24 * HOUR_MS
   const accuracyPoints = shownAccuracy.data?.points
   const points = React.useMemo(() => withinWindow(accuracyPoints ?? [], from), [accuracyPoints, from])
+  // Card A's hit rate and Card G share this.
+  const cheap = React.useMemo(() => cheapHoursCheck(points), [points])
+  const accuracyProps = { model, loading: accuracyLoading, error: shownAccuracy.error, onRetry: shownAccuracy.reload }
 
   const busy = forecast.loading || accuracyLoading
   const refresh = () => {
@@ -84,17 +88,16 @@ export default function ForecastsPage() {
         </Alert>
       )}
 
+      <KeyFigures {...accuracyProps} points={points} cheap={cheap} />
+
       <ForecastCard {...forecast.card} />
 
-      <AccuracyCard
-        model={model}
-        points={points}
-        from={from}
-        nowMs={nowMs}
-        loading={accuracyLoading}
-        error={shownAccuracy.error}
-        onRetry={shownAccuracy.reload}
-      />
+      <AccuracyCard {...accuracyProps} points={points} from={from} nowMs={nowMs} />
+
+      {/* Two columns at lg. Phase 4 puts the running total of the miss beside this card. */}
+      <div className="grid min-w-0 gap-6 lg:grid-cols-2">
+        <CheapHoursCard {...accuracyProps} cheap={cheap} />
+      </div>
     </div>
   )
 }

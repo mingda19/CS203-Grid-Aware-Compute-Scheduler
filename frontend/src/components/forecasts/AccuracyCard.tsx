@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { Bar, CartesianGrid, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import { ChartCard, ChartLegend } from "@/components/forecasts/AnalysisCards"
+import { BAR_SWATCH, ChartCard, ChartLegend, TooltipBox, TooltipRow } from "@/components/forecasts/AnalysisCards"
 import { DashSwatch, LegendItem, PER_MWH } from "@/components/forecasts/ForecastCard"
 import type { ForecastAccuracyPoint, ForecastModel } from "@/lib/api"
 import { formatMarketChartTick, formatShortDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
@@ -80,16 +80,11 @@ export function AccuracyCard({ model, points, from, nowMs, loading, error, onRet
                   ? "Spot on"
                   : `Too ${row.deviation > 0 ? "high" : "low"} by ${money(Math.abs(row.deviation))}`
                 return (
-                  <div className="w-max max-w-[calc(100vw-2rem)] space-y-1 rounded-lg border border-border bg-popover p-3 text-xs leading-4 text-popover-foreground shadow-lg">
-                    <div className="font-semibold">{formatShortDateTime(row.t)} {MARKET_ZONE_LABEL}</div>
+                  <TooltipBox title={`${formatShortDateTime(row.t)} ${MARKET_ZONE_LABEL}`}>
                     <div className="font-medium">{verdict}</div>
-                    {([[`Forecast (${name})`, row.forecast], ["Day-ahead price", row.actual]] as const).map(([label, value]) => (
-                      <div key={label} className="flex items-baseline justify-between gap-4">
-                        <span className="text-muted-foreground">{label}</span>
-                        <span className="font-medium tabular-nums">{money(value)}{PER_MWH}</span>
-                      </div>
-                    ))}
-                  </div>
+                    <TooltipRow label={`Forecast (${name})`}>{money(row.forecast)}{PER_MWH}</TooltipRow>
+                    <TooltipRow label="Day-ahead price">{money(row.actual)}{PER_MWH}</TooltipRow>
+                  </TooltipBox>
                 )
               }}
             />
@@ -105,7 +100,7 @@ export function AccuracyCard({ model, points, from, nowMs, loading, error, onRet
         </ResponsiveContainer>
       </div>
       <ChartLegend>
-        <LegendItem swatch={<span className="h-3 w-2 shrink-0 rounded-sm bg-primary" aria-hidden="true" />}>Forecast minus day-ahead price</LegendItem>
+        <LegendItem swatch={BAR_SWATCH}>Forecast minus day-ahead price</LegendItem>
         <LegendItem swatch={<DashSwatch color="var(--muted-foreground)" dash="2 3" />}>± typical miss</LegendItem>
       </ChartLegend>
     </ChartCard>
