@@ -51,6 +51,8 @@ export interface PriceForecastPoint {
    * so null means "not known", never "no confidence". Contract FR-10.
    */
   confidenceScore: number | null
+  /** The model's typical error for this hour in $/MWh (reference RMSE). Omitted when there is none. */
+  typicalErrorUsdMwh?: number | null
 }
 
 export type ForecastModel = "lstm" | "lear"
