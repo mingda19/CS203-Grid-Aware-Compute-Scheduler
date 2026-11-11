@@ -1,5 +1,5 @@
 import type { ForecastAccuracyPoint, ForecastModel, PriceForecastPoint, PricePoint } from "./api"
-import { getMarketDateString, parseIsoDate } from "./date-utils"
+import { getMarketDateString, getMarketHoursMinutes, parseIsoDate } from "./date-utils"
 
 export const HOUR_MS = 3_600_000
 
@@ -119,7 +119,8 @@ export interface AccuracyStats {
   averageMiss: number | null
   /** Root mean square miss, $/MWh: the same measure as Card 1's typical error. */
   typicalError: number | null
-  biggestMiss: { miss: number; t: number } | null
+  /** Mean of forecast minus price, $/MWh. Above 0: the forecast runs high. */
+  bias: number | null
 }
 
 /** The points for hours that start at `from` or later: the page's 7d or 30d window. */
@@ -127,17 +128,118 @@ export const withinWindow = (points: ForecastAccuracyPoint[], from: number) =>
   points.filter((p) => parseIsoDate(p.intervalStartUtc).getTime() >= from)
 
 export function accuracyStats(points: ForecastAccuracyPoint[]): AccuracyStats {
-  if (!points.length) return { hours: 0, averageMiss: null, typicalError: null, biggestMiss: null }
+  if (!points.length) return { hours: 0, averageMiss: null, typicalError: null, bias: null }
   let abs = 0
   let sq = 0
-  let biggest: { miss: number; t: number } | null = null
+  let sum = 0
   for (const p of points) {
-    const miss = Math.abs(p.predictedPrice - p.actualPrice)
-    abs += miss
+    const miss = p.predictedPrice - p.actualPrice
+    abs += Math.abs(miss)
     sq += miss * miss
-    if (!biggest || miss > biggest.miss) biggest = { miss, t: parseIsoDate(p.intervalStartUtc).getTime() }
+    sum += miss
   }
-  return { hours: points.length, averageMiss: abs / points.length, typicalError: Math.sqrt(sq / points.length), biggestMiss: biggest }
+  const n = points.length
+  return { hours: n, averageMiss: abs / n, typicalError: Math.sqrt(sq / n), bias: sum / n }
+}
+
+/** One axis range for both forecast and price, rounded out to a tidy step, so y = x runs at 45°. */
+export function scatterDomain(points: ForecastAccuracyPoint[]): [number, number] | null {
+  if (!points.length) return null
+  const values = points.flatMap((p) => [p.predictedPrice, p.actualPrice])
+  const lo = Math.min(...values)
+  const hi = Math.max(...values)
+  const step = [1, 2, 5, 10, 20, 50, 100, 200, 500].find((s) => (hi - lo) / s <= 6) ?? 1000
+  const min = Math.floor(lo / step) * step
+  const max = Math.ceil(hi / step) * step
+  return [min, max > min ? max : min + step]
+}
+
+/** An hour of the day needs this many points before its average is shown. */
+export const MIN_HOUR_POINTS = 3
+
+export interface HourMissRow {
+  /** CT hour of the day, 0-23. */
+  hour: number
+  /** Null when the hour has fewer than MIN_HOUR_POINTS points. */
+  averageMiss: number | null
+  bias: number | null
+  count: number
+}
+
+/** Average miss and bias for each CT hour of the day: where in the day the forecast fails. */
+export function missByHour(points: ForecastAccuracyPoint[]): HourMissRow[] {
+  const sums = Array.from({ length: 24 }, () => ({ abs: 0, sum: 0, count: 0 }))
+  for (const p of points) {
+    const s = sums[getMarketHoursMinutes(p.intervalStartUtc).hours]
+    const miss = p.predictedPrice - p.actualPrice
+    s.abs += Math.abs(miss)
+    s.sum += miss
+    s.count++
+  }
+  return sums.map(({ abs, sum, count }, hour) => count < MIN_HOUR_POINTS
+    ? { hour, averageMiss: null, bias: null, count }
+    : { hour, averageMiss: abs / count, bias: sum / count, count })
+}
+
+/** The running sum of forecast minus price, hour by hour. Rising: the forecast keeps running high. */
+export function runningMiss(points: ForecastAccuracyPoint[]): Array<{ t: number; miss: number; total: number }> {
+  let total = 0
+  return points
+    .map((p) => ({ t: parseIsoDate(p.intervalStartUtc).getTime(), miss: p.predictedPrice - p.actualPrice }))
+    .sort((a, b) => a.t - b.t)
+    .map((r) => ({ ...r, total: (total += r.miss) }))
+}
+
+/**
+ * A CT day needs this many hours with both a forecast and a price to be checked. It allows the 23- and
+ * 25-hour DST days and a few missing hours.
+ */
+// ponytail: fixed cut-off; make it relative to the day's length if DST days look wrong.
+export const MIN_DAY_HOURS = 20
+
+export interface CheapHoursDay {
+  /** CT date, YYYY-MM-DD. */
+  day: string
+  /** Picked hours that were really among the day's cheapest. */
+  hits: number
+  /** Mean price over the picked hours minus the mean over the really cheapest hours, $/MWh. 0 or more. */
+  extraCost: number
+  /** Start times of the hours the forecast picked, and of the really cheapest hours. */
+  picked: number[]
+  best: number[]
+}
+
+/**
+ * Did the forecast pick each day's cheapest hours, as a plan would? Per CT day: the LOW_HOURS_PER_DAY
+ * hours with the lowest forecast against the ones with the lowest price.
+ */
+export function cheapHoursCheck(points: ForecastAccuracyPoint[]): { days: CheapHoursDay[]; hits: number; picks: number } {
+  const byDay = new Map<string, ForecastAccuracyPoint[]>()
+  for (const p of points) {
+    const day = getMarketDateString(p.intervalStartUtc)
+    byDay.set(day, [...(byDay.get(day) ?? []), p])
+  }
+  const lowest = (hours: ForecastAccuracyPoint[], key: (p: ForecastAccuracyPoint) => number) =>
+    [...hours].sort((a, b) => key(a) - key(b)).slice(0, LOW_HOURS_PER_DAY)
+  const meanPrice = (hours: ForecastAccuracyPoint[]) => hours.reduce((sum, p) => sum + p.actualPrice, 0) / hours.length
+  const times = (hours: ForecastAccuracyPoint[]) => hours.map((p) => parseIsoDate(p.intervalStartUtc).getTime()).sort((a, b) => a - b)
+
+  const days: CheapHoursDay[] = []
+  for (const [day, hours] of [...byDay].sort(([a], [b]) => a.localeCompare(b))) {
+    if (hours.length < MIN_DAY_HOURS) continue
+    const picked = lowest(hours, (p) => p.predictedPrice)
+    const best = lowest(hours, (p) => p.actualPrice)
+    // A pick counts when its price is as low as the dearest of the really cheapest hours, so ties count.
+    const cutoff = best[best.length - 1].actualPrice
+    days.push({
+      day,
+      hits: picked.filter((p) => p.actualPrice <= cutoff).length,
+      extraCost: meanPrice(picked) - meanPrice(best),
+      picked: times(picked),
+      best: times(best),
+    })
+  }
+  return { days, hits: days.reduce((sum, d) => sum + d.hits, 0), picks: days.length * LOW_HOURS_PER_DAY }
 }
 
 /** One past hour on the deviation chart: forecast minus the day-ahead price, null when not checked. */
