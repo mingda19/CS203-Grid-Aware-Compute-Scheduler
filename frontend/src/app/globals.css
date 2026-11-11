@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -101,4 +103,21 @@ body {
   background: var(--background);
   color: var(--foreground);
   min-height: 100vh;
+}
+
+/* Success tick shown for ~0.5s before moving to the next auth step (see login/page.tsx). */
+@keyframes tick-draw {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes tick-pop {
+  0% { transform: scale(0.5); opacity: 0; }
+  60% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.animate-tick-pop { animation: tick-pop 0.3s ease-out both; }
+.animate-tick-draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: tick-draw 0.35s ease-out 0.1s forwards; }
+@media (prefers-reduced-motion: reduce) {
+  .animate-tick-pop { animation: none; }
+  .animate-tick-draw { animation: none; stroke-dashoffset: 0; }
 }
