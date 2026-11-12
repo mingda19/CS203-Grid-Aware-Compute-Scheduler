@@ -4,6 +4,7 @@ import * as React from "react"
 import { MARKET_TIMEZONE, MARKET_ZONE_LABEL, marketZoneDescriptor, type MarketZoneDescriptor } from "@/lib/date-utils"
 import { Zap, House, CalendarClock, BriefcaseBusiness, TrendingDown, CheckCircle2, FileText, Bell, Menu, Sun, Moon, ShieldCheck, ChevronRight, Sparkles, LogOut, HelpCircle, Clock, Settings } from "lucide-react"
 import Link from "next/link"
+import { GacsLogo } from "@/app/login/gacs-logo"
 import { usePathname, useRouter } from "next/navigation"
 
 
@@ -15,6 +16,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useIsMobile } from "@/components/ui/use-mobile"
 import { type DataStatusType } from "@/components/ui/data-status-badge"
 import { DataStatusPopover } from "@/components/ui/efferd-dashboard-2-utils/data-status-popover"
+import { QuickTour, TOUR_STEPS } from "@/components/ui/efferd-dashboard-2-utils/quick-tour"
 import {
   authApi,
   freshnessApi,
@@ -60,39 +62,6 @@ export function AppShell({ children }: AppShellProps) {
   const [freshness, setFreshness] = React.useState<DataFreshnessResponse | null>(null)
 
   const pathname = usePathname()
-
-  const tourSteps = [
-    {
-      title: "Home",
-      description: "Home shows the plans that need your approval, the price now, and the jobs that run next.",
-      target: "home-root",
-      href: "/home",
-    },
-    {
-      title: "Approve plans",
-      description: "The system plans every job you add. Approvals lists the plans waiting for a decision. Open one to approve it or ask for changes. You cannot approve your own plan.",
-      target: "approvals-root",
-      href: "/approvals",
-    },
-    {
-      title: "See the schedule",
-      description: "Schedule is a calendar of everyone's approved jobs and when they run. Flexible work can move to a lower-cost time. You can change the status of your own entries.",
-      target: "workloads-root",
-      href: "/workloads",
-    },
-    {
-      title: "Understand the forecast",
-      description: "Price Forecast compares recorded settlement prices with model predictions. Peaks indicate times when electricity may cost more.",
-      target: "forecasts-root",
-      href: "/forecasts",
-    },
-    {
-      title: "You’re ready to explore",
-      description: "Use the menu on the left to move between areas. You can reopen this guide anytime with the help button at the top of the page.",
-      target: null,
-      href: null,
-    },
-  ]
 
   React.useEffect(() => {
     let active = true
@@ -184,18 +153,6 @@ export function AppShell({ children }: AppShellProps) {
     }
   }
 
-  const goToTourStep = (nextStep: number) => {
-    setTourStep(nextStep)
-    const step = tourSteps[nextStep]
-    if (step?.href && pathname !== step.href) {
-      router.push(step.href)
-    }
-    const target = step?.target
-    if (target) {
-      window.setTimeout(() => document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "center" }), 120)
-    }
-  }
-
   interface NavItem {
     label: string
     icon: React.ComponentType<{ className?: string }>
@@ -219,9 +176,7 @@ export function AppShell({ children }: AppShellProps) {
     <div className="flex h-full flex-col bg-card border-r border-border text-card-foreground">
       {/* Brand Header */}
       <div className="flex items-center gap-3 px-5 py-5 border-b border-border">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-          <Zap className="h-6 w-6 fill-current" />
-        </div>
+        <GacsLogo className="h-10 w-10 shrink-0" />
         <div className="flex flex-col">
           <span className="font-semibold tracking-tight text-lg leading-none">GACS</span>
           <span className="text-xs text-muted-foreground mt-0.5">Grid-Aware Compute</span>
@@ -424,7 +379,11 @@ export function AppShell({ children }: AppShellProps) {
             </TooltipProvider>
 
             {/* System data status: a badge that opens the list of all datasets */}
-            <DataStatusPopover status={systemDataStatus} response={freshness} />
+            <DataStatusPopover
+              status={systemDataStatus}
+              response={freshness}
+              open={tourOpen && TOUR_STEPS[tourStep]?.target === "data-status"}
+            />
 
             {/* Quick Theme Switcher */}
             <Button
@@ -446,6 +405,7 @@ export function AppShell({ children }: AppShellProps) {
                     size="icon"
                     className="h-9 w-9 text-muted-foreground hover:text-foreground"
                     aria-label="Show dashboard guide"
+                    data-tour="help"
                     onClick={() => { setTourStep(-1); setTourOpen(true) }}
                   >
                     <HelpCircle className="h-4 w-4" />
@@ -501,51 +461,7 @@ export function AppShell({ children }: AppShellProps) {
         </header>
 
         {tourOpen && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" role="presentation">
-            <section
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="onboarding-title"
-              aria-describedby="onboarding-description"
-              className="w-full max-w-lg rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl sm:p-8"
-            >
-              <div className="mb-5 flex items-center gap-2 text-sm font-semibold text-primary">
-                <Sparkles className="h-4 w-4" />
-                {tourStep < 0 ? "A quick tour" : `Step ${tourStep + 1} of ${tourSteps.length}`}
-              </div>
-              <h2 id="onboarding-title" className="text-xl font-semibold tracking-tight">
-                {tourStep < 0 ? `Welcome${currentUser?.fullName ? `, ${currentUser.fullName.split(" ")[0]}` : ""}!` : tourSteps[tourStep].title}
-              </h2>
-              <p id="onboarding-description" className="mt-3 text-sm leading-6 text-muted-foreground">
-                {tourStep < 0
-                  ? "GACS helps you understand energy conditions and plan compute schedules. This short guide shows you where to find the key information."
-                  : tourSteps[tourStep].description}
-              </p>
-              <div className="mt-7 flex items-center justify-between gap-3">
-                <Button variant="ghost" onClick={() => closeTour(true)}>
-                  {tourStep < 0 ? "Explore on my own" : "Skip tour"}
-                </Button>
-                <div className="flex items-center gap-2">
-                  {tourStep >= 0 && tourStep > 0 && (
-                    <Button variant="outline" onClick={() => goToTourStep(tourStep - 1)}>Back</Button>
-                  )}
-                  <Button
-                    onClick={() => tourStep < 0 ? goToTourStep(0) : tourStep < tourSteps.length - 1 ? goToTourStep(tourStep + 1) : closeTour(true)}
-                  >
-                    {tourStep < 0 ? "Take the tour" : tourStep === tourSteps.length - 1 ? "Finish" : "Next"}
-                    <ChevronRight className="ml-1 h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-              {tourStep >= 0 && (
-                <div className="mt-5 flex justify-center gap-1.5" aria-label={`Step ${tourStep + 1} of ${tourSteps.length}`}>
-                  {tourSteps.map((step, index) => (
-                    <span key={step.title} className={`h-1.5 w-6 rounded-full ${index === tourStep ? "bg-primary" : "bg-muted"}`} />
-                  ))}
-                </div>
-              )}
-            </section>
-          </div>
+          <QuickTour step={tourStep} onStep={setTourStep} onClose={closeTour} firstName={currentUser?.fullName?.split(" ")[0]} />
         )}
 
         {/* Page Body */}

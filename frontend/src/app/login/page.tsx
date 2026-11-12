@@ -164,6 +164,13 @@ export default function LoginPage() {
   const [successMessage, setSuccessMessage] = React.useState<string | null>(null)
   const [resendCooldown, setResendCooldown] = React.useState(0)
   const [showIntro, setShowIntro] = React.useState(false)
+  // The page stays hidden until the picture has loaded, so everything appears at once.
+  const [ready, setReady] = React.useState(false)
+  // ponytail: on a very slow connection the page shows after 3 s without the picture, so sign-in is never blocked.
+  React.useEffect(() => {
+    const timer = setTimeout(() => setReady(true), 3000)
+    return () => clearTimeout(timer)
+  }, [])
 
   // Layout effect so first-time visitors get the intro before the form paints.
   React.useLayoutEffect(() => {
@@ -385,15 +392,24 @@ export default function LoginPage() {
   const [title, description] = titles[mode]
 
   return (
-    <div className="grid min-h-screen bg-background lg:grid-cols-[minmax(0,1fr)_32rem]">
+    <div className={`grid min-h-screen bg-background transition-opacity duration-300 lg:grid-cols-[minmax(0,1fr)_32rem] ${ready ? "opacity-100" : "opacity-0"}`}>
       {/* #f1f8f8 is the image's own sky and #0e1313 its ground band (BAND in references/extract_login_layers.py): the picture sits in the vertical middle, the ground fill continues below it. */}
       <div className="relative hidden overflow-hidden border-r border-border bg-[#f1f8f8] lg:block" aria-hidden="true">
         <div className="absolute inset-x-0 bottom-0 h-1/2 bg-[#0e1313]" />
         {/* One box with the image's shape, 2% wider than the panel so the cut-off cable end at its top-right corner falls outside it, so both layers stay aligned at every width. Its background turns dark where the picture is solid ground, so no sky shows at the subpixel bottom edge. */}
         <div className="absolute inset-x-[-1%] top-1/2 aspect-[1024/765] -translate-y-1/2 overflow-hidden bg-[linear-gradient(#f1f8f8_80%,#0e1313_80%)]">
-          {/* eslint-disable-next-line @next/next/no-img-element -- SVG, nothing for next/image to optimise */}
-          <img src="/login/design3-sun.svg" alt="" className="absolute" style={{ left: "52.051%", top: "55.948%", width: "25.547%" }} />
-          <Image src="/login/design3-front.png" alt="" fill sizes="(min-width: 1024px) 66vw, 0px" />
+          {/* The sun is drawn inline, so it has no file of its own to load ahead of the picture. */}
+          <svg viewBox="0 0 261.6 261.6" className="absolute" style={{ left: "52.051%", top: "55.948%", width: "25.547%" }}>
+            <circle cx="130.8" cy="130.8" r="130.8" fill="#ebb356" />
+            <path fill="#e7a12e" d="M130.8 130.8L190.18 14.26A130.8 130.8 0 0 0 142.20 0.50Z" />
+            <path fill="#e7a12e" d="M130.8 130.8L190.18 247.34A130.8 130.8 0 0 1 142.20 261.10Z" />
+            <path fill="#e7a12e" d="M130.8 130.8L114.86 0.97A130.8 130.8 0 0 0 69.39 15.31Z" />
+            <path fill="#e7a12e" d="M130.8 130.8L114.86 260.63A130.8 130.8 0 0 1 69.39 246.29Z" />
+            <circle cx="130.8" cy="130.8" r="92" fill="#e08600" />
+          </svg>
+          {/* Eager: below lg this panel is hidden, and a lazy image there would never load, so the page would wait for the 3 s fallback. */}
+          <Image src="/login/design3-front.png" alt="" fill sizes="(min-width: 1024px) 66vw, 0px" loading="eager"
+            onLoad={() => setReady(true)} onError={() => setReady(true)} />
         </div>
       </div>
       <div className="flex items-center justify-center p-4">

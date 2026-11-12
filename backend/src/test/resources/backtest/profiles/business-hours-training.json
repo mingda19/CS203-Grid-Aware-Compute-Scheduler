@@ -1,0 +1,14 @@
+{
+  "name": "business-hours-training",
+  "description": "GPU-heavy training runs that normally start in Texas business hours (08:00-12:00 CDT = 13:00-17:00 UTC) and can wait 4-12 hours.",
+  "version": 1,
+  "seed": 1101,
+  "jobsPerDay": { "min": 4, "max": 8 },
+  "classes": [
+    { "name": "training", "weight": 1.0,
+      "cpuHours": { "min": 16, "max": 64 }, "gpuHours": { "min": 8, "max": 48 },
+      "startHours": [13, 14, 15, 16, 17],
+      "flexibilityHours": { "min": 4, "max": 12 }, "deadlineSlackHours": { "min": 0, "max": 3 },
+      "exemptShare": 0.0 }
+  ]
+}

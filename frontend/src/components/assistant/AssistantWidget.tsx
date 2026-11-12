@@ -278,6 +278,7 @@ export function AssistantWidget() {
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         aria-label={open ? "Collapse GACS Assistant" : "Open GACS Assistant"}
+        data-tour="assistant"
         title={open ? "Collapse GACS Assistant" : "GACS Assistant"}
         onClick={() => (open ? collapse() : setOpen(true))}
         className="fixed bottom-4 right-4 z-40 size-14 rounded-full p-0 shadow-lg sm:bottom-6 sm:right-6"
