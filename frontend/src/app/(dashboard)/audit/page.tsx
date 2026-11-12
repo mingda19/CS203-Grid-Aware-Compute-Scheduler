@@ -246,7 +246,7 @@ export default function AuditPage() {
         <CardHeader className="space-y-3 p-4 sm:p-5">
           <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <label className={FIELD_LABEL}>
-              From (UTC)
+              From (CT)
               <Input
                 type="date"
                 value={filters.fromDate}
@@ -257,7 +257,7 @@ export default function AuditPage() {
               />
             </label>
             <label className={FIELD_LABEL}>
-              To (UTC, inclusive)
+              To (CT, inclusive)
               <Input
                 type="date"
                 value={filters.toDate}
@@ -322,7 +322,7 @@ export default function AuditPage() {
               <thead>
                 <tr className="border-b border-border text-xs font-medium text-muted-foreground">
                   <th className="pb-3 pl-2">Event ID</th>
-                  <th className="pb-3">Timestamp (UTC)</th>
+                  <th className="pb-3">Timestamp</th>
                   <th className="pb-3">Decision</th>
                   <th className="pb-3">Target Run</th>
                   <th className="pb-3">Rationale</th>
@@ -419,7 +419,7 @@ export default function AuditPage() {
                 <dd className="min-w-0"><OutcomeBadge action={selectedEvent.actionType} /></dd>
                 <dt className="text-muted-foreground">Operator</dt>
                 <dd className="min-w-0 break-words">{selectedEvent.actor}</dd>
-                <dt className="text-muted-foreground">Time (UTC)</dt>
+                <dt className="text-muted-foreground">Time</dt>
                 <dd className="min-w-0 tabular-nums">{formatAuditTimestamp(selectedEvent.timestamp)}</dd>
                 <dt className="text-muted-foreground">Event ID</dt>
                 <dd className="min-w-0 break-all font-mono text-xs leading-5 text-muted-foreground">AUD-{selectedEvent.id}</dd>
