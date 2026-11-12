@@ -97,11 +97,8 @@ public class PriceHistoryController {
             if (p.getSppUsdMwh() != null) actual.put(p.getIntervalStartUtc(), p.getSppUsdMwh());
         }
 
-        String prefix = modelKind + "_";
         Map<LocalDateTime, PredictedPrice> chosen = new TreeMap<>();
-        for (PredictedPrice p : predictions.findByLocationAndIntervalStartUtcBetweenOrderByIntervalStartUtcAsc(location, start, end)) {
-            if (!p.getModelVersion().startsWith(prefix) || p.getPredictedPrice() == null
-                || !p.getGeneratedAt().isBefore(p.getIntervalStartUtc())) continue;
+        for (PredictedPrice p : predictions.findPastForecastsForModel(location, modelKind, start, end)) {
             chosen.merge(p.getIntervalStartUtc(), p, (a, b) -> b.getGeneratedAt().isAfter(a.getGeneratedAt()) ? b : a);
         }
 

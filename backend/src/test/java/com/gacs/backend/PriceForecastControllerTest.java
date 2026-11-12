@@ -77,12 +77,11 @@ class PriceForecastControllerTest {
     @WithMockUser
     void accuracy_UsesLatestRunBeforeTheHour_AndSkipsHoursWithoutActuals() throws Exception {
         var hour = "2026-10-09T05:00:00";
-        when(predictions.findByLocationAndIntervalStartUtcBetweenOrderByIntervalStartUtcAsc(eq("LZ_NORTH"), any(), any()))
+        // The repository query already drops other models, runs made after the hour and null prices.
+        when(predictions.findPastForecastsForModel(eq("LZ_NORTH"), eq("lear"), any(), any()))
             .thenReturn(List.of(
                 prediction(hour, "lear_y1_2026-10-06", "2026-10-06T00:10:00", 20.0),
-                prediction(hour, "lear_y0_2026-10-07", "2026-10-07T00:10:00", 25.0), // latest before the hour: used
-                prediction(hour, "lear_y0_2026-10-09", "2026-10-09T06:00:00", 99.0), // made after the hour: ignored
-                prediction(hour, "lstm_y0_2026-10-08", "2026-10-08T00:10:00", 50.0), // other model: ignored
+                prediction(hour, "lear_y0_2026-10-07", "2026-10-07T00:10:00", 25.0), // latest run: used
                 prediction("2026-10-09T06:00:00", "lear_y0_2026-10-07", "2026-10-07T00:10:00", 26.0))); // no actual
         when(prices.findByLocationAndIntervalStartUtcBetweenOrderByIntervalStartUtcAsc(eq("LZ_NORTH"), any(), any()))
             .thenReturn(List.of(ElectricalPrice.builder()

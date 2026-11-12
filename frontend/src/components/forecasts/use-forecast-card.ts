@@ -6,9 +6,9 @@ import type { PastWindow } from "@/components/forecasts/ForecastCard"
 import type { DataStatusType } from "@/components/ui/data-status-badge"
 import { priceApi, type ForecastModel, type PriceForecastPoint } from "@/lib/api"
 import { currentMarketHourStart, parseIsoDate } from "@/lib/date-utils"
-import { buildForecastRows, cheapestHours, FORECAST_HOURS, HOUR_MS } from "@/lib/price-forecast"
+import { buildForecastRows, cardStatus, cheapestHours, FORECAST_HOURS, HOUR_MS } from "@/lib/price-forecast"
 
-const DEFAULT_ZONE = "LZ_NORTH"
+export const DEFAULT_ZONE = "LZ_NORTH"
 /** Days of recorded prices loaded: enough for the 7d window. */
 export const HISTORY_DAYS = 7
 const PAST_HOURS: Record<PastWindow, number> = { "24h": 24, "7d": HISTORY_DAYS * 24 }
@@ -83,8 +83,13 @@ export function useForecastCard(zone: string | null, pageModel?: ForecastModel) 
 
   // The badge follows the shown model.
   const run = latestRun(forecastPoints ?? [])
-  const stale = run != null && nowMs - parseIsoDate(run).getTime() > STALE_AFTER_MS
-  const status: DataStatusType = forecast.error || history.error || !run ? "unavailable" : stale ? "cached" : "live"
+  const status: DataStatusType = cardStatus({
+    failed: !!(forecast.error || history.error),
+    runAgeMs: run == null ? null : nowMs - parseIsoDate(run).getTime(),
+    loadAgesMs: [history, forecast].map((l) => (l.updatedAt == null ? null : nowMs - l.updatedAt)),
+    staleAfterMs: STALE_AFTER_MS,
+    refreshMs: REFRESH_MS,
+  })
 
   const loading = !zone || history.loading || forecast.loading
   const reload = () => {

@@ -278,3 +278,20 @@ export function timeTicks(min: number, max: number): number[] {
   for (let t = Math.ceil(min / step) * step; t <= max; t += step) ticks.push(t)
   return ticks
 }
+
+/**
+ * The card's status badge. A forecast run older than `staleAfterMs` is cached, and so is data whose
+ * background refresh has failed for two polls in a row (quiet refreshes keep the old value, so
+ * `error` alone never shows it). `loadAgesMs` is how long ago each source last loaded.
+ */
+export function cardStatus(p: {
+  failed: boolean
+  runAgeMs: number | null
+  loadAgesMs: Array<number | null>
+  staleAfterMs: number
+  refreshMs: number
+}): "live" | "cached" | "unavailable" {
+  if (p.failed || p.runAgeMs == null) return "unavailable"
+  const refreshStalled = p.loadAgesMs.some((age) => age != null && age > 2 * p.refreshMs)
+  return p.runAgeMs > p.staleAfterMs || refreshStalled ? "cached" : "live"
+}
