@@ -188,6 +188,16 @@ class ExactAllocationSolverTest {
     }
 
     @Test
+    @DisplayName("An iteration limit stops the search short of a proof, whatever the time budget")
+    void iterationLimitStopsBeforeAProof() {
+        OptimizationProblem contested = problem(List.of(job(1, 200.0, 0.0, 0, 3, 6), job(2, 200.0, 0.0, 0, 3, 6),
+                job(3, 200.0, 0.0, 1, 3, 6), job(4, 200.0, 0.0, 1, 3, 6)), prices(30, 20, 50, 10, 40, 25), cpuCapacity(300.0));
+
+        assertThat(SOLVER.solve(contested, BUDGET).orElseThrow().provenOptimal()).isTrue();
+        assertThat(SOLVER.solve(contested, BUDGET, 1).filter(AllocationResult::provenOptimal)).isEmpty();
+    }
+
+    @Test
     @DisplayName("A run with only exempt jobs is trivially optimal")
     void onlyExemptJobs() {
         AllocationResult result = solve(problem(List.of(exempt(1, 20.0, 0.0, 0, 1)), prices(10), cpuCapacity(256.0)));

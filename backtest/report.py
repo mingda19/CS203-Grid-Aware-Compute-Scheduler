@@ -554,13 +554,16 @@ def build(args) -> str:
     # Method
     add("## 2. Method")
     add("")
+    # runs made before the limit became an iteration count recorded a time budget
+    exact_limit = (f"a limit of {cfg['exactIterations']:,} iterations" if "exactIterations" in cfg
+                   else f"a {cfg['exactBudgetSeconds']} s budget")
     add("- **Workloads:** four synthetic, versioned profiles (`backend/src/test/resources/backtest/profiles/`), "
         "jobs drawn with fixed seeds per day. Every accepted day's fixed schedule fits the facility (decision D2).")
     add(f"- **Facility:** {cfg['capacityCpuHoursPerHour']:.0f} CPU-hours and {cfg['capacityGpuHoursPerHour']:.0f} "
         f"GPU-hours per hour; {main.manifest['optimiser']['cpuKwhPerHour']} kWh per CPU-hour and "
         f"{main.manifest['optimiser']['gpuKwhPerHour']} kWh per GPU-hour.")
     add("- **Planning:** one plan per UTC day per price source, by the production allocation code (exact solver "
-        f"with a {cfg['exactBudgetSeconds']} s budget, else the deterministic heuristic). Every plan is settled at "
+        f"with {exact_limit}, else the deterministic heuristic). Every plan is settled at "
         "actual prices and checked against the contract rules.")
     add("- **Forecasts:** walk-forward, out of sample: the y0 (48 h ahead) LEAR model, refitted every 7 days "
         "on past data only by `model/evaluate.py` (`model/lear_model.py`, no pretrained file), plus two naive "

@@ -154,7 +154,7 @@ public final class BacktestOutput {
         config.sources().forEach(sources::add);
         settings.put("capacityCpuHoursPerHour", config.capacity().cpuHours());
         settings.put("capacityGpuHoursPerHour", config.capacity().gpuHours());
-        settings.put("exactBudgetSeconds", config.exactBudget().toSeconds());
+        settings.put("exactIterations", config.exactIterations());
         settings.put("solver", solver);
         settings.put("threads", config.threads());
 

@@ -39,7 +39,7 @@ Settings for step 2 (all optional):
 | `backtest.profiles` | every file in `backend/src/test/resources/backtest/profiles/` |
 | `backtest.sources` | every `forecast_*.csv` in the data folder |
 | `backtest.dataDir`, `backtest.outDir` | `../backtest/data`, `../backtest/output` |
-| `backtest.exactBudgetSeconds` | `30` |
+| `backtest.exactIterations` | `100000` (exact-solver iterations per pass; not a time limit, so results do not depend on machine speed) |
 | `backtest.threads` | CPU count |
 | `backtest.runId` | current UTC time |
 

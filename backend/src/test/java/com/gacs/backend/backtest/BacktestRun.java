@@ -10,7 +10,6 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -36,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>{@code backtest.profiles}: comma-separated profile files (default: every file in
  *       {@code src/test/resources/backtest/profiles})</li>
  *   <li>{@code backtest.sources}: comma-separated forecast sources (default: every {@code forecast_*.csv})</li>
- *   <li>{@code backtest.exactBudgetSeconds} (default 30), {@code backtest.threads} (default: CPU count),
+ *   <li>{@code backtest.exactIterations} (default 100000), {@code backtest.threads} (default: CPU count),
  *       {@code backtest.runId} (default: the current UTC time)</li>
  *   <li>Sensitivity runs (docs/backtest-plan.md section 5.2): {@code backtest.capacityCpu} /
  *       {@code backtest.capacityGpu} (default 256 / 64 per hour), {@code backtest.cpuKwhPerHour} /
@@ -66,7 +65,7 @@ class BacktestRun {
         Path runDir = path("backtest.outDir", REPO.resolve("backtest/output")).resolve(runId);
 
         long started = System.nanoTime();
-        PlanSolver solver = PlanSolver.named(solverName, new EnergyCostModel(properties), config.exactBudget());
+        PlanSolver solver = PlanSolver.named(solverName, new EnergyCostModel(properties), config.exactIterations());
         BacktestRunner.Result result = new BacktestRunner(properties, solver).run(config);
         JsonNode manifest = BacktestOutput.write(result, config, properties, solverName, runDir, REPO);
         BacktestMetrics.Result metrics = MetricsFiles.write(runDir, REPO);
@@ -119,7 +118,8 @@ class BacktestRun {
                 new CapacityLimit(
                         number("backtest.capacityCpu", OptimizerProperties.DEFAULTS.defaultMaxCpuHoursPerSlot()),
                         number("backtest.capacityGpu", OptimizerProperties.DEFAULTS.defaultMaxGpuHoursPerSlot())),
-                Duration.ofSeconds(Long.parseLong(System.getProperty("backtest.exactBudgetSeconds", "30"))),
+                Integer.parseInt(System.getProperty("backtest.exactIterations",
+                        String.valueOf(PlanSolver.DEFAULT_EXACT_ITERATIONS))),
                 Integer.parseInt(System.getProperty("backtest.threads",
                         String.valueOf(Runtime.getRuntime().availableProcessors()))));
     }
@@ -169,7 +169,8 @@ class BacktestRun {
                 LocalDate.parse(config.path("from").asText()), LocalDate.parse(config.path("to").asText()),
                 new CapacityLimit(config.path("capacityCpuHoursPerHour").asDouble(),
                         config.path("capacityGpuHoursPerHour").asDouble()),
-                Duration.ofSeconds(config.path("exactBudgetSeconds").asLong()),
+                // manifests written when the limit was a time budget have no exactIterations: use the default
+                config.path("exactIterations").asInt(PlanSolver.DEFAULT_EXACT_ITERATIONS),
                 Integer.parseInt(System.getProperty("backtest.threads",
                         String.valueOf(Runtime.getRuntime().availableProcessors()))));
     }

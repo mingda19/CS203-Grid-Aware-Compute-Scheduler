@@ -3,7 +3,6 @@ package com.gacs.backend.backtest;
 import com.gacs.backend.service.allocation.CapacityLimit;
 
 import java.nio.file.Path;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
 
@@ -17,11 +16,12 @@ import java.util.List;
  * @param from             first day, inclusive
  * @param to               last day, inclusive
  * @param capacity         per-hour facility capacity (decision D6: the default facility, 256 CPU / 64 GPU)
- * @param exactBudget      time the exact solver gets per plan before the heuristic is used
+ * @param exactIterations  iterations the exact solver gets per pass before the heuristic is used (not a time
+ *                         budget: that would make results depend on machine speed)
  * @param threads          days solved in parallel
  */
 public record BacktestConfig(Path dataDir, List<Path> profileFiles, List<String> sources, LocalDate from,
-                             LocalDate to, CapacityLimit capacity, Duration exactBudget, int threads) {
+                             LocalDate to, CapacityLimit capacity, int exactIterations, int threads) {
 
     public static final String ACTUAL = "actual";
 
@@ -36,6 +36,9 @@ public record BacktestConfig(Path dataDir, List<Path> profileFiles, List<String>
         }
         if (sources.contains(ACTUAL)) {
             throw new IllegalArgumentException("'actual' is always run as perfect foresight; do not list it as a source");
+        }
+        if (exactIterations < 1) {
+            throw new IllegalArgumentException("exactIterations must be at least 1");
         }
         if (threads < 1) {
             throw new IllegalArgumentException("threads must be at least 1");

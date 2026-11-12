@@ -16,7 +16,6 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -87,11 +86,11 @@ class BacktestHarnessTest {
     }
 
     private BacktestConfig config(List<Path> profiles, LocalDate to, int threads) {
-        return new BacktestConfig(data, profiles, List.of("test"), DAY1, to, FACILITY, Duration.ofSeconds(30), threads);
+        return new BacktestConfig(data, profiles, List.of("test"), DAY1, to, FACILITY, PlanSolver.DEFAULT_EXACT_ITERATIONS, threads);
     }
 
     private static BacktestRunner runner() {
-        return new BacktestRunner(PROPERTIES, PlanSolver.repeatable(new EnergyCostModel(PROPERTIES), Duration.ofSeconds(30)));
+        return new BacktestRunner(PROPERTIES, PlanSolver.repeatable(new EnergyCostModel(PROPERTIES), PlanSolver.DEFAULT_EXACT_ITERATIONS));
     }
 
     private static DayRow row(Result result, LocalDate day, String source) {
@@ -134,7 +133,7 @@ class BacktestHarnessTest {
         List<OptimizationProblem> seen = Collections.synchronizedList(new ArrayList<>());
         PlanSolver spy = problem -> {
             seen.add(problem);
-            return PlanSolver.repeatable(new EnergyCostModel(PROPERTIES), Duration.ofSeconds(30)).solve(problem);
+            return PlanSolver.repeatable(new EnergyCostModel(PROPERTIES), PlanSolver.DEFAULT_EXACT_ITERATIONS).solve(problem);
         };
         new BacktestRunner(PROPERTIES, spy).run(config(List.of(oneJobProfile), DAY1, 1));
 

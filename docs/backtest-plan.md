@@ -159,8 +159,9 @@ used afterwards to settle costs. This is enforced in the harness's types and cov
   differs from the manifest it was asked to reproduce.
 - **Seeds:** fixed per profile and derived per day.
 - **The solver:** the heuristic is deterministic, but the exact solver has a time limit, so a slow machine could
-  stop it at a different point. The harness raises the time budget (e.g. 30 s per day), records `provenOptimal`
-  for every day, and the report states the share of proven days. If a day is still not proven, its result comes
+  stop it at a different point. The harness limits it by solver iterations instead (`backtest.exactIterations`),
+  which stops at the same point on every machine, records `provenOptimal` for every day, and the report states
+  the share of proven days. If a day is still not proven, its result comes
   from the deterministic heuristic, so reruns match.
 - **Run time:** about 975 days × 4 profiles × 3 price sources ≈ 11,700 solves. With 5–10 jobs a day, most solve
   in under 0.2 s. Days run in parallel (each solve is single-threaded), so a full run should take minutes. Measure
@@ -273,7 +274,7 @@ Steps 2 and 3 can run in parallel.
 |---|---|---|
 | Synthetic workloads don't look like real ones | The savings figure may not carry over | Several profiles, per-profile results, sensitivity runs; state it in the report |
 | Walk-forward forecasts take long to generate (LSTM retrained per fold) | Delays step 2 | Start with XGBoost and naive only; add the LSTM later |
-| Exact solver not proven on busy days | Results depend on machine speed | Bigger time budget for the backtest; record the proven share; heuristic fallback is deterministic |
+| Exact solver not proven on busy days | Results depend on machine speed | Iteration limit, not a time budget, for the backtest; record the proven share; heuristic fallback is deterministic |
 | Job priority (`staging`) not yet used by the solver | Backtest won't reflect priority | Out of scope here; rerun once priority is wired in |
 | Data scripts change the CSVs later | Old results can't be reproduced | Manifest hashes; a run refuses mismatched inputs |
 | Only LZ_NORTH, DAM, jobs inside one day | Narrower than production | Listed under "Limits" in the report |

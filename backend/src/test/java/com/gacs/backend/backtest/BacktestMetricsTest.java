@@ -14,7 +14,6 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -81,9 +80,9 @@ class BacktestMetricsTest {
     /** Runs the real harness, writes the run, then computes the metrics from the files. */
     private BacktestMetrics.Result runAndMeasure(Path runDir) {
         BacktestConfig config = new BacktestConfig(data, List.of(profile), List.of("test"), DAY1, DAY2,
-                new CapacityLimit(256, 64), Duration.ofSeconds(30), 1);
+                new CapacityLimit(256, 64), PlanSolver.DEFAULT_EXACT_ITERATIONS, 1);
         BacktestRunner runner = new BacktestRunner(PROPERTIES,
-                PlanSolver.repeatable(new EnergyCostModel(PROPERTIES), Duration.ofSeconds(30)));
+                PlanSolver.repeatable(new EnergyCostModel(PROPERTIES), PlanSolver.DEFAULT_EXACT_ITERATIONS));
         BacktestOutput.write(runner.run(config), config, PROPERTIES, runDir, dir);
         return MetricsFiles.write(runDir, dir);
     }
