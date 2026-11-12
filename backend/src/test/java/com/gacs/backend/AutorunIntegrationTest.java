@@ -389,6 +389,7 @@ class AutorunIntegrationTest {
 
         assertThat(result.runIds()).hasSize(1);
         assertThat(result.failed()).isEqualTo(1);
+        assertThat(result.failedJobIds()).containsExactly(bad.getId());
         assertThat(StoredScheduleReader.jobIds(reader.read(plans.findById(result.runIds().getFirst()).orElseThrow().getResultJson()).orElseThrow()))
             .containsExactly(good.getId());
         assertThat(jobs.findById(bad.getId()).orElseThrow().getPlanError()).contains("even alone");
@@ -477,6 +478,7 @@ class AutorunIntegrationTest {
 
         assertThat(result.runIds()).hasSize(1);
         assertThat(result.failed()).isEqualTo(1);
+        assertThat(result.failedJobIds()).containsExactly(crashing.getId());
         assertThat(jobs.findById(crashing.getId()).orElseThrow().getPlanError()).contains("optimiser failed");
         assertThat(jobStatus(owner, crashing)).isEqualTo("NEEDS_ATTENTION");
         assertThat(jobStatus(owner, good)).isEqualTo("AWAITING_APPROVAL");
@@ -515,6 +517,7 @@ class AutorunIntegrationTest {
         var first = planning.plan(owner.getEmail(), false);
         assertThat(first.runIds()).isEmpty();
         assertThat(first.failed()).isEqualTo(1);
+        assertThat(first.failedJobIds()).containsExactly(squeezed.getId());
         assertThat(ownedPlans(owner).stream().filter(p -> p.getReviewState() == ReviewState.PENDING)).isEmpty();
         assertThat(jobStatus(owner, squeezed)).isEqualTo("NEEDS_ATTENTION");
         mvc.perform(get("/api/schedules?state=PENDING").with(as(approver))).andExpect(status().isOk())

@@ -9,6 +9,7 @@ import com.gacs.backend.service.allocation.ConstraintType;
 import com.gacs.backend.service.JobService;
 import com.gacs.backend.service.constraintparse.ParsedConstraints.Conflict;
 import com.gacs.backend.service.constraintparse.ParsedConstraints.Evidence;
+import com.gacs.backend.service.constraintparse.ParsedConstraints.Unsupported;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,6 +43,8 @@ public class ConstraintParseService {
             ConstraintType.DEADLINE, ConstraintType.FLEXIBILITY_WINDOW, ConstraintType.ABSOLUTE_TIME_WINDOW,
             ConstraintType.PRECEDENCE, ConstraintType.DEPENDENCY, ConstraintType.MUTUAL_EXCLUSION,
             ConstraintType.SYNCHRONIZED_FINISH);
+    private static final Set<ConstraintType> PAIR_TYPES = EnumSet.of(
+            ConstraintType.PRECEDENCE, ConstraintType.DEPENDENCY, ConstraintType.MUTUAL_EXCLUSION);
 
     private static final Logger logger = LoggerFactory.getLogger(ConstraintParseService.class);
 
@@ -124,16 +127,24 @@ public class ConstraintParseService {
             validationError = e.getMessage();
         }
 
+        Classification classification = classify(request.rawConstraints(), parsed, ownerEmail, request.editingJobId());
+        var reconciliation = classification.reconciliation();
+        // A whole-message classification is not evidence that every clause was understood. Only
+        // an exact phrase match can claim an unsupported clause; unrelated text stays visible.
+        List<Unsupported> unsupported = parsed.unsupported().stream()
+                .filter(u -> classification.accepted().stream().noneMatch(a ->
+                        a.referencedJobId() != null && recognisedPhrase(a.proposal().phrase()).equals(recognisedPhrase(u.phrase()))))
+                .toList();
         String status;
         if (validationError != null) {
             status = ConstraintParseResponseDto.INVALID;
-        } else if (!parsed.ambiguities().isEmpty() || !conflicts.isEmpty() || !parsed.hasAnyField()) {
+        } else if (!parsed.ambiguities().isEmpty() || !conflicts.isEmpty() || !unsupported.isEmpty()
+                || (!parsed.hasAnyField() && reconciliation.suggestions().isEmpty())) {
             status = ConstraintParseResponseDto.NEEDS_CLARIFICATION;
         } else {
             status = ConstraintParseResponseDto.PARSED;
         }
 
-        ClassifierReconciler.Reconciliation reconciliation = classify(request.rawConstraints(), parsed, ownerEmail);
         if (!reconciliation.disagreements().isEmpty() && !ConstraintParseResponseDto.INVALID.equals(status)) {
             // A disagreement is an open question, so the operator has to come back to it - exactly
             // what NEEDS_CLARIFICATION already means. INVALID outranks it: a field that breaks a job
@@ -143,12 +154,24 @@ public class ConstraintParseService {
 
         return new ConstraintParseResponseDto(status,
                 new ConstraintParseResponseDto.Fields(start, deadline, flexibility, priority, exempt),
-                parsed.evidence(), parsed.ambiguities(), conflicts, parsed.unsupported(), validationError,
+                parsed.evidence(), parsed.ambiguities(), conflicts, unsupported, validationError,
                 LocalDateTime.now(clock.withZone(ZoneOffset.UTC)).truncatedTo(ChronoUnit.MICROS), zone.getId(),
                 reconciliation.suggestions().stream().map(s -> new ConstraintParseResponseDto.Suggestion(
                         s.type().name(), s.probability(), s.phrase(), s.referencedJobId(), s.needsConfirmation()))
                         .toList(),
-                reconciliation.disagreements());
+                reconciliation.disagreements(), classification.status(), classification.warnings());
+    }
+
+    private static String recognisedPhrase(String phrase) {
+        return phrase.strip().replaceAll("[.!?]+$", "").strip();
+    }
+
+    private record Classification(ClassifierReconciler.Reconciliation reconciliation,
+                                  List<ConstraintGuardrail.Accepted> accepted,
+                                  String status, List<String> warnings) {
+        static Classification unavailable(String status, String message) {
+            return new Classification(ClassifierReconciler.Reconciliation.NONE, List.of(), status, List.of(message));
+        }
     }
 
     /**
@@ -161,10 +184,10 @@ public class ConstraintParseService {
      * fields are correct and complete, and the only thing lost is the extra suggestions. Failing
      * the whole request would take a working feature down with an optional one.
      */
-    private ClassifierReconciler.Reconciliation classify(String text, ParsedConstraints parsed,
-                                                         String ownerEmail) {
+    private Classification classify(String text, ParsedConstraints parsed,
+                                    String ownerEmail, Long editingJobId) {
         if (classifier.isEmpty() || text == null || text.isBlank()) {
-            return ClassifierReconciler.Reconciliation.NONE;
+            return Classification.unavailable("DISABLED", "JEV is not enabled. Only timing, flexibility, priority and exemption can be recognised.");
         }
         if (guardrail.isEmpty()) {
             // A classifier with no guardrail is a misconfiguration, and the safe reading of it is
@@ -173,18 +196,47 @@ public class ConstraintParseService {
             // text, so running without one would put unverified proposals in front of an operator.
             logger.error("A constraint classifier is configured without a ConstraintGuardrail; "
                     + "skipping classification rather than using unchecked proposals");
-            return ClassifierReconciler.Reconciliation.NONE;
+            return Classification.unavailable("FAILED", "JEV could not run. Try parsing again; pair constraints have not been recognised.");
         }
         try {
             List<JobReferenceResolver.Candidate> candidates = candidatesFor(ownerEmail);
-            List<ClassifiedConstraint> proposals = classifier.get().classify(text, CLASSIFIED, candidates, null);
+            String editingName = candidates.stream().filter(c -> Objects.equals(c.id(), editingJobId))
+                    .map(JobReferenceResolver.Candidate::name).findFirst().orElse(null);
+            candidates = candidates.stream().filter(c -> !Objects.equals(c.id(), editingJobId)).toList();
+            List<ClassifiedConstraint> proposals = classifier.get().classify(text, CLASSIFIED, candidates, editingName);
             ConstraintGuardrail.Review review = guardrail.get()
-                    .review(text, proposals, CLASSIFIED, null, candidates);
-            return ClassifierReconciler.reconcile(parsed, review.accepted(), CLASSIFIED);
+                    .review(text, proposals, CLASSIFIED, editingJobId, candidates);
+            List<ConstraintGuardrail.Accepted> accepted = new ArrayList<>(review.accepted());
+            List<String> warnings = new ArrayList<>(review.refused().stream().map(ConstraintGuardrail.Refused::message).toList());
+            // The model cites the whole message. For mixed text, ask about the unclaimed clauses
+            // separately instead of letting a pair reading hide unrelated unsupported content.
+            if (accepted.stream().anyMatch(a -> PAIR_TYPES.contains(a.proposal().type()))) {
+                for (Unsupported clause : parsed.unsupported().stream().limit(8).toList()) {
+                    if (accepted.stream().anyMatch(a -> PAIR_TYPES.contains(a.proposal().type())
+                            && recognisedPhrase(a.proposal().phrase()).equals(recognisedPhrase(clause.phrase())))) continue;
+                    try {
+                        var local = classifier.get().classify(clause.phrase(), PAIR_TYPES, candidates, editingName);
+                        var checked = guardrail.get().review(clause.phrase(), local, PAIR_TYPES, editingJobId, candidates);
+                        for (var entry : checked.accepted()) {
+                            var p = entry.proposal();
+                            var bound = new ClassifiedConstraint(p.type(), p.probability(), p.phrase(),
+                                    clause.start() + p.start(), clause.start() + p.end(), p.referent());
+                            // Prefer the clause's evidence to a duplicate whole-message suggestion.
+                            accepted.removeIf(a -> a.proposal().type() == p.type()
+                                    && Objects.equals(a.referencedJobId(), entry.referencedJobId()));
+                            accepted.add(new ConstraintGuardrail.Accepted(bound, entry.referencedJobId(), entry.needsConfirmation()));
+                        }
+                    } catch (RuntimeException failedClause) {
+                        warnings.add("JEV could not check part of this text. Parse that relationship on its own, or try again.");
+                    }
+                }
+            }
+            return new Classification(ClassifierReconciler.reconcile(parsed, accepted, CLASSIFIED),
+                    accepted, "SUCCEEDED", warnings);
         } catch (RuntimeException e) {
             logger.warn("Constraint classification failed; returning the rule-based parse only: {}",
                     e.getMessage());
-            return ClassifierReconciler.Reconciliation.NONE;
+            return Classification.unavailable("FAILED", "JEV could not classify this text. Try parsing again; the values shown come from the rule-based parser only.");
         }
     }
 
