@@ -17,6 +17,8 @@ export interface DataStatusBadgeProps {
   className?: string
   size?: "sm" | "default"
   showTooltip?: boolean
+  /** Shown last inside the badge, for example the top bar's open arrow. */
+  children?: React.ReactNode
 }
 
 // Each state has an icon and a text label, so colour never carries the meaning alone.
@@ -56,6 +58,7 @@ export function DataStatusBadge({
   className,
   size = "default",
   showTooltip = true,
+  children,
 }: DataStatusBadgeProps) {
   const config = statusConfig[status] || statusConfig.unavailable
   const [now, setNow] = React.useState(() => Date.now())
@@ -82,6 +85,7 @@ export function DataStatusBadge({
       <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <span>{config.label}</span>
       {relativeText && <span className="ml-1 font-normal">{relativeText}</span>}
+      {children}
     </Badge>
   )
 

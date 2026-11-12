@@ -1,12 +1,14 @@
 "use client"
 
+import type * as React from "react"
 import { cn } from "@/lib/utils"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 
 interface SegmentedProps<T extends string> {
   value: T
   onChange: (value: T) => void
-  options: readonly { value: T; label: string }[]
+  /** `title` names an icon-only option for screen readers and on hover. */
+  options: readonly { value: T; label: React.ReactNode; title?: string }[]
   /** Names the group for screen readers, for example "Plans to show". */
   label: string
   className?: string
@@ -39,6 +41,8 @@ export function Segmented<T extends string>({ value, onChange, options, label, c
         <ToggleGroupItem
           key={option.value}
           value={option.value}
+          aria-label={option.title}
+          title={option.title}
           className={ITEM}
         >
           {option.label}

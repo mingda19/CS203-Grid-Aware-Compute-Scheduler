@@ -69,7 +69,7 @@ export default function ForecastsPage() {
 
       {/* The switches stay on the left and Refresh on the right. The switches wrap when the row is too narrow. */}
       <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <div data-tour="forecast-switches" className="flex min-w-0 flex-wrap items-center gap-2">
           <Segmented label="Forecast model" value={model} onChange={setModel} options={MODEL_OPTIONS} />
           <Segmented label="Window" value={analysisWindow} onChange={setAnalysisWindow} options={WINDOW_OPTIONS} />
         </div>
@@ -88,11 +88,15 @@ export default function ForecastsPage() {
         </Alert>
       )}
 
-      <KeyFigures {...accuracyProps} points={points} cheap={cheap} />
+      <div data-tour="key-figures">
+        <KeyFigures {...accuracyProps} points={points} cheap={cheap} />
+      </div>
 
-      <ForecastCard {...forecast.card} />
+      <ForecastCard {...forecast.card} pastInFooter />
 
-      <AccuracyCard {...accuracyProps} points={points} from={from} nowMs={nowMs} />
+      <div data-tour="forecast-checks">
+        <AccuracyCard {...accuracyProps} points={points} from={from} nowMs={nowMs} />
+      </div>
 
       {/* Two columns at lg, stacked below. */}
       <div className="grid min-w-0 gap-6 lg:grid-cols-2">

@@ -13,13 +13,13 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
-import { History } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
 import { DataStatusBadge, type DataStatusType } from "@/components/ui/data-status-badge"
 import { Segmented } from "@/components/ui/segmented"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Toggle } from "@/components/ui/toggle"
 import type { ForecastModel } from "@/lib/api"
 import { formatMarketChartTick, formatShortDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { formatConfidence } from "@/lib/forecast-confidence"
@@ -47,6 +47,8 @@ interface ForecastCardProps {
   /** Draws what each past hour had been forecast, over the known price. */
   showPast: boolean
   onShowPastChange: (show: boolean) => void
+  /** Shows the "Show past forecasts" checkbox at the bottom right. Only the Forecast page sets it. */
+  pastInFooter?: boolean
   /** The shown model's latest run, shown in the status badge's hover text. */
   run: { generatedAt: string } | null
   status: DataStatusType
@@ -76,11 +78,12 @@ export function LegendItem({ swatch, children }: { swatch: React.ReactNode; chil
 
 /** The next 72 hours with the model's typical error as a band. Home and the Forecast page both show it; `useForecastCard` feeds it. */
 export function ForecastCard({
-  zone, rows, nowMs, from, to, model, onModelChange, pastWindow, onPastWindowChange, showPast, onShowPastChange, run, status, lowHours, loading, error, failed, onRetry, footerAction,
+  zone, rows, nowMs, from, to, model, onModelChange, pastWindow, onPastWindowChange, showPast, onShowPastChange, pastInFooter, run, status, lowHours, loading, error, failed, onRetry, footerAction,
 }: ForecastCardProps) {
   const ticks = React.useMemo(() => timeTicks(from, to), [from, to])
   const lowSpans = React.useMemo(() => hourSpans(lowHours), [lowHours])
   const name = MODEL_LABEL[model]
+  const pastId = React.useId()
 
   return (
     <Card className="min-w-0 overflow-hidden">
@@ -88,23 +91,13 @@ export function ForecastCard({
       <div className="flex min-w-0 flex-col gap-3 p-4 pb-2 sm:flex-row sm:items-start sm:justify-between sm:p-5 sm:pb-2">
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold leading-5">Price Forecast, next 72 hours</h2>
-          <p className="text-xs leading-4 text-muted-foreground">Day-ahead prices so far, and the model&apos;s forecast with its typical error.</p>
+          <p className="text-xs leading-4 text-muted-foreground">Day-ahead prices so far, and the model&apos;s forecast with its error range.</p>
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
           {!loading && (
             <DataStatusBadge size="sm" status={status} updatedAt={run?.generatedAt ?? null} source={`${name} forecast for ${zone}, ${MODEL_ROLE[model]}`} />
           )}
           {onModelChange && <Segmented label="Forecast model" value={model} onChange={onModelChange} options={MODEL_OPTIONS} />}
-          <Toggle
-            size="sm"
-            pressed={showPast}
-            onPressedChange={onShowPastChange}
-            aria-label="Show past forecasts"
-            title="Show past forecasts"
-            className="px-0 data-[state=on]:bg-primary/15 data-[state=on]:text-foreground"
-          >
-            <History />
-          </Toggle>
           <Segmented label="Past window" value={pastWindow} onChange={onPastWindowChange} options={PAST_OPTIONS} />
         </div>
       </div>
@@ -165,7 +158,7 @@ export function ForecastCard({
                       if (row.pastForecast != null) lines.push([`Was forecast (${name})`, <>{money(row.pastForecast)}{PER_MWH}</>])
                       if (row.price == null && row.forecast != null) {
                         lines.push([`Forecast (${name})`, <>{money(row.forecast)}{PER_MWH}</>])
-                        if (row.typicalError != null) lines.push(["Typical error", <>± {money(row.typicalError)}{PER_MWH}</>])
+                        if (row.typicalError != null) lines.push(["Error range",<>± {money(row.typicalError)}{PER_MWH}</>])
                         lines.push(["Confidence", formatConfidence(row.confidence)])
                       }
                       return (
@@ -214,15 +207,19 @@ export function ForecastCard({
                 <LegendItem swatch={<span className="h-0.5 w-5 shrink-0 bg-primary" aria-hidden="true" />}>Day-ahead price</LegendItem>
                 <LegendItem swatch={<DashSwatch color="var(--primary)" />}>Forecast ({name})</LegendItem>
                 {showPast && <LegendItem swatch={<DashSwatch color="var(--muted-foreground)" />}>Past forecast ({name})</LegendItem>}
-                <LegendItem swatch={<span className="h-3 w-5 shrink-0 rounded-sm bg-primary/15" aria-hidden="true" />}>Typical error</LegendItem>
+                <LegendItem swatch={<span className="h-3 w-5 shrink-0 rounded-sm bg-primary/15" aria-hidden="true" />}>Error range</LegendItem>
                 {lowSpans.length > 0 && (
                   <LegendItem swatch={<span className="h-3 w-5 shrink-0 rounded-sm bg-muted-foreground/15" aria-hidden="true" />}>
                     Cheapest {LOW_HOURS_PER_DAY} h each day
                   </LegendItem>
                 )}
-                <LegendItem swatch={<span className="h-3 w-0 shrink-0 border-l border-dashed border-foreground" aria-hidden="true" />}>Now</LegendItem>
-                <li className="whitespace-nowrap">$/MWh, {MARKET_ZONE_LABEL}</li>
               </ul>
+              {pastInFooter && (
+                <div className="ml-auto flex shrink-0 items-center gap-2">
+                  <Checkbox id={pastId} checked={showPast} onCheckedChange={onShowPastChange} />
+                  <Label htmlFor={pastId} className="text-xs font-normal leading-4">Show past forecasts</Label>
+                </div>
+              )}
               {footerAction && <span className="ml-auto shrink-0">{footerAction}</span>}
             </div>
           </>
