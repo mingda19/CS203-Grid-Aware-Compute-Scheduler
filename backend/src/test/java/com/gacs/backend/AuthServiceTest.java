@@ -19,6 +19,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -31,6 +33,9 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.time.Instant;
+import java.time.Clock;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
@@ -42,6 +47,9 @@ import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class AuthServiceTest {
+
+    private static final Instant RECOVERY_INSTANT = Instant.parse("2026-11-12T00:00:00Z");
+    private static final LocalDateTime RECOVERY_NOW = LocalDateTime.ofInstant(RECOVERY_INSTANT, ZoneOffset.UTC);
 
     @Mock
     private UserRepository userRepository;
@@ -68,11 +76,88 @@ class AuthServiceTest {
 
     @BeforeEach
     void setUp() {
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT, ZoneOffset.UTC));
         registerRequest = new RegisterRequest(
                 "elena.vance@datacenter.io",
                 "river lantern orbit meadow",
                 "Elena Vance"
         );
+    }
+
+    @Test
+    void registrationDoesNotReportEmailSentWhenDeliveryFails() {
+        when(userRepository.findByEmail(registerRequest.getEmail())).thenReturn(Optional.empty());
+        doThrow(new IllegalStateException("Gmail API is not configured"))
+                .when(emailService).sendOtpEmail(anyString(), anyString());
+
+        assertThrows(IllegalStateException.class, () -> authService.register(registerRequest));
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    @Test
+    void resendDoesNotReportEmailSentWhenDeliveryFails() {
+        User user = new User(registerRequest.getEmail(), "encoded", "User", "ROLE_USER");
+        when(userRepository.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        doThrow(new IllegalStateException("Gmail API unavailable"))
+                .when(emailService).sendOtpEmail(anyString(), anyString());
+
+        assertThrows(IllegalStateException.class, () -> authService.resendOtp(
+                new com.gacs.backend.dto.ResendOtpRequest(user.getEmail())));
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    @Test
+    void unverifiedLoginDoesNotReportEmailSentOrIssueTokensWhenDeliveryFails() {
+        User user = new User(registerRequest.getEmail(), passwordEncoder.encode(registerRequest.getPassword()),
+                "User", "ROLE_USER");
+        when(userRepository.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        doThrow(new IllegalStateException("Gmail API unavailable"))
+                .when(emailService).sendOtpEmail(anyString(), anyString());
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertThrows(IllegalStateException.class, () -> authService.login(
+                new LoginRequest(user.getEmail(), registerRequest.getPassword()),
+                new MockHttpServletRequest(), response));
+        verifyNoInteractions(jwtUtils, refreshTokenService);
+        assertNull(response.getHeader("Set-Cookie"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Asia/Singapore", "UTC"})
+    void otpUsesUtcAcrossServersAndExpiresAfterTenMinutes(String issuingZone) {
+        User user = new User(registerRequest.getEmail(), "encoded", "User", "ROLE_USER");
+        when(userRepository.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT, ZoneId.of(issuingZone)));
+
+        authService.resendOtp(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
+
+        ArgumentCaptor<OtpVerification> savedOtp = ArgumentCaptor.forClass(OtpVerification.class);
+        verify(otpRepository).save(savedOtp.capture());
+        OtpVerification otp = savedOtp.getValue();
+        assertEquals(RECOVERY_NOW.plusMinutes(10), otp.getExpiresAt());
+        when(otpRepository.findTopByEmailAndOtpCodeAndIsUsedFalseOrderByCreatedAtDesc(
+                user.getEmail(), otp.getOtpCode())).thenReturn(Optional.of(otp));
+        var request = new VerifyOtpRequest(user.getEmail(), otp.getOtpCode());
+        ZoneId verifyingZone = ZoneId.of(issuingZone.equals("UTC") ? "Asia/Singapore" : "UTC");
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT.plusSeconds(600), verifyingZone));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> authService.verifyOtp(request));
+        assertTrue(error.getMessage().contains("expired"));
+        assertFalse(otp.isUsed());
+        assertFalse(user.isVerified());
+        verify(userRepository, never()).save(any(User.class));
+
+        // The same code is still valid one second before its UTC expiry.
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT.plusSeconds(599), verifyingZone));
+        when(userRepository.save(user)).thenReturn(user);
+        assertTrue(authService.verifyOtp(request).isSuccess());
+        assertTrue(otp.isUsed());
+        assertTrue(user.isVerified());
     }
 
     @Test
@@ -99,11 +184,11 @@ class AuthServiceTest {
         User user = new User("user@example.com", "old", "User", "ROLE_USER");
         user.setVerified(true);
         user.setPasswordResetHash(passwordEncoder.encode("correct"));
-        user.setPasswordResetExpiresAt(LocalDateTime.now().minusMinutes(1));
+        user.setPasswordResetExpiresAt(RECOVERY_NOW.minusMinutes(1));
         when(userRepository.lockByEmail(user.getEmail())).thenReturn(Optional.of(user));
         var request = new com.gacs.backend.dto.ResetPasswordRequest(user.getEmail(), "correct", "meadow lantern orbit river");
         assertThrows(IllegalArgumentException.class, () -> authService.resetPassword(request));
-        user.setPasswordResetExpiresAt(LocalDateTime.now().plusMinutes(10));
+        user.setPasswordResetExpiresAt(RECOVERY_NOW.plusMinutes(10));
         assertThrows(IllegalArgumentException.class, () -> authService.resetPassword(
                 new com.gacs.backend.dto.ResetPasswordRequest(user.getEmail(), "incorrect", "meadow lantern orbit river")));
         assertEquals("old", user.getPassword());
@@ -119,7 +204,7 @@ class AuthServiceTest {
         var unverified = authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
         assertEquals(missing.getMessage(), unverified.getMessage());
         user.setVerified(true);
-        user.setPasswordResetRequestedAt(LocalDateTime.now());
+        user.setPasswordResetRequestedAt(RECOVERY_NOW);
         authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
         verifyNoInteractions(emailService);
     }
@@ -133,10 +218,74 @@ class AuthServiceTest {
         doThrow(new IllegalStateException("SMTP unavailable")).when(emailService).sendPasswordResetEmail(anyString(), anyString());
         authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
         assertEquals("previous", user.getPasswordResetHash());
-        user.setPasswordResetRequestedAt(LocalDateTime.now().minusMinutes(2));
+        user.setPasswordResetRequestedAt(RECOVERY_NOW.minusMinutes(2));
         doNothing().when(emailService).sendPasswordResetEmail(anyString(), anyString());
         authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
         assertNotEquals("previous", user.getPasswordResetHash());
+    }
+
+    @Test
+    void recoveryUsesUtcAcrossSingaporeAndUtcServersAndExpiresAfterTenMinutes() {
+        User user = new User("user@example.com", "old", "User", "ROLE_USER");
+        user.setVerified(true);
+        when(userRepository.lockByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT, ZoneId.of("Asia/Singapore")));
+
+        authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
+
+        assertEquals(RECOVERY_NOW, user.getPasswordResetRequestedAt());
+        assertEquals(RECOVERY_NOW.plusMinutes(10), user.getPasswordResetExpiresAt());
+        ArgumentCaptor<String> code = ArgumentCaptor.forClass(String.class);
+        verify(emailService).sendPasswordResetEmail(eq(user.getEmail()), code.capture());
+        var request = new com.gacs.backend.dto.ResetPasswordRequest(
+                user.getEmail(), code.getValue(), "meadow lantern orbit river");
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT.plusSeconds(600), ZoneOffset.UTC));
+        assertThrows(IllegalArgumentException.class, () -> authService.resetPassword(request));
+        assertEquals("old", user.getPassword());
+        // One second before expiry, the same code is valid on a UTC server.
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT.plusSeconds(599), ZoneOffset.UTC));
+        authService.resetPassword(request);
+        assertNull(user.getPasswordResetHash());
+        verify(refreshTokenService).revokeAllUserTokens(user);
+    }
+
+    @Test
+    void singaporeLegacyTimestampDoesNotBlockRecoveryAndNormalCooldownStillApplies() {
+        User user = new User("user@example.com", "old", "User", "ROLE_USER");
+        user.setVerified(true);
+        user.setPasswordResetRequestedAt(RECOVERY_NOW.plusHours(8));
+        when(userRepository.lockByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        var request = new com.gacs.backend.dto.ResendOtpRequest(user.getEmail());
+
+        authService.forgotPassword(request);
+        assertEquals(RECOVERY_NOW, user.getPasswordResetRequestedAt());
+        authService.forgotPassword(request);
+        verify(emailService, times(1)).sendPasswordResetEmail(eq(user.getEmail()), anyString());
+
+        org.springframework.test.util.ReflectionTestUtils.setField(authService, "clock",
+                Clock.fixed(RECOVERY_INSTANT.plusSeconds(60), ZoneOffset.UTC));
+        authService.forgotPassword(request);
+        verify(emailService, times(2)).sendPasswordResetEmail(eq(user.getEmail()), anyString());
+    }
+
+    @Test
+    void recoveryRejectsImplausibleLegacyExpiryAndPreservesCooldownForSmallClockSkew() {
+        User user = new User("user@example.com", "old", "User", "ROLE_USER");
+        user.setVerified(true);
+        user.setPasswordResetHash(passwordEncoder.encode("correct"));
+        user.setPasswordResetExpiresAt(RECOVERY_NOW.plusHours(8).plusMinutes(10));
+        user.setPasswordResetRequestedAt(RECOVERY_NOW.plusSeconds(30));
+        when(userRepository.lockByEmail(user.getEmail())).thenReturn(Optional.of(user));
+
+        assertThrows(IllegalArgumentException.class, () -> authService.resetPassword(
+                new com.gacs.backend.dto.ResetPasswordRequest(user.getEmail(), "correct", "meadow lantern orbit river")));
+        authService.forgotPassword(new com.gacs.backend.dto.ResendOtpRequest(user.getEmail()));
+
+        verifyNoInteractions(emailService, refreshTokenService);
+        assertEquals("old", user.getPassword());
     }
 
     // login() sets the thread-global SecurityContextHolder; clear it so later MockMvc tests on this thread start anonymous.
@@ -182,7 +331,7 @@ class AuthServiceTest {
 
     @Test
     void verifyOtp_ShouldMarkUserVerified_WhenOtpIsValid() {
-        OtpVerification otp = new OtpVerification("elena.vance@datacenter.io", "123456", LocalDateTime.now().plusMinutes(10));
+        OtpVerification otp = new OtpVerification("elena.vance@datacenter.io", "123456", RECOVERY_NOW.plusMinutes(10));
         User unverifiedUser = new User("elena.vance@datacenter.io", "hashedPass", "Elena", "Role");
         unverifiedUser.setVerified(false);
 
@@ -203,7 +352,7 @@ class AuthServiceTest {
 
     @Test
     void verifyOtp_ShouldThrowException_WhenOtpExpired() {
-        OtpVerification expiredOtp = new OtpVerification("elena.vance@datacenter.io", "123456", LocalDateTime.now().minusMinutes(1));
+        OtpVerification expiredOtp = new OtpVerification("elena.vance@datacenter.io", "123456", RECOVERY_NOW.minusMinutes(1));
 
         when(otpRepository.findTopByEmailAndOtpCodeAndIsUsedFalseOrderByCreatedAtDesc("elena.vance@datacenter.io", "123456"))
                 .thenReturn(Optional.of(expiredOtp));
@@ -305,6 +454,24 @@ class AuthServiceTest {
         LoginRequest loginRequest = new LoginRequest("elena.vance@datacenter.io", "WrongPassword!");
 
         assertThrows(BadCredentialsException.class, () -> authService.login(loginRequest, mockRequest));
+    }
+
+    @Test
+    void login_ShouldFail_WhenUserBanned() {
+        String hashedPassword = passwordEncoder.encode("P@ssw0rd2026!");
+        User bannedUser = new User("elena.vance@datacenter.io", hashedPassword, "Elena Vance", "ROLE_USER");
+        bannedUser.setVerified(true);
+        bannedUser.setBanned(true);
+
+        when(userRepository.findByEmail("elena.vance@datacenter.io")).thenReturn(Optional.of(bannedUser));
+
+        MockHttpServletRequest mockRequest = new MockHttpServletRequest();
+        LoginRequest loginRequest = new LoginRequest("elena.vance@datacenter.io", "P@ssw0rd2026!");
+
+        BadCredentialsException ex = assertThrows(BadCredentialsException.class,
+                () -> authService.login(loginRequest, mockRequest));
+        assertEquals("This account is disabled. Contact an administrator.", ex.getMessage());
+        verify(refreshTokenService, never()).createRefreshToken(any(), anyBoolean());
     }
 
     @Test

@@ -5,6 +5,7 @@ export interface User {
   role: string
   isVerified?: boolean
   verified?: boolean
+  banned?: boolean
 }
 
 export interface AuthResponse {
@@ -51,9 +52,26 @@ export interface PriceForecastPoint {
    * so null means "not known", never "no confidence". Contract FR-10.
    */
   confidenceScore: number | null
+  /** The model's typical error for this hour in $/MWh (reference RMSE). Omitted when there is none. */
+  typicalErrorUsdMwh?: number | null
 }
 
 export type ForecastModel = "lstm" | "lear"
+
+/** One past hour: what the model forecast (latest run made before the hour) and what the price was. */
+export interface ForecastAccuracyPoint {
+  intervalStartUtc: string
+  predictedPrice: number
+  actualPrice: number
+  modelVersion: string
+  generatedAt: string
+}
+
+export interface ForecastAccuracy {
+  points: ForecastAccuracyPoint[]
+  days: number
+  modelKind: ForecastModel
+}
 
 export interface PriceForecast {
   points: PriceForecastPoint[]
@@ -72,6 +90,13 @@ export interface WorkloadSchedule {
   startUtc: string
   endUtc: string
   notes: string | null
+  /** Whose job this is. The calendar shows every user's entries. */
+  ownerName: string
+  /** True for the signed-in user's own entries, the only ones they may change. */
+  mine: boolean
+  /** The approved plan and the job behind this entry. Null for a row added through POST /api/workload-schedules. */
+  runId: string | null
+  jobId: number | null
 }
 
 export type JobPriority = "CRITICAL" | "HIGH" | "NORMAL" | "LOW"
@@ -79,8 +104,8 @@ export type JobPriority = "CRITICAL" | "HIGH" | "NORMAL" | "LOW"
 export type ConfirmationOutcome = "PENDING" | "CONFIRMED" | "REJECTED"
 
 /**
- * What kind of workload a job is. Matches the categories the workload-schedule calendar view
- * (GoogleCalendarView.tsx's WorkloadType) already colors and filters by - WORKLOAD_CATEGORY_LABELS
+ * What kind of workload a job is. Matches the categories the workload-schedule calendar shows
+ * as text in a job's details - WORKLOAD_CATEGORY_LABELS
  * below is the exact mapping the backend's WorkloadCategory enum uses to label a dispatched
  * calendar entry, so a job's chosen category always renders consistently with the calendar.
  */
@@ -96,9 +121,17 @@ export const WORKLOAD_CATEGORY_LABELS: Record<WorkloadCategory, string> = {
   GRID_ALERT: "Grid Alert",
 }
 
+/** Worked out by the server from the job's plans and calendar entries. */
+export type JobStatus =
+  | "SCHEDULING" | "AWAITING_APPROVAL" | "SCHEDULED" | "RUNNING" | "COMPLETED" | "REJECTED" | "NEEDS_ATTENTION" | "CANCELLED"
+
 export interface ComputeJob {
   id: number
   ownerEmail?: string
+  /** Set only in the admin listing of every user's jobs. */
+  ownerName?: string
+  /** Run ID of the approved plan the job is in. Such a job cannot be edited, only deleted. */
+  approvedRunId?: string | null
   name: string
   description?: string | null
   cpuHours: number
@@ -110,9 +143,12 @@ export interface ComputeJob {
   priority?: JobPriority
   workloadCategory?: WorkloadCategory
   rawConstraints?: string | null
+  pairConstraints?: JobPairConstraint[]
   parsedAt?: string | null
   confirmationOutcome?: ConfirmationOutcome | null
-  status: string
+  status: JobStatus
+  /** Why the job is Rejected or Needs attention. */
+  statusReason?: string | null
   createdAt?: string
   updatedAt?: string
 }
@@ -122,6 +158,7 @@ export type ComputeJobPayload = Pick<ComputeJob,
 > & {
   description?: string | null
   rawConstraints?: string | null
+  pairConstraints?: JobPairConstraint[]
   parsedAt?: string | null
   confirmationOutcome?: ConfirmationOutcome | null
   priority?: JobPriority
@@ -136,15 +173,23 @@ export interface ConstraintDraft {
   isExempt: boolean | null
 }
 
+export interface JobPairConstraint {
+  type: "PRECEDENCE" | "DEPENDENCY" | "MUTUAL_EXCLUSION"
+  referencedJobId: number
+}
+
 export interface ConstraintParseRequest {
   rawConstraints: string
   draft: ConstraintDraft
   timeZone: string
+  editingJobId?: number
 }
 
 import type { ConstraintTypeName } from "./constraint-confirmation"
 
 export interface ConstraintParseResponse {
+  classificationStatus?: "DISABLED" | "SUCCEEDED" | "FAILED"
+  warnings?: string[]
   status: "PARSED" | "NEEDS_CLARIFICATION" | "INVALID"
   fields: ConstraintDraft
   evidence: Array<{ field: keyof ConstraintDraft; value: string; phrase: string; start: number; end: number }>
@@ -353,7 +398,7 @@ export interface DataFreshnessResponse {
   checkedAt: string
 }
 
-export type AuditActionType = "APPROVE" | "REJECT" | "REVISE" | "OVERRIDE" | "DISPATCH"
+export type AuditActionType = "APPROVE" | "REJECT" | "REVISE" | "REVOKE" | "OVERRIDE" | "DISPATCH" | "REMOVE_JOB"
 
 export interface AuditEvent {
   id: number
@@ -637,6 +682,11 @@ export const priceApi = {
     return response
   },
 
+  getForecastAccuracy(params: { location: string; model: ForecastModel; days?: number }): Promise<ApiResponse<ForecastAccuracy>> {
+    const query = new URLSearchParams({ location: params.location, model: params.model, days: String(params.days ?? 7) })
+    return fetchJson<ApiResponse<ForecastAccuracy>>(`/api/prices/forecast-accuracy?${query.toString()}`, { cache: "no-store" })
+  },
+
   getHistory(params: { location: string; startDate: string; endDate: string; limit?: number; offset?: number }): Promise<ApiResponse<PriceHistory>> {
     const query = new URLSearchParams({
       location: params.location,
@@ -667,10 +717,6 @@ export const workloadScheduleApi = {
       body: JSON.stringify({ status }),
     })
   },
-
-  remove(id: number): Promise<ApiResponse<void>> {
-    return fetchJson<ApiResponse<void>>(`/api/workload-schedules/${id}`, { method: "DELETE" })
-  },
 }
 
 export const jobsApi = {
@@ -694,6 +740,14 @@ export const jobsApi = {
   remove(id: number): Promise<ApiResponse<void>> {
     return fetchJson<ApiResponse<void>>(`/api/jobs/${id}`, { method: "DELETE" })
   },
+  /** Plans the caller's jobs that have no live plan, and the ones turned away or failed. */
+  recompute(): Promise<ApiResponse<{ runIds: string[]; failed: number; failedJobIds?: number[] }>> {
+    return fetchJson<ApiResponse<{ runIds: string[]; failed: number; failedJobIds?: number[] }>>("/api/schedules/recompute", { method: "POST" })
+  },
+  /** Admin only: every user's jobs, each with its owner's name. */
+  listAll(): Promise<ApiResponse<ComputeJob[]>> {
+    return fetchJson<ApiResponse<ComputeJob[]>>("/api/admin/jobs", { cache: "no-store" })
+  },
 }
 
 export type PlanReviewState = "PENDING" | "APPROVED" | "REJECTED" | "REVISION_REQUESTED" | "STALE" | "INVALIDATED"
@@ -703,7 +757,24 @@ export type PlanReviewState = "PENDING" | "APPROVED" | "REJECTED" | "REVISION_RE
  * recommendation, revoking undoes one already made, and only an APPROVED plan accepts it.
  */
 export type ScheduleDecisionAction = "approve" | "reject" | "revise" | "revoke"
-export interface SchedulePlanSummary { runId: string; createdAt: string; reviewState: PlanReviewState }
+export interface SchedulePlanSummary {
+  runId: string
+  createdAt: string
+  reviewState: PlanReviewState
+  /** Whose jobs the plan schedules. */
+  ownerName: string
+  /** Whether the signed-in user may approve it. A submitter may not, unless an admin or the setting allows it. */
+  canApprove: boolean
+  /** The signed-in user submitted it. */
+  mine: boolean
+  /** The plan's jobs, without any removed after approval. Empty if the stored result cannot be read. */
+  jobNames: string[]
+  projectedSavingsUsd: number | null
+  projectedSavingsPercent: number | null
+  /** Earliest scheduled start (UTC), or null if nothing is placed. */
+  firstStart: string | null
+  usedSeededFallbackPrices: boolean
+}
 export interface SchedulePlanDetail {
   runId: string
   reviewState: PlanReviewState
@@ -717,6 +788,12 @@ export interface SchedulePlanDetail {
    */
   appliedAt: string | null
   recommendation: OptimizeResponse | null
+  ownerName: string
+  canApprove: boolean
+  /** Whether the signed-in user may revoke its approval: the plan's owner or an admin. */
+  canRevoke: boolean
+  /** Jobs that left the plan after approval (deleted, or never placed). */
+  removedJobIds: number[]
 }
 /**
  * The action as the backend records it: {@link ScheduleDecisionAction} upper-cased, matching the
@@ -740,8 +817,9 @@ export const scheduleReviewApi = {
   apply(runId: string): Promise<ApiResponse<WorkloadSchedule[]>> {
     return fetchJson(`/api/schedules/${encodeURIComponent(runId)}/apply`, { method: "POST" })
   },
-  list(page = 0, state?: PlanReviewState): Promise<ApiResponse<Page<SchedulePlanSummary>>> {
-    const filter = state ? `&state=${state}` : ""
+  /** Every owner's plans. `approvable` keeps only the ones the signed-in user may approve. */
+  list(page = 0, state?: PlanReviewState, approvable = false): Promise<ApiResponse<Page<SchedulePlanSummary>>> {
+    const filter = (state ? `&state=${state}` : "") + (approvable ? "&approvable=true" : "")
     return fetchJson(`/api/schedules?page=${page}&size=20${filter}`, { cache: "no-store" })
   },
   detail(runId: string): Promise<ApiResponse<SchedulePlanDetail>> {
@@ -776,8 +854,9 @@ export const facilityApi = {
   utilization(): Promise<ApiResponse<FacilityUtilization>> {
     return fetchJson<ApiResponse<FacilityUtilization>>("/api/facilities/me/utilization", { cache: "no-store" })
   },
+  /** Admin only. A change to capacity or location ends the approval of every approved plan. */
   update(payload: FacilityConfig): Promise<ApiResponse<FacilityConfig>> {
-    return fetchJson<ApiResponse<FacilityConfig>>("/api/facilities/me", {
+    return fetchJson<ApiResponse<FacilityConfig>>("/api/admin/facility", {
       method: "PUT",
       body: JSON.stringify(payload),
     })
@@ -980,6 +1059,13 @@ export const authApi = {
     })
   },
 
+  async updateMe(payload: { fullName: string }): Promise<ApiResponse<User>> {
+    return fetchJson<ApiResponse<User>>("/api/auth/me", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    })
+  },
+
   async logout(): Promise<ApiResponse<void>> {
     const headers: Record<string, string> = {}
     const rToken = getRefreshToken()
@@ -997,6 +1083,18 @@ export const authApi = {
   },
 }
 
+export interface AppSettings { allowSelfApproval: boolean }
+
+export const settingsApi = {
+  /** Admin only. */
+  get(): Promise<ApiResponse<AppSettings>> {
+    return fetchJson<ApiResponse<AppSettings>>("/api/admin/settings", { cache: "no-store" })
+  },
+  update(payload: AppSettings): Promise<ApiResponse<AppSettings>> {
+    return fetchJson<ApiResponse<AppSettings>>("/api/admin/settings", { method: "PUT", body: JSON.stringify(payload) })
+  },
+}
+
 export const adminApi = {
   async getAllUsers(): Promise<ApiResponse<User[]>> {
     return fetchJson<ApiResponse<User[]>>("/api/admin/users", {
@@ -1011,6 +1109,13 @@ export const adminApi = {
     return fetchJson<ApiResponse<User>>(`/api/admin/users/${userId}/role`, {
       method: "PATCH",
       body: JSON.stringify({ role }),
+    })
+  },
+
+  async setUserBanned(userId: number, banned: boolean): Promise<ApiResponse<User>> {
+    return fetchJson<ApiResponse<User>>(`/api/admin/users/${userId}/ban`, {
+      method: "PATCH",
+      body: JSON.stringify({ banned }),
     })
   },
 }
@@ -1063,4 +1168,19 @@ export function removeStoredUser(): void {
   }
   setAccessToken(null)
   setRefreshToken(null)
+}
+
+/** Window event with the updated `User` as `detail`. The shell listens so the sidebar shows a new name at once. */
+export const USER_UPDATED_EVENT = "gacs-user-updated"
+
+/** Ends the session on the server (errors ignored), clears local auth and goes to the login page. */
+export async function signOut(router: { push: (href: string) => void }): Promise<void> {
+  try {
+    await authApi.logout()
+  } catch {
+    // Ignore network errors on logout
+  } finally {
+    removeStoredUser()
+    router.push("/login")
+  }
 }

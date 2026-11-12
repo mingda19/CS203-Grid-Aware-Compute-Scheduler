@@ -11,6 +11,9 @@ const alertVariants = cva(
         default: "bg-background text-foreground",
         destructive:
           "border-destructive/50 text-destructive dark:border-destructive [&>svg]:text-destructive",
+        // Success state: pair it with an icon and text, like the warning one.
+        success:
+          "border-success/40 bg-success/10 text-success-foreground [&>svg]:text-success-foreground",
         // Warning state: always pair it with an icon and text, never colour alone.
         warning:
           "border-warning-foreground/40 bg-warning/10 text-warning-foreground [&>svg]:text-warning-foreground",
@@ -41,7 +44,7 @@ const AlertTitle = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <h5
     ref={ref}
-    className={cn("mb-1 font-semibold leading-none tracking-tight", className)}
+    className={cn("mb-1 font-semibold leading-none", className)}
     {...props}
   />
 ))

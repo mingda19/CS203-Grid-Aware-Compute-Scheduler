@@ -1,5 +1,6 @@
 package com.gacs.backend;
 
+import com.gacs.backend.model.AuditActionType;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.core.io.ClassPathResource;
@@ -12,6 +13,34 @@ import static org.assertj.core.api.Assertions.*;
 /** Opt-in PostgreSQL verification; creates and drops only a randomly named test schema. */
 @EnabledIfEnvironmentVariable(named = "TEST_POSTGRES_URL", matches = "jdbc:postgresql:.+")
 class ScheduleLifecycleMigrationPostgresTest {
+    /** The check Hibernate generated before REVOKE existed, then V9 and V12 widen it: every enum value must insert. */
+    @Test void auditActionTypeMigrationsAcceptEveryValue() throws Exception {
+        String schema = "audit_action_test_" + UUID.randomUUID().toString().replace("-", "");
+        try (var connection = DriverManager.getConnection(System.getenv("TEST_POSTGRES_URL"),
+                System.getenv().getOrDefault("TEST_POSTGRES_USERNAME", "postgres"),
+                System.getenv().getOrDefault("TEST_POSTGRES_PASSWORD", ""));
+             var statement = connection.createStatement()) {
+            statement.execute("CREATE SCHEMA " + schema);
+            try {
+                connection.setSchema(schema);
+                statement.execute("CREATE TABLE audit_events(id serial PRIMARY KEY, action_type varchar(20) "
+                    + "CONSTRAINT old_generated_check CHECK (action_type IN ('APPROVE','REJECT','REVISE','OVERRIDE','DISPATCH')))");
+                assertThatThrownBy(() -> statement.execute("INSERT INTO audit_events(action_type) VALUES('REMOVE_JOB')"))
+                    .isInstanceOf(SQLException.class);
+                for (String file : new String[] {"V9__audit_action_type_allow_revoke.sql",
+                        "V12__audit_action_type_allow_remove_job.sql", "V12__audit_action_type_allow_remove_job.sql"}) {
+                    statement.execute(new ClassPathResource("db/migration/" + file).getContentAsString(StandardCharsets.UTF_8));
+                }
+                for (AuditActionType type : AuditActionType.values())
+                    statement.execute("INSERT INTO audit_events(action_type) VALUES('" + type.name() + "')");
+                assertThatThrownBy(() -> statement.execute("INSERT INTO audit_events(action_type) VALUES('NOT_A_VALUE')"))
+                    .isInstanceOf(SQLException.class);
+            } finally {
+                statement.execute("DROP SCHEMA " + schema + " CASCADE");
+            }
+        }
+    }
+
     @Test void rolloutIsIdempotentPreservesHistoryAndClosesLegacyApproval() throws Exception {
         String schema = "schedule_lifecycle_test_" + UUID.randomUUID().toString().replace("-", "");
         String sql = new ClassPathResource("db/migration/V5__schedule_approval_lifecycle.sql")

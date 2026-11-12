@@ -3,19 +3,20 @@
 import * as React from "react"
 import { AlertTriangle, Clock, Minus, TrendingDown, TrendingUp } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Skeleton } from "@/components/ui/skeleton"
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
 import { HelpTip } from "@/components/ui/help-tip"
 import { StatCard } from "@/components/home/StatCard"
 import { NeedsApprovalCard } from "@/components/home/NeedsApprovalCard"
 import { UpcomingJobsTable } from "@/components/home/UpcomingJobsTable"
 import { unwrap, useLoad } from "@/components/home/use-load"
-import { UnifiedPriceTimeline } from "@/components/forecasts/UnifiedPriceTimeline"
+import { ForecastCard } from "@/components/forecasts/ForecastCard"
+import { DEFAULT_ZONE, useForecastCard } from "@/components/forecasts/use-forecast-card"
 import { facilityApi, freshnessApi, priceApi, type FacilityUtilization } from "@/lib/api"
 import { datasetFreshnessText } from "@/lib/data-freshness"
 import { formatMarketTime } from "@/lib/date-utils"
 import { currentSettlementMetrics } from "@/lib/settlement-price"
 
-const DEFAULT_ZONE = "LZ_NORTH"
 const FIVE_MINUTES = 5 * 60_000
 
 const hoursFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 })
@@ -34,7 +35,7 @@ async function loadPrices(zone: string) {
 
 function usageCard(resource: "CPU" | "GPU", data: FacilityUtilization) {
   const usage = resource === "CPU" ? data.cpu : data.gpu
-  if (data.state === "NO_APPROVED_PLAN") return { value: "—", supporting: "No approved plan" }
+  if (data.state === "NO_APPROVED_PLAN") return { value: "—", supporting: `No approved plan, limit ${hoursFormat.format(usage.limit)} ${resource}-h` }
   if (usage.percent == null || usage.used == null) return { value: "—", supporting: `No ${resource} capacity` }
   const over = usage.percent > 100
   return {
@@ -56,6 +57,7 @@ export default function HomePage() {
   const zone = facility.loading ? null : facility.data?.location ?? DEFAULT_ZONE
 
   const prices = useLoad(zone ? `prices:${zone}` : null, () => loadPrices(zone ?? DEFAULT_ZONE), 15 * 60_000)
+  const forecast = useForecastCard(zone)
   const utilization = useLoad("utilization", () => unwrap(facilityApi.utilization(), "Unable to load utilization"), FIVE_MINUTES)
   const freshness = useLoad("freshness", () => unwrap(freshnessApi.getStatus(), "Unable to load data status"), FIVE_MINUTES)
 
@@ -103,9 +105,11 @@ export default function HomePage() {
         </Alert>
       )}
 
-      <NeedsApprovalCard />
+      <div data-tour="needs-approval">
+        <NeedsApprovalCard />
+      </div>
 
-      <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-3">
+      <div data-tour="home-figures" className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-3">
         <StatCard
           label="Price now"
           unit="/MWh"
@@ -130,15 +134,20 @@ export default function HomePage() {
         />
       </div>
 
-      <div className="min-w-0">
-        {zone ? (
-          <UnifiedPriceTimeline hubLocation={zone} variant="compact" height={320} />
-        ) : (
-          <Skeleton className="h-96 w-full rounded-xl" />
-        )}
+      <div data-tour="home-forecast">
+        <ForecastCard
+          {...forecast.card}
+          footerAction={
+            <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs leading-4">
+              <Link href="/forecasts">Details</Link>
+            </Button>
+          }
+        />
       </div>
 
-      <UpcomingJobsTable />
+      <div data-tour="upcoming-jobs">
+        <UpcomingJobsTable />
+      </div>
     </div>
   )
 }

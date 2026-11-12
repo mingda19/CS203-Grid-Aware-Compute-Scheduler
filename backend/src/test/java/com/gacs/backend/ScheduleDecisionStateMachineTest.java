@@ -53,6 +53,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("test")
 class ScheduleDecisionStateMachineTest {
     @Autowired MockMvc mvc;
+    @Autowired com.gacs.backend.service.AppSettingsService appSettings;
     @Autowired UserRepository users;
     @Autowired JobRepository jobs;
     @Autowired OptimizationPlanRepository plans;
@@ -66,6 +67,7 @@ class ScheduleDecisionStateMachineTest {
 
     @BeforeEach
     void setup() {
+        appSettings.update(true);
         owner = users.save(new User(UUID.randomUUID() + "@test.io", "password", "Operator", "ROLE_USER"));
         start = LocalDateTime.now(ZoneOffset.UTC).plusDays(2).truncatedTo(ChronoUnit.HOURS);
         job = jobs.save(Job.builder().ownerEmail(owner.getEmail()).name("Train").cpuHours(4.0).gpuHours(0.0)
@@ -127,7 +129,9 @@ class ScheduleDecisionStateMachineTest {
 
         // Revocation lands in REJECTED so every existing execution gate halts the schedule.
         assertThat(plans.findById(run).orElseThrow().getReviewState()).isEqualTo(ReviewState.REJECTED);
-        assertThat(auditEvents.findByRunIdOrderByTimestampDesc(run)).hasSize(2);
+        // Approve, then revoke. The dispatch from approving is not a decision.
+        assertThat(auditEvents.findByRunIdOrderByTimestampDesc(run))
+            .filteredOn(e -> e.getActionType() != com.gacs.backend.model.AuditActionType.DISPATCH).hasSize(2);
     }
 
     @ParameterizedTest
@@ -163,7 +167,9 @@ class ScheduleDecisionStateMachineTest {
 
         decide(run, "revoke").andExpect(status().isConflict())
             .andExpect(jsonPath("$.data.reason").value("ALREADY_DECIDED"));
-        assertThat(auditEvents.findByRunIdOrderByTimestampDesc(run)).hasSize(2);
+        // Approve, then revoke. The dispatch from approving is not a decision.
+        assertThat(auditEvents.findByRunIdOrderByTimestampDesc(run))
+            .filteredOn(e -> e.getActionType() != com.gacs.backend.model.AuditActionType.DISPATCH).hasSize(2);
     }
 
     @Test

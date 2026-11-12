@@ -422,7 +422,7 @@ class JobControllerTest {
     @WithMockUser(username = "operator@datacenter.io")
     @DisplayName("DELETE /api/jobs/{id} returns 200 on successful deletion")
     void deleteJob_Success() throws Exception {
-        doNothing().when(jobService).deleteJob(101L, "operator@datacenter.io");
+        doNothing().when(jobService).deleteJob(101L, "operator@datacenter.io", false);
 
         mockMvc.perform(delete("/api/jobs/101"))
                 .andExpect(status().isOk())
@@ -435,7 +435,7 @@ class JobControllerTest {
     @DisplayName("DELETE /api/jobs/{id} returns 404 when job does not exist")
     void deleteJob_NotFound() throws Exception {
         doThrow(new ResourceNotFoundException("Job not found with id: 999"))
-                .when(jobService).deleteJob(999L, "operator@datacenter.io");
+                .when(jobService).deleteJob(999L, "operator@datacenter.io", false);
 
         mockMvc.perform(delete("/api/jobs/999"))
                 .andExpect(status().isNotFound())

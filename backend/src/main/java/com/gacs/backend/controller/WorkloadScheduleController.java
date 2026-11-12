@@ -2,10 +2,7 @@ package com.gacs.backend.controller;
 
 import com.gacs.backend.dto.ApiResponse;
 import com.gacs.backend.dto.WorkloadScheduleDto;
-import com.gacs.backend.model.WorkloadSchedule;
-import com.gacs.backend.repository.WorkloadScheduleRepository;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -21,19 +18,15 @@ import java.util.List;
 @RequestMapping("/api/workload-schedules")
 public class WorkloadScheduleController {
 
-    private final WorkloadScheduleRepository schedules;
     private final com.gacs.backend.service.ScheduleApplicationService applications;
 
-    public WorkloadScheduleController(WorkloadScheduleRepository schedules, com.gacs.backend.service.ScheduleApplicationService applications) {
+    public WorkloadScheduleController(com.gacs.backend.service.ScheduleApplicationService applications) {
         this.applications = applications;
-        this.schedules = schedules;
     }
 
     @GetMapping
     public ResponseEntity<ApiResponse<List<WorkloadScheduleDto>>> list(Principal principal) {
-        var data = schedules.findByOwnerEmailOrderByStartUtcAsc(principal.getName()).stream()
-            .map(WorkloadScheduleController::toDto).toList();
-        return ResponseEntity.ok(ApiResponse.ok("Workload schedules retrieved", data));
+        return ResponseEntity.ok(ApiResponse.ok("Workload schedules retrieved", applications.visible(principal.getName())));
     }
 
     @PostMapping
@@ -51,17 +44,5 @@ public class WorkloadScheduleController {
     ) {
         return ResponseEntity.ok(ApiResponse.ok("Workload schedule updated",
             applications.status(id, request.status(), principal.getName())));
-    }
-
-    @DeleteMapping("/{id}")
-    public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id, Principal principal) {
-        var schedule = schedules.findByIdAndOwnerEmail(id, principal.getName())
-            .orElseThrow(() -> new IllegalArgumentException("Workload schedule not found"));
-        schedules.delete(schedule);
-        return ResponseEntity.ok(ApiResponse.ok("Workload schedule deleted"));
-    }
-
-    private static WorkloadScheduleDto toDto(WorkloadSchedule schedule) {
-        return com.gacs.backend.service.ScheduleApplicationService.dto(schedule);
     }
 }

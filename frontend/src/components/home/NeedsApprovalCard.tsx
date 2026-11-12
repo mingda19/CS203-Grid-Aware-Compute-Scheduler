@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { EstimatedPriceBadge } from "@/components/ui/estimated-price-badge"
 import { scheduleReviewApi, type SchedulePlanDetail } from "@/lib/api"
+import { money } from "@/lib/format"
 import { unwrap, useLoad } from "./use-load"
 
 interface Pending {
@@ -20,7 +21,7 @@ interface Pending {
 /** The pending count comes from stored review states. Reading a plan's detail runs its validity check. */
 async function loadPending(): Promise<Pending> {
   const read = async (): Promise<Pending> => {
-    const page = await unwrap(scheduleReviewApi.list(0, "PENDING"), "Could not load plans")
+    const page = await unwrap(scheduleReviewApi.list(0, "PENDING", true), "Could not load plans")
     const runId = page.content[0]?.runId ?? null
     const newest = runId
       ? await unwrap(scheduleReviewApi.detail(runId), "Could not load plan").catch(() => null)
@@ -30,12 +31,6 @@ async function loadPending(): Promise<Pending> {
   const first = await read()
   // The check can change the newest plan's state. Then the list is out of date, so read it once more.
   return first.newest && first.newest.reviewState !== "PENDING" ? read() : first
-}
-
-// Whole dollars for large sums, cents for small ones. The sign stays: savings can be negative.
-function money(usd: number) {
-  const digits = Math.abs(usd) >= 100 ? 0 : 2
-  return usd.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: digits })
 }
 
 export function NeedsApprovalCard() {
@@ -68,8 +63,9 @@ export function NeedsApprovalCard() {
               {rec && (
                 <div className="flex min-w-0 items-center gap-2 text-sm leading-5">
                   <span className="min-w-0 truncate">
-                    {data.count > 1 ? "Newest plan: projected savings " : "Projected savings "}
-                    {money(rec.projectedSavingsUsd)} ({rec.projectedSavingsPercent.toFixed(1)}%)
+                    {data.count > 1 ? "Newest plan: " : ""}
+                    {rec.projectedSavingsUsd >= 0 ? `${data.count > 1 ? "saves" : "Saves"} ${money(rec.projectedSavingsUsd)}` : `${data.count > 1 ? "costs" : "Costs"} ${money(-rec.projectedSavingsUsd)} more`}
+                    {" "}({rec.projectedSavingsPercent.toFixed(1)}%)
                   </span>
                   {rec.usedSeededFallbackPrices && <span className="shrink-0"><EstimatedPriceBadge /></span>}
                 </div>
@@ -79,7 +75,7 @@ export function NeedsApprovalCard() {
         </div>
         {data && data.count > 0 && data.runId && (
           <Button asChild className="shrink-0 self-start sm:self-auto">
-            <Link href={`/approvals?runId=${encodeURIComponent(data.runId)}`}>Review</Link>
+            <Link href={`/approvals/${encodeURIComponent(data.runId)}`}>Review</Link>
           </Button>
         )}
       </CardContent>

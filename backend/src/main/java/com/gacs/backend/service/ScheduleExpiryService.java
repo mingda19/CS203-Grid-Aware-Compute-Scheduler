@@ -26,7 +26,12 @@ public class ScheduleExpiryService {
         for (var user : users.findAll()) transactions.executeWithoutResult(tx -> {
             gate.lock(user.getEmail());
             for (var plan : plans.findByOwnerIdAndReviewState(user.getId(), ReviewState.APPROVED)) {
-                try { gate.check(plan, user.getEmail(), true); }
+                try { gate.check(plan, true); }
+                catch (ScheduleExportRejectedException ignored) { /* Commit invalidation and continue. */ }
+            }
+            // Waiting plans too: approved plans change what they were solved against, and a start can pass.
+            for (var plan : plans.findByOwnerIdAndReviewState(user.getId(), ReviewState.PENDING)) {
+                try { gate.check(plan, false); }
                 catch (ScheduleExportRejectedException ignored) { /* Commit invalidation and continue. */ }
             }
         });

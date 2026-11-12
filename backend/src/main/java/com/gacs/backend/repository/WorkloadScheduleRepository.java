@@ -11,6 +11,8 @@ import java.util.Optional;
 @Repository
 public interface WorkloadScheduleRepository extends JpaRepository<WorkloadSchedule, Long> {
     List<WorkloadSchedule> findByRunIdOrderByIdAsc(String runId);
+    List<WorkloadSchedule> findByJobIdIn(Collection<Long> jobIds);
+    List<WorkloadSchedule> findAllByOrderByStartUtcAsc();
     List<WorkloadSchedule> findByOwnerEmailOrderByStartUtcAsc(String ownerEmail);
     Optional<WorkloadSchedule> findByIdAndOwnerEmail(Long id, String ownerEmail);
 
@@ -25,4 +27,7 @@ public interface WorkloadScheduleRepository extends JpaRepository<WorkloadSchedu
 
     /** Removes a run's calendar entries except those with {@code status}, which record work that already ran. */
     void deleteByRunIdAndStatusNot(String runId, String status);
+
+    /** Removes a deleted job's calendar entries except those with {@code status}, which record work that already ran. */
+    void deleteByJobIdAndStatusNot(Long jobId, String status);
 }

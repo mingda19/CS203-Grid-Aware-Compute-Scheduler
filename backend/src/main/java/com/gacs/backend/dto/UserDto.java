@@ -21,6 +21,9 @@ public class UserDto {
     @Schema(description = "Indicates whether the account has verified email ownership via OTP", example = "true")
     private boolean isVerified;
 
+    @Schema(description = "True when an admin has disabled the account", example = "false")
+    private boolean banned;
+
     public UserDto() {
     }
 
@@ -30,6 +33,15 @@ public class UserDto {
         this.fullName = user.getFullName();
         this.role = user.getRole();
         this.isVerified = user.isVerified();
+        this.banned = user.isBanned();
+    }
+
+    public boolean isBanned() {
+        return banned;
+    }
+
+    public void setBanned(boolean banned) {
+        this.banned = banned;
     }
 
     public Long getId() {

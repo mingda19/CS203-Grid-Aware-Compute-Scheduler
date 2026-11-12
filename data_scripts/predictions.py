@@ -404,9 +404,31 @@ def load_single_column(engine: sa.Engine, table: str, time_col: str, value_col: 
 
 def load_exogenous(engine: sa.Engine, start: datetime, end: datetime) -> pd.DataFrame:
     """Hourly exogenous inputs for start..end (both inclusive), one row per
-    hour: gas (2 and 3 day lags) and wind/solar power proxies. Shared by the
-    XGBoost and LSTM feature builders so both compute them identically. A new
-    exogenous model input (e.g. battery data) needs a column added here.
+    hour - see load_exogenous_raw() for what they are. Served from the
+    `model_features_hourly` cache (feature_store.py) when it provably covers
+    the whole range, which is ~5 MB for LEAR's 1456-day window instead of
+    ~90 MB of per-site weather rows; otherwise computed from the raw tables
+    exactly as before, so a missing/stale/partial cache only costs speed,
+    never correctness. Same signature and same frame either way.
+
+    A new exogenous model input (e.g. battery data) needs a column added to
+    load_exogenous_raw() AND to feature_store.FEATURE_COLS (plus the
+    ModelFeatureHourly entity), then `python feature_store.py --rebuild`."""
+    import feature_store
+    cached = feature_store.read_cached(engine, start, end)
+    if cached is not None:
+        return cached
+    return load_exogenous_raw(engine, start, end)
+
+
+def load_exogenous_raw(engine: sa.Engine, start: datetime, end: datetime) -> pd.DataFrame:
+    """Hourly exogenous inputs for start..end (both inclusive), one row per
+    hour: gas (2 and 3 day lags) and wind/solar power proxies, computed from
+    the raw fuel_price/wind/solar tables. The one implementation of these
+    features: load_exogenous() falls back to it, and feature_store.py uses it
+    to fill the cache, so the two can't drift. Shared by the XGBoost and LSTM
+    feature builders so both compute them identically. A new exogenous model
+    input (e.g. battery data) needs a column added here.
     Hours with no source data come back as NaN, not dropped.
 
     No load forecast here: GridStatus's ercot_load_forecast_dam only ever
