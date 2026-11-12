@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useRouter, useSearchParams } from "next/navigation"
-import { Clock, Ellipsis, Lock, LockOpen, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react"
+import { CalendarSync, Clock, Ellipsis, Loader2, Lock, LockOpen, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react"
 import {
   jobsApi,
   priceApi,
@@ -450,6 +450,20 @@ export default function JobsPage() {
       <h1 className="sr-only">Jobs</h1>
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div className="flex items-center gap-2">
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="mr-2 size-4" />
+            New job
+          </Button>
+          {/* The system plans new jobs by itself. This is the manual fallback. */}
+          {canRecompute(ownJobs) && (
+            <Button variant="outline" size="sm" onClick={() => void recompute()} disabled={recomputing || loading}>
+              {recomputing ? <Loader2 className="mr-2 size-4 animate-spin" /> : <CalendarSync className="mr-2 size-4" />}
+              {recomputing ? "Planning…" : "Recompute"}
+            </Button>
+          )}
+        </div>
+        {/* View controls on the right: which jobs to show, and Refresh. */}
+        <div className="flex items-center gap-2">
           {isAdmin && (
             <Segmented
               label="Jobs to show"
@@ -458,21 +472,8 @@ export default function JobsPage() {
               onChange={(value) => { if (value !== scope) { setScope(value); setSelectedIds(new Set()); setLoading(true) } }}
             />
           )}
-        </div>
-        <div className="flex items-center gap-2">
-          {/* The system plans new jobs by itself. This is the manual fallback. */}
-          {canRecompute(ownJobs) && (
-            <Button variant="outline" size="sm" onClick={() => void recompute()} disabled={recomputing || loading}>
-              <RefreshCw className={`mr-2 size-4 ${recomputing ? "animate-spin" : ""}`} />
-              {recomputing ? "Planning…" : "Recompute"}
-            </Button>
-          )}
           <Button variant="ghost" size="icon" className="size-9" aria-label="Refresh jobs" title="Refresh jobs" onClick={() => void refreshClick()} disabled={refreshing || loading}>
             <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
-          </Button>
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="mr-2 size-4" />
-            New job
           </Button>
         </div>
       </div>
