@@ -14,6 +14,8 @@ export const HISTORY_DAYS = 7
 const PAST_HOURS: Record<PastWindow, number> = { "24h": 24, "7d": HISTORY_DAYS * 24 }
 /** A forecast run older than this counts as delayed. The models run once a day. */
 export const STALE_AFTER_MS = 26 * HOUR_MS
+/** Prices and forecasts reload quietly this often, so a page left open stays current. Matches Home's "Price now". */
+export const REFRESH_MS = 15 * 60_000
 
 const isoDate = (ms: number) => new Date(ms).toISOString().slice(0, 10)
 
@@ -48,9 +50,9 @@ export function useForecastCard(zone: string | null, pageModel?: ForecastModel) 
   const model = pageModel ?? ownModel
   const [pastWindow, setPastWindow] = React.useState<PastWindow>("24h")
 
-  const history = useLoad(zone && `history:${zone}`, () => loadHistory(zone ?? DEFAULT_ZONE))
-  const learForecast = useLoad(zone && `lear:${zone}`, () => loadForecast(zone ?? DEFAULT_ZONE, "lear"))
-  const lstmForecast = useLoad(zone && `lstm:${zone}`, () => loadForecast(zone ?? DEFAULT_ZONE, "lstm"))
+  const history = useLoad(zone && `history:${zone}`, () => loadHistory(zone ?? DEFAULT_ZONE), REFRESH_MS)
+  const learForecast = useLoad(zone && `lear:${zone}`, () => loadForecast(zone ?? DEFAULT_ZONE, "lear"), REFRESH_MS)
+  const lstmForecast = useLoad(zone && `lstm:${zone}`, () => loadForecast(zone ?? DEFAULT_ZONE, "lstm"), REFRESH_MS)
   const forecast = model === "lear" ? learForecast : lstmForecast
 
   const [nowMs, setNowMs] = React.useState(() => Date.now())
@@ -73,13 +75,19 @@ export function useForecastCard(zone: string | null, pageModel?: ForecastModel) 
   // The badge follows the shown model.
   const run = latestRun(forecastPoints ?? [])
   const stale = run != null && nowMs - parseIsoDate(run).getTime() > STALE_AFTER_MS
-  const status: DataStatusType = forecast.error || !run ? "unavailable" : stale ? "cached" : "live"
+  const status: DataStatusType = forecast.error || history.error || !run ? "unavailable" : stale ? "cached" : "live"
 
   const loading = !zone || history.loading || forecast.loading
   const reload = () => {
     history.reload()
     learForecast.reload()
     lstmForecast.reload()
+  }
+  // What failed while the rest still draws, so the card names it instead of dropping it silently.
+  const failed = [history.error && "recorded prices", forecast.error && "forecast"].filter((s): s is string => !!s)
+  // Retry only what failed, so the data that loaded stays.
+  const retry = () => {
+    for (const l of [history, learForecast, lstmForecast]) if (l.error) l.reload()
   }
 
   return {
@@ -99,7 +107,8 @@ export function useForecastCard(zone: string | null, pageModel?: ForecastModel) 
       lowHours,
       loading,
       error: history.error && forecast.error,
-      onRetry: reload,
+      failed,
+      onRetry: retry,
     },
     /** LEAR's load, whatever the card shows: plans use LEAR, so page alerts read it. */
     learForecast,
