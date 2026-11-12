@@ -47,7 +47,10 @@ interface ForecastCardProps {
   /** Start times of the cheapest hours of each day, shaded on the chart. */
   lowHours: Set<number>
   loading: boolean
+  /** Nothing usable loaded: the card shows only a Retry. */
   error: boolean
+  /** Sources that failed while the rest still draws, for example "recorded prices". */
+  failed: string[]
   onRetry: () => void
   /** A link at the bottom right, after the legend, for example Home's link to the Forecast page. */
   footerAction?: React.ReactNode
@@ -67,7 +70,7 @@ function LegendItem({ swatch, children }: { swatch: React.ReactNode; children: R
 
 /** The next 72 hours with the model's typical error as a band. Home and the Forecast page both show it; `useForecastCard` feeds it. */
 export function ForecastCard({
-  zone, rows, nowMs, from, to, model, onModelChange, pastWindow, onPastWindowChange, run, status, lowHours, loading, error, onRetry, footerAction,
+  zone, rows, nowMs, from, to, model, onModelChange, pastWindow, onPastWindowChange, run, status, lowHours, loading, error, failed, onRetry, footerAction,
 }: ForecastCardProps) {
   const ticks = React.useMemo(() => timeTicks(from, to), [from, to])
   const lowSpans = React.useMemo(() => hourSpans(lowHours), [lowHours])
@@ -75,7 +78,7 @@ export function ForecastCard({
 
   return (
     <Card className="min-w-0 overflow-hidden">
-      {/* Below sm the switches move under the title as one group; they never wrap one by one. */}
+      {/* Below sm the switches move under the title; they wrap onto a new line when the row is too narrow. */}
       <div className="flex min-w-0 flex-col gap-3 p-4 pb-2 sm:flex-row sm:items-start sm:justify-between sm:p-5 sm:pb-2">
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold leading-5">Forecast, next 72 hours</h2>
@@ -83,7 +86,7 @@ export function ForecastCard({
             {zone} · {name}, {MODEL_ROLE[model]}{run ? ` · made ${formatShortDateTime(run.generatedAt)}` : ""}
           </p>
         </div>
-        <div className="flex shrink-0 flex-nowrap items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
           {!loading && <DataStatusBadge size="sm" status={status} updatedAt={run?.generatedAt ?? null} source={`${name} forecast for ${zone}`} />}
           <Segmented label="Forecast model" value={model} onChange={onModelChange} options={MODEL_OPTIONS} />
           <Segmented label="Past window" value={pastWindow} onChange={onPastWindowChange} options={PAST_OPTIONS} />
@@ -102,6 +105,12 @@ export function ForecastCard({
           <p className="px-2 py-6 text-sm leading-5 text-muted-foreground">No prices for {zone} in this window yet.</p>
         ) : (
           <>
+            {failed.length > 0 && (
+              <div className="flex items-center justify-between gap-2 px-2 pb-2">
+                <span className="text-xs leading-4 text-muted-foreground">Could not load the {failed.join(" or the ")}.</span>
+                <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry}>Retry</Button>
+              </div>
+            )}
             <div className="min-w-0" style={{ height: CHART_HEIGHT }}>
               <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                 <ComposedChart data={rows} margin={{ top: 20, right: 16, left: -4, bottom: 4 }}>
