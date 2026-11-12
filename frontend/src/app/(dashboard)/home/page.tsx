@@ -105,9 +105,11 @@ export default function HomePage() {
         </Alert>
       )}
 
-      <NeedsApprovalCard />
+      <div data-tour="needs-approval">
+        <NeedsApprovalCard />
+      </div>
 
-      <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-3">
+      <div data-tour="home-figures" className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-3">
         <StatCard
           label="Price now"
           unit="/MWh"
@@ -132,16 +134,20 @@ export default function HomePage() {
         />
       </div>
 
-      <ForecastCard
-        {...forecast.card}
-        footerAction={
-          <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs leading-4">
-            <Link href="/forecasts">Details</Link>
-          </Button>
-        }
-      />
+      <div data-tour="home-forecast">
+        <ForecastCard
+          {...forecast.card}
+          footerAction={
+            <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs leading-4">
+              <Link href="/forecasts">Details</Link>
+            </Button>
+          }
+        />
+      </div>
 
-      <UpcomingJobsTable />
+      <div data-tour="upcoming-jobs">
+        <UpcomingJobsTable />
+      </div>
     </div>
   )
 }
