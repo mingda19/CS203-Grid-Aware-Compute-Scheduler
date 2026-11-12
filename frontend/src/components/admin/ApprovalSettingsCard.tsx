@@ -1,9 +1,10 @@
 "use client"
 
 import * as React from "react"
-import { ClipboardCheck } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Skeleton } from "@/components/ui/skeleton"
 import { settingsApi } from "@/lib/api"
 
 /** Whether a submitter may approve their own plan. Admins always can. Saves when toggled. */
@@ -11,6 +12,7 @@ export function ApprovalSettingsCard() {
   const [allowSelfApproval, setAllowSelfApproval] = React.useState<boolean | null>(null)
   const [error, setError] = React.useState("")
   const [saving, setSaving] = React.useState(false)
+  const [reload, setReload] = React.useState(0)
 
   React.useEffect(() => {
     let active = true
@@ -22,7 +24,7 @@ export function ApprovalSettingsCard() {
       })
       .catch((e) => { if (active) setError(e instanceof Error ? e.message : "Could not load the settings") })
     return () => { active = false }
-  }, [])
+  }, [reload])
 
   const toggle = async (next: boolean) => {
     setSaving(true)
@@ -39,26 +41,31 @@ export function ApprovalSettingsCard() {
   }
 
   return (
-    <Card className="border border-border shadow-sm">
-      <CardHeader className="pb-3 border-b border-border/60">
-        <CardTitle className="text-base font-bold flex items-center gap-2">
-          <ClipboardCheck className="h-4 w-4 text-teal-500" />
-          Approvals
-        </CardTitle>
+    <Card className="min-w-0">
+      <CardHeader className="space-y-1 p-4 pb-0 sm:p-5 sm:pb-0">
+        <CardTitle className="text-sm font-semibold leading-5">Approvals</CardTitle>
+        <CardDescription className="text-xs leading-4">Who can approve a plan. Administrators can always approve.</CardDescription>
       </CardHeader>
-      <CardContent className="pt-4">
-        {error && <p role="alert" className="mb-3 text-sm text-destructive">{error}</p>}
-        {allowSelfApproval === null ? (
-          !error && <p className="text-sm text-muted-foreground">Loading…</p>
+      <CardContent className="p-4 sm:p-5">
+        {allowSelfApproval === null && error ? (
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="min-w-0 truncate text-sm leading-5 text-muted-foreground" title={error}>Could not load the settings</span>
+            <Button variant="outline" size="sm" className="shrink-0" onClick={() => { setError(""); setReload((n) => n + 1) }}>Retry</Button>
+          </div>
+        ) : allowSelfApproval === null ? (
+          <Skeleton className="h-5 w-64 max-w-full" role="status" aria-label="Loading settings" />
         ) : (
-          <label className="flex items-center gap-3 text-sm">
-            <Checkbox
-              checked={allowSelfApproval}
-              disabled={saving}
-              onCheckedChange={(checked) => void toggle(checked)}
-            />
-            <span className="font-medium">Users can approve their own plans</span>
-          </label>
+          <div className="space-y-2">
+            <label className="flex items-center gap-3 text-sm leading-5">
+              <Checkbox
+                checked={allowSelfApproval}
+                disabled={saving}
+                onCheckedChange={(checked) => void toggle(checked)}
+              />
+              <span className="font-medium">Users can approve their own plans</span>
+            </label>
+            {error && <p role="alert" className="break-words text-sm leading-5 text-destructive-foreground">{error}</p>}
+          </div>
         )}
       </CardContent>
     </Card>

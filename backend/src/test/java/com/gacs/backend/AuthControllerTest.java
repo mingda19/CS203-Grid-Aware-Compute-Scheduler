@@ -23,6 +23,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -168,6 +169,35 @@ class AuthControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.email").value("elena@datacenter.io"));
+    }
+
+    @Test
+    @WithMockUser(username = "elena@datacenter.io", roles = {"USER"})
+    void updateCurrentUser_ShouldReturn200_WhenNameValid() throws Exception {
+        User user = new User("elena@datacenter.io", "encoded", "Elena Ross", "ROLE_USER");
+        user.setId(1L);
+        when(authService.updateFullName("elena@datacenter.io", "Elena Ross")).thenReturn(new UserDto(user));
+
+        mockMvc.perform(patch("/api/auth/me").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fullName\":\"Elena Ross\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("Profile updated."))
+                .andExpect(jsonPath("$.data.fullName").value("Elena Ross"));
+    }
+
+    @Test
+    @WithMockUser(username = "elena@datacenter.io", roles = {"USER"})
+    void updateCurrentUser_ShouldReturn400_WhenNameBlank() throws Exception {
+        mockMvc.perform(patch("/api/auth/me").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fullName\":\"   \"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void updateCurrentUser_ShouldReturn403_WhenNoSession() throws Exception {
+        mockMvc.perform(patch("/api/auth/me").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fullName\":\"Elena Ross\"}"))
+                .andExpect(status().isForbidden());
     }
 
     @Test

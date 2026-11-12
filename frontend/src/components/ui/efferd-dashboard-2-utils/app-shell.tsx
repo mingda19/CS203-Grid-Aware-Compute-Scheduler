@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { MARKET_TIMEZONE, MARKET_ZONE_LABEL, marketZoneDescriptor, type MarketZoneDescriptor } from "@/lib/date-utils"
-import { House, CalendarClock, BriefcaseBusiness, TrendingDown, CheckCircle2, FileText, Bell, Menu, Sun, Moon, ShieldCheck, LogOut, HelpCircle, Clock } from "lucide-react"
+import { Zap, House, CalendarClock, BriefcaseBusiness, TrendingDown, CheckCircle2, FileText, Bell, Menu, Sun, Moon, ShieldCheck, ChevronRight, Sparkles, LogOut, HelpCircle, Clock, Settings } from "lucide-react"
 import Link from "next/link"
 import { GacsLogo } from "@/app/login/gacs-logo"
 import { usePathname, useRouter } from "next/navigation"
@@ -21,12 +21,15 @@ import {
   authApi,
   freshnessApi,
   removeStoredUser,
+  signOut,
+  USER_UPDATED_EVENT,
   type DataFreshnessResponse,
   type FreshnessNotification,
   type User,
 } from "@/lib/api"
 import { freshnessSummary } from "@/lib/data-freshness"
 import { mergeFreshnessNotifications } from "@/lib/notification-utils"
+import { readTheme, resolveTheme, saveTheme, subscribeTheme } from "@/lib/theme"
 
 interface AppShellProps {
   children: React.ReactNode
@@ -42,7 +45,10 @@ export function AppShell({ children }: AppShellProps) {
   // render would differ from the server's HTML and cause a hydration mismatch.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   React.useEffect(() => { setMarketZone(marketZoneDescriptor()) }, [])
-  const [theme, setTheme] = React.useState<"light" | "dark">("dark")
+  // The server has no saved choice, so it renders dark (the default) and the client corrects it after hydration.
+  const themeChoice = React.useSyncExternalStore(subscribeTheme, readTheme, () => "dark" as const)
+  // ponytail: with "system" chosen, this icon updates on the next render, not the moment the OS theme flips.
+  const theme = resolveTheme(themeChoice)
   const [mobileOpen, setMobileOpen] = React.useState(false)
   const [currentUser, setCurrentUser] = React.useState<User | null>(null)
   const [isAuthChecking, setIsAuthChecking] = React.useState(true)
@@ -77,6 +83,13 @@ export function AppShell({ children }: AppShellProps) {
     })
     return () => { active = false }
   }, [router])
+
+  // The Settings page sends this after a profile save.
+  React.useEffect(() => {
+    const onUserUpdated = (event: Event) => setCurrentUser((event as CustomEvent<User>).detail)
+    window.addEventListener(USER_UPDATED_EVENT, onUserUpdated)
+    return () => window.removeEventListener(USER_UPDATED_EVENT, onUserUpdated)
+  }, [])
 
   React.useEffect(() => {
     if (!currentUser) return
@@ -118,30 +131,20 @@ export function AppShell({ children }: AppShellProps) {
     }
   }
 
-  const handleLogout = async () => {
-    try {
-      await authApi.logout()
-    } catch {
-      // Ignore network errors on logout
-    } finally {
-      removeStoredUser()
-      router.push("/login")
-    }
-  }
+  const handleLogout = () => signOut(router)
 
-  // Apply dark mode class to document element
+  // Apply the dark class. With "system", follow OS theme changes while the page is open.
   React.useEffect(() => {
-    const root = document.documentElement
-    if (theme === "dark") {
-      root.classList.add("dark")
-    } else {
-      root.classList.remove("dark")
-    }
-  }, [theme])
+    const apply = () => document.documentElement.classList.toggle("dark", resolveTheme(themeChoice) === "dark")
+    apply()
+    if (themeChoice !== "system") return
+    const media = window.matchMedia("(prefers-color-scheme: dark)")
+    media.addEventListener("change", apply)
+    return () => media.removeEventListener("change", apply)
+  }, [themeChoice])
 
-  const toggleTheme = () => {
-    setTheme((prev) => (prev === "dark" ? "light" : "dark"))
-  }
+  // Reads the live class, so a stale icon (see above) never flips the wrong way.
+  const toggleTheme = () => saveTheme(document.documentElement.classList.contains("dark") ? "light" : "dark")
 
   const closeTour = (completed: boolean) => {
     setTourOpen(false)
@@ -175,12 +178,7 @@ export function AppShell({ children }: AppShellProps) {
       <div className="flex items-center gap-3 px-5 py-5 border-b border-border">
         <GacsLogo className="h-10 w-10 shrink-0" />
         <div className="flex flex-col">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold tracking-tight text-lg leading-none">GACS</span>
-            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary border border-primary/30">
-              v1.0
-            </span>
-          </div>
+          <span className="font-semibold tracking-tight text-lg leading-none">GACS</span>
           <span className="text-xs text-muted-foreground mt-0.5">Grid-Aware Compute</span>
         </div>
       </div>
@@ -201,10 +199,7 @@ export function AppShell({ children }: AppShellProps) {
       </div>
 
       {/* Navigation Links */}
-      <div data-tour="nav" className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
-        <div className="px-2 pb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Operations
-        </div>
+      <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
         {navItems.map((item) => {
           const Icon = item.icon
           return (
@@ -280,6 +275,22 @@ export function AppShell({ children }: AppShellProps) {
             </p>
           </div>
           <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  asChild
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                >
+                  <Link href="/settings" onClick={() => setMobileOpen(false)}>
+                    <Settings className="h-4 w-4" />
+                    <span className="sr-only">Settings</span>
+                  </Link>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">Settings</TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
