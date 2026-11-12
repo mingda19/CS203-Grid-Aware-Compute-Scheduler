@@ -8,14 +8,12 @@ import { unwrap, useLoad } from "@/components/home/use-load"
 import { AccuracyCard } from "@/components/forecasts/AccuracyCard"
 import { CheapHoursCard, DriftCard, HourOfDayCard, KeyFigures, ScatterCard } from "@/components/forecasts/AnalysisCards"
 import { ForecastCard } from "@/components/forecasts/ForecastCard"
-import { latestRun, REFRESH_MS, STALE_AFTER_MS, useForecastCard } from "@/components/forecasts/use-forecast-card"
+import { DEFAULT_ZONE, latestRun, REFRESH_MS, STALE_AFTER_MS, useForecastCard } from "@/components/forecasts/use-forecast-card"
 import { Segmented } from "@/components/ui/segmented"
 import { facilityApi, priceApi, type ForecastModel } from "@/lib/api"
 import { formatRelativeAgo, parseIsoDate } from "@/lib/date-utils"
 import { cheapHoursCheck, FORECAST_HOURS, HOUR_MS, MODEL_OPTIONS, withinWindow } from "@/lib/price-forecast"
 import { cn } from "@/lib/utils"
-
-const DEFAULT_ZONE = "LZ_NORTH"
 
 type AnalysisWindow = "7d" | "30d"
 const WINDOW_OPTIONS = [{ value: "7d", label: "7d" }, { value: "30d", label: "30d" }] as const

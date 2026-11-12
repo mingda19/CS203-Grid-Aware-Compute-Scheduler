@@ -11,13 +11,12 @@ import { NeedsApprovalCard } from "@/components/home/NeedsApprovalCard"
 import { UpcomingJobsTable } from "@/components/home/UpcomingJobsTable"
 import { unwrap, useLoad } from "@/components/home/use-load"
 import { ForecastCard } from "@/components/forecasts/ForecastCard"
-import { useForecastCard } from "@/components/forecasts/use-forecast-card"
+import { DEFAULT_ZONE, useForecastCard } from "@/components/forecasts/use-forecast-card"
 import { facilityApi, freshnessApi, priceApi, type FacilityUtilization } from "@/lib/api"
 import { datasetFreshnessText } from "@/lib/data-freshness"
 import { formatMarketTime } from "@/lib/date-utils"
 import { currentSettlementMetrics } from "@/lib/settlement-price"
 
-const DEFAULT_ZONE = "LZ_NORTH"
 const FIVE_MINUTES = 5 * 60_000
 
 const hoursFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 })
