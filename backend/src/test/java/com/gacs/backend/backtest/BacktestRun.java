@@ -17,7 +17,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -63,6 +62,15 @@ class BacktestRun {
         String runId = System.getProperty("backtest.runId",
                 LocalDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")));
         Path runDir = path("backtest.outDir", REPO.resolve("backtest/output")).resolve(runId);
+        JsonNode originalMetrics = null;
+        if (reproduce != null) {
+            Path originalDir = Path.of(reproduce).toAbsolutePath().normalize().getParent();
+            assertThat(runDir.toAbsolutePath().normalize())
+                    .as("the rerun would overwrite the run it reproduces: set backtest.runId or backtest.outDir")
+                    .isNotEqualTo(originalDir);
+            Path metricsFile = originalDir.resolve("metrics.json");
+            originalMetrics = Files.exists(metricsFile) ? BacktestOutput.read(metricsFile) : null;
+        }
 
         long started = System.nanoTime();
         PlanSolver solver = PlanSolver.named(solverName, new EnergyCostModel(properties), config.exactIterations());
@@ -78,15 +86,13 @@ class BacktestRun {
         printHeadline(metrics);
 
         if (reproduce != null) {
-            Map<String, String> expected = BacktestOutput.outputHashes(BacktestOutput.read(Path.of(reproduce)));
             assertThat(BacktestOutput.outputHashes(manifest))
                     .as("results of the rerun must be byte-identical to %s", reproduce)
-                    .isEqualTo(expected);
-            Path originalMetrics = Path.of(reproduce).resolveSibling("metrics.json");
-            if (Files.exists(originalMetrics)) {
+                    .isEqualTo(BacktestOutput.outputHashes(original));
+            if (originalMetrics != null) {
                 assertThat(BacktestOutput.read(runDir.resolve("metrics.json")).path("outputs"))
-                        .as("metrics of the rerun must be byte-identical to %s", originalMetrics)
-                        .isEqualTo(BacktestOutput.read(originalMetrics).path("outputs"));
+                        .as("metrics of the rerun must be byte-identical to those next to %s", reproduce)
+                        .isEqualTo(originalMetrics.path("outputs"));
             }
         }
     }
