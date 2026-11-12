@@ -31,3 +31,15 @@ Authorization: Bearer {{token}}
 
 ### Expect 403: no token
 GET {{baseUrl}}/api/prices/forecast
+
+### LEAR forecast for 72 hours; each point should carry typicalErrorUsdMwh
+GET {{baseUrl}}/api/prices/forecast?model=lear&hours=72
+Authorization: Bearer {{token}}
+
+### Forecast accuracy, LEAR, last 7 days
+GET {{baseUrl}}/api/prices/forecast-accuracy?model=lear&days=7
+Authorization: Bearer {{token}}
+
+### Expect 400: days out of range (valid is 1-30)
+GET {{baseUrl}}/api/prices/forecast-accuracy?days=31
+Authorization: Bearer {{token}}

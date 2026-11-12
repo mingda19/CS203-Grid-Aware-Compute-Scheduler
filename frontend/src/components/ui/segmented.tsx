@@ -12,14 +12,24 @@ interface SegmentedProps<T extends string> {
   className?: string
 }
 
-/** The one segmented control: joined outline buttons, the chosen one tinted with the accent. */
+// The old Home chart's model switch: a soft bar, the chosen option a raised tab.
+// Light mode needs a darker bar and a white tab with a real shadow, or the chosen option barely shows.
+const BAR =
+  "inline-flex gap-0 rounded-lg border border-muted-foreground/20 bg-muted-foreground/15 p-0.5 " +
+  "dark:border-border dark:bg-muted/40"
+const ITEM =
+  "h-auto min-w-0 rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground " +
+  "data-[state=on]:bg-card data-[state=on]:font-semibold data-[state=on]:text-foreground data-[state=on]:shadow-sm " +
+  "dark:data-[state=on]:bg-background dark:data-[state=on]:shadow-xs"
+
+/** The one segmented control: a soft bar, the chosen option a raised tab. */
 export function Segmented<T extends string>({ value, onChange, options, label, className }: SegmentedProps<T>) {
   return (
     <ToggleGroup
       type="single"
-      variant="outline"
+      variant="default"
       size="sm"
-      className={cn("gap-0", className)}
+      className={cn(BAR, className)}
       value={value}
       // Clicking the chosen item again would clear a single-select group. A segmented control always has a value.
       onValueChange={(next) => { if (next) onChange(next as T) }}
@@ -29,7 +39,7 @@ export function Segmented<T extends string>({ value, onChange, options, label, c
         <ToggleGroupItem
           key={option.value}
           value={option.value}
-          className="rounded-none first:rounded-l-md last:rounded-r-md [&:not(:first-child)]:-ml-px data-[state=on]:bg-primary/15 data-[state=on]:text-foreground"
+          className={ITEM}
         >
           {option.label}
         </ToggleGroupItem>

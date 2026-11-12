@@ -51,9 +51,26 @@ export interface PriceForecastPoint {
    * so null means "not known", never "no confidence". Contract FR-10.
    */
   confidenceScore: number | null
+  /** The model's typical error for this hour in $/MWh (reference RMSE). Omitted when there is none. */
+  typicalErrorUsdMwh?: number | null
 }
 
 export type ForecastModel = "lstm" | "lear"
+
+/** One past hour: what the model forecast (latest run made before the hour) and what the price was. */
+export interface ForecastAccuracyPoint {
+  intervalStartUtc: string
+  predictedPrice: number
+  actualPrice: number
+  modelVersion: string
+  generatedAt: string
+}
+
+export interface ForecastAccuracy {
+  points: ForecastAccuracyPoint[]
+  days: number
+  modelKind: ForecastModel
+}
 
 export interface PriceForecast {
   points: PriceForecastPoint[]
@@ -662,6 +679,11 @@ export const priceApi = {
       }
     }
     return response
+  },
+
+  getForecastAccuracy(params: { location: string; model: ForecastModel; days?: number }): Promise<ApiResponse<ForecastAccuracy>> {
+    const query = new URLSearchParams({ location: params.location, model: params.model, days: String(params.days ?? 7) })
+    return fetchJson<ApiResponse<ForecastAccuracy>>(`/api/prices/forecast-accuracy?${query.toString()}`, { cache: "no-store" })
   },
 
   getHistory(params: { location: string; startDate: string; endDate: string; limit?: number; offset?: number }): Promise<ApiResponse<PriceHistory>> {

@@ -673,14 +673,44 @@ Returns the latest stored prediction from one model kind for each upcoming inter
           "intervalStartUtc": "2026-10-10T00:00:00",
           "predictedPrice": 32.5,
           "modelVersion": "lstm_y0_2026-10-05",
-          "generatedAt": "2026-10-09T21:00:00"
+          "generatedAt": "2026-10-09T21:00:00",
+          "typicalErrorUsdMwh": 6.4
         }
       ]
     }
   }
   ```
+* `typicalErrorUsdMwh` is the model's reference RMSE in $/MWh from `rmse_reference`, matched on the point's target (`y0`/`y1`, read from `modelVersion`) and its UTC hour. The Forecast page draws it as a ± band. It is omitted when there is no reference row.
 * `confidenceScore` (0-100, higher = more confident) is omitted when unavailable. `data_scripts/predictions.py` computes the final score itself (a normalized recent-error ratio mapped through `100 / (1 + ratio)`) before writing it to `predicted_price.confidence_score`; the API returns that stored value directly, with no further conversion. A backend check runs every minute and detects newly generated low-confidence forecasts without waiting for a page request. It creates unread alerts in the existing data-freshness notification feed and sends one email per recipient, location, and forecast run. Configure the threshold with `FORECAST_CONFIDENCE_THRESHOLD` (0-100 scale, default `40`); Gmail API must be configured for email delivery.
 * **Empty window**: `200` with `"points": []`. **Errors**: `400` for blank `location`, `hours` outside 1-168, or an unknown `model`; `403` without a valid token.
+
+#### `GET /api/prices/forecast-accuracy`
+Past hours that have both a recorded price (`electrical_price`) and a forecast from one model (`predicted_price`), for comparing the two. For each hour the forecast is the **latest run made before the hour started**, the one a plan would have used. Read-only.
+* **Query Parameters**:
+  * `location` (string, optional, default: `"LZ_NORTH"`)
+  * `model` (string, optional, default: `"lear"`, one of `lstm`, `lear`, case-insensitive)
+  * `days` (integer, optional, default: `7`, range: 1–30). The window is the last `days × 24` hours up to now.
+* **Success Response (200 OK)**:
+  ```json
+  {
+    "success": true,
+    "message": "Forecast accuracy retrieved",
+    "data": {
+      "days": 7,
+      "modelKind": "lear",
+      "points": [
+        {
+          "intervalStartUtc": "2026-11-09T05:00:00",
+          "predictedPrice": 25.0,
+          "actualPrice": 28.0,
+          "modelVersion": "lear_y0_2026-11-07",
+          "generatedAt": "2026-11-07T00:14:48"
+        }
+      ]
+    }
+  }
+  ```
+* Hours without a recorded price, or without a forecast made before them, are left out. **Errors**: `400` for blank `location`, `days` outside 1-30, or an unknown `model`; `403` without a valid token.
 
 #### `GET /api/forecasts/ercot`
 Retrieves forecasted electricity prices and uncertainty intervals for the selected horizon.

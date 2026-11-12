@@ -29,7 +29,7 @@ All times in the app are ERCOT market local time (Central, America/Chicago), lab
 The menu on the left has Home, Jobs, Approvals, Schedule, Price Forecast and Audit. Admins also see Admin. The bell at the top shows data-freshness notifications, which can be marked as read. The help button at the top reopens the welcome guide.
 
 # Home
-Shows the price now (compared with the 24-hour average), scheduled use against the facility's capacity (worked out from approved plans; measured use needs execution data, and it warns when scheduled use is over capacity), plans that need your approval, upcoming jobs, and the status of the price data.
+Shows the price now (compared with the 24-hour average), scheduled use against the facility's capacity (worked out from approved plans; measured use needs execution data, and it warns when scheduled use is over capacity), plans that need your approval, the 72-hour price forecast (the same card as on Price Forecast, with a Details link there), upcoming jobs, and the status of the price data.
 
 # Jobs
 Lists your jobs. Admins can switch between **Mine** and **All**.
@@ -73,7 +73,10 @@ Plan states: Pending review, Approved, Rejected, Revision requested, Stale and I
 A calendar of everyone's approved jobs. Views: **Week**, **Month** and **List** (on small screens Week shows as List). Use **Today**, the arrows, **Only mine**, and the search box (jobs or people). Your jobs are shown in the accent colour; others are muted. Click an entry to see its job type, length and savings, and to open the job or the plan. On your own entries that have not ended, use **Mark as running** or **Mark as scheduled**. Entry statuses: Scheduled, Running, Throttled, Completed.
 
 # Price Forecast
-One chart with recorded settlement prices (the past) and forecast prices (ahead), split by a "Now" line, in $/MWh. Choose the settlement hub location (LZ_HOUSTON, LZ_NORTH, LZ_SOUTH, LZ_WEST) and the forecast model (LSTM or LEAR). The recorded line is solid and the forecast line is dashed. Shaded bands under the forecast show model confidence, told apart by their fill pattern; the legend below the chart lists High, Moderate, Low and No score. The page also shows the peak spike, lowest valley, rolling mean and model confidence. Peaks are times when electricity may cost more, so flexible jobs tend to move away from them.
+Prices are ERCOT day-ahead prices for the facility's zone, in $/MWh, Central time. Plans are priced with the LEAR model's forecast; LSTM is the fallback.
+"Forecast, next 72 hours" (also on Home): the day-ahead price as a solid line, the forecast as a dashed line, and a "Now" line. Hours the market has already priced show as known prices, not forecasts. A shaded band around the forecast shows the model's typical error. Grey columns mark the 4 cheapest hours of each day. Switch between LEAR and LSTM, and between 24h and 7d of history before now. Hovering shows the price, the typical error and the forecast's confidence.
+"How far off the forecast was": one bar per past hour for the last 7 days, the forecast minus the real day-ahead price. Above 0 the forecast was too high, below 0 too low; dotted lines mark ± the typical error. Beside it: typical error, average miss, biggest miss and hours checked. It has its own LEAR/LSTM switch.
+A warning appears when the LEAR forecast is more than about a day old or covers fewer than 72 hours, because new plans then use older forecasts or estimates.
 
 # Audit
 A record of decisions and changes. Filter by date range, operator, outcome, run ID and job ID. Open an event to see the decision, operator, timestamp, target run, rationale and a snapshot of the schedule. **Approved Schedule Export** downloads an approved run as CSV or JSON; only the operator who owns the run can export it.

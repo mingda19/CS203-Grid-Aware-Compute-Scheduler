@@ -1,135 +1,83 @@
 "use client"
 
 import * as React from "react"
-import { TrendingDown, TrendingUp } from "lucide-react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { DataStatusBadge } from "@/components/ui/data-status-badge"
-import { Skeleton } from "@/components/ui/skeleton"
-import { facilityApi } from "@/lib/api"
-import { UnifiedPriceTimeline, type ForecastTelemetry } from "@/components/forecasts/UnifiedPriceTimeline"
+import { AlertTriangle, RefreshCw } from "lucide-react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Button } from "@/components/ui/button"
+import { unwrap, useLoad } from "@/components/home/use-load"
+import { AccuracyCard } from "@/components/forecasts/AccuracyCard"
+import { ForecastCard } from "@/components/forecasts/ForecastCard"
+import { DEFAULT_ZONE, HISTORY_DAYS, latestRun, STALE_AFTER_MS, useForecastCard } from "@/components/forecasts/use-forecast-card"
+import { facilityApi, priceApi, type ForecastModel } from "@/lib/api"
+import { formatRelativeAgo, parseIsoDate } from "@/lib/date-utils"
+import { FORECAST_HOURS } from "@/lib/price-forecast"
+import { cn } from "@/lib/utils"
 
-const FALLBACK_ZONE = "LZ_NORTH"
+function loadAccuracy(zone: string, model: ForecastModel) {
+  return unwrap(priceApi.getForecastAccuracy({ location: zone, model, days: HISTORY_DAYS }), "Unable to load forecast accuracy")
+}
 
 export default function ForecastsPage() {
-  // The zone starts as the facility's zone. The timeline's own selector changes it afterwards.
-  const [hubLocation, setHubLocation] = React.useState<string | null>(null)
-  const [telemetry, setTelemetry] = React.useState<ForecastTelemetry | null>(null)
+  const facility = useLoad("facility", () => unwrap(facilityApi.get(), "Unable to load the facility"))
+  // Prices exist for the facility's zone only. If the facility cannot load, the default zone still gives a page.
+  const zone = facility.loading ? null : facility.data?.location ?? DEFAULT_ZONE
 
-  React.useEffect(() => {
-    let active = true
-    facilityApi.get()
-      .then((response) => { if (active) setHubLocation(response.data?.location || FALLBACK_ZONE) })
-      .catch(() => { if (active) setHubLocation(FALLBACK_ZONE) })
-    return () => { active = false }
-  }, [])
+  const forecast = useForecastCard(zone)
+  const { nowMs, learForecast } = forecast
 
-  const zone = hubLocation ?? FALLBACK_ZONE
+  // The accuracy card has its own model switch. Both models load up front, so a switch is instant.
+  const [accuracyModel, setAccuracyModel] = React.useState<ForecastModel>("lear")
+  const learAccuracy = useLoad(zone && `lear-accuracy:${zone}`, () => loadAccuracy(zone ?? DEFAULT_ZONE, "lear"))
+  const lstmAccuracy = useLoad(zone && `lstm-accuracy:${zone}`, () => loadAccuracy(zone ?? DEFAULT_ZONE, "lstm"))
+  const shownAccuracy = accuracyModel === "lear" ? learAccuracy : lstmAccuracy
+  const accuracyLoading = !zone || shownAccuracy.loading
+
+  const busy = forecast.loading || accuracyLoading
+  const refresh = () => {
+    forecast.reload()
+    learAccuracy.reload()
+    lstmAccuracy.reload()
+  }
+
+  // The alert is about LEAR whichever model the card shows: plans use it.
+  const learPoints = learForecast.data?.points ?? []
+  const learRun = latestRun(learPoints)
+  const learStale = learRun != null && nowMs - parseIsoDate(learRun).getTime() > STALE_AFTER_MS
+  const shortCoverage = !learForecast.loading && !learForecast.error && learPoints.length < FORECAST_HOURS
 
   return (
-    <div id="forecasts-root" className="space-y-6">
+    <div id="forecasts-root" className="min-w-0 space-y-6">
       {/* No visible title. The heading stays for screen readers. */}
       <h1 className="sr-only">Price forecast</h1>
 
-      {/* 3 Forecast Telemetry Metric Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Card 1: Interval LMP Mean */}
-        <Card className="hover:border-emerald-500/40 transition-colors">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Average Interval LMP
-            </CardTitle>
-            {telemetry?.isLoading ? (
-              <Skeleton className="h-6 w-24 rounded-full" />
-            ) : (
-              <DataStatusBadge
-                size="sm"
-                status={telemetry?.avgLmp != null ? "live" : "unavailable"}
-                source={`ERCOT SPP (${zone})`}
-              />
-            )}
-          </CardHeader>
-          <CardContent>
-            {telemetry?.isLoading && telemetry.avgLmp == null ? (
-              <div className="h-8 w-28 bg-muted/60 animate-pulse rounded my-1" />
-            ) : (
-              <div className="text-2xl font-bold font-mono text-foreground">
-                {telemetry?.avgLmp != null ? `$${telemetry.avgLmp.toFixed(2)}` : "—"}{" "}
-                <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
-              </div>
-            )}
-            <p className="text-xs text-muted-foreground mt-1">
-              {telemetry?.currentLmp != null
-                ? `Latest interval: $${telemetry.currentLmp.toFixed(2)}/MWh (${telemetry.totalIntervals} intervals)`
-                : "Rolling operational window mean"}
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Card 2: Peak Spike in market local time */}
-        <Card className="hover:border-amber-500/40 transition-colors">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Impending Peak Spike
-            </CardTitle>
-            <TrendingUp className="h-4 w-4 text-amber-500" />
-          </CardHeader>
-          <CardContent>
-            {telemetry?.isLoading && telemetry.peakForecastPrice == null ? (
-              <div className="h-8 w-28 bg-muted/60 animate-pulse rounded my-1" />
-            ) : (
-              <div className="text-2xl font-bold font-mono text-amber-500">
-                {telemetry?.peakForecastPrice != null ? `$${telemetry.peakForecastPrice.toFixed(2)}` : "—"}{" "}
-                <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
-              </div>
-            )}
-            <p className="text-xs text-muted-foreground mt-1">
-              Peak window:{" "}
-              <strong className="text-foreground">
-                {telemetry?.peakForecastWindow || "—"}
-              </strong>
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Card 3: Opportunity Valley in market local time */}
-        <Card className="hover:border-emerald-500/40 transition-colors">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Lowest Opportunity Price
-            </CardTitle>
-            <TrendingDown className="h-4 w-4 text-emerald-500" />
-          </CardHeader>
-          <CardContent>
-            {telemetry?.isLoading && telemetry.lowestOpportunityPrice == null ? (
-              <div className="h-8 w-28 bg-muted/60 animate-pulse rounded my-1" />
-            ) : (
-              <div className="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
-                {telemetry?.lowestOpportunityPrice != null ? `$${telemetry.lowestOpportunityPrice.toFixed(2)}` : "—"}{" "}
-                <span className="text-xs font-normal text-muted-foreground">/ MWh</span>
-              </div>
-            )}
-            <p className="text-xs text-muted-foreground mt-1">
-              Opportunity window:{" "}
-              <strong className="text-foreground">
-                {telemetry?.lowestOpportunityWindow || "—"}
-              </strong>
-            </p>
-          </CardContent>
-        </Card>
+      <div className="flex items-center justify-end gap-2">
+        <Button variant="ghost" size="icon" className="size-9" aria-label="Refresh" title="Refresh" onClick={refresh} disabled={busy}>
+          <RefreshCw className={cn("size-4", busy && "animate-spin")} aria-hidden="true" />
+        </Button>
       </div>
 
-      {/* Primary Workstation: Continuous Unified Price Timeline */}
-      {hubLocation ? (
-        <UnifiedPriceTimeline
-          hubLocation={hubLocation}
-          onLocationChange={setHubLocation}
-          onTelemetryChange={setTelemetry}
-          variant="full"
-          height={380}
-        />
-      ) : (
-        <Skeleton className="h-[460px] w-full rounded-xl" />
+      {(learStale || shortCoverage) && (
+        <Alert variant="warning">
+          <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+          <AlertDescription className="min-w-0 break-words">
+            {learStale && learRun && <>The LEAR forecast was made {formatRelativeAgo(learRun, nowMs)}. New plans use this older forecast. </>}
+            {shortCoverage && <>LEAR covers {learPoints.length} of the next {FORECAST_HOURS} hours. Plans price the rest from LSTM or from estimates.</>}
+          </AlertDescription>
+        </Alert>
       )}
+
+      <ForecastCard {...forecast.card} />
+
+      <AccuracyCard
+        model={accuracyModel}
+        onModelChange={setAccuracyModel}
+        data={shownAccuracy.data}
+        days={HISTORY_DAYS}
+        nowMs={nowMs}
+        loading={accuracyLoading}
+        error={shownAccuracy.error}
+        onRetry={shownAccuracy.reload}
+      />
     </div>
   )
 }

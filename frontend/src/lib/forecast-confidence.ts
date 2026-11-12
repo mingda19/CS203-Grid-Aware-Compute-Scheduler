@@ -24,37 +24,8 @@ export function confidenceBand(score: number | null | undefined): ConfidenceBand
   return "Low"
 }
 
-/** Tailwind classes for a band, matching the dashboard's emerald / amber / rose signalling. */
-export function confidenceTone(score: number | null | undefined): string {
-  switch (confidenceBand(score)) {
-    case "High": return "text-emerald-600 dark:text-emerald-400"
-    case "Moderate": return "text-amber-600 dark:text-amber-400"
-    case "Low": return "text-rose-600 dark:text-rose-400"
-    default: return "text-muted-foreground"
-  }
-}
-
 /** "82%, High", or "Not available" when the model has no error reference for the interval. */
 export function formatConfidence(score: number | null | undefined): string {
   const band = confidenceBand(score)
   return band === "Not available" ? band : `${Math.round((score as number) * 100)}%, ${band}`
-}
-
-/**
- * The run-level figure for a set of forecast intervals: the mean of those that have a score, and how
- * many did not. Scored intervals are averaged rather than the whole horizon being treated as scored,
- * so a mostly-unscored horizon cannot look confident; `missing` is what the caller surfaces to say
- * how much of the horizon the number actually covers.
- */
-export function aggregateConfidence(scores: Array<number | null | undefined>): {
-  mean: number | null
-  scored: number
-  missing: number
-} {
-  const usable = scores.filter((s): s is number => s != null && Number.isFinite(s))
-  return {
-    mean: usable.length ? usable.reduce((total, s) => total + s, 0) / usable.length : null,
-    scored: usable.length,
-    missing: scores.length - usable.length,
-  }
 }

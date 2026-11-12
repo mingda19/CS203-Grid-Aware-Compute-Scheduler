@@ -115,7 +115,7 @@ Do not show loading as plain text ("Loading…").
 
 ## 8. Controls
 
-- **Segmented choice** (Mine/All, Pending/Approved, Week/Month/List): use **`Segmented`** (`src/components/ui/segmented.tsx`). Do not build joined buttons by hand.
+- **Segmented choice** (Mine/All, Pending/Approved, Week/Month/List, LSTM/LEAR): use **`Segmented`** (`src/components/ui/segmented.tsx`). It is a soft bar with the chosen option as a raised tab in semibold (light: grey bar, white tab with a shadow; dark: `bg-muted/40` bar, `bg-background` tab). Do not build joined buttons by hand.
 - **On/off filters** in a toolbar are `Toggle`s with an icon and a `title`, tinted with `data-[state=on]:bg-primary/15`.
 - Text links are `Button variant="link"` (accent colour, underline on hover). No bare underlined `<a>`.
 - Every icon-only control has an `aria-label`. Focus rings come from the shared components, so do not remove them.
