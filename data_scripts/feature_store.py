@@ -216,49 +216,44 @@ def _window_end(now) -> tuple[pd.Timestamp, pd.Timestamp]:
     return today, today + timedelta(days=REFRESH_AHEAD_DAYS, hours=23)
 
 
-def refresh(engine: sa.Engine, since=None, now=None) -> int:
-    """Bring the cache up to date: recompute the trailing window and upsert it. Returns rows
-    written (0 if skipped). Idempotent and cheap (a few thousand raw rows) on a normal day.
+def refresh(engine: sa.Engine, since=None, now=None, full: bool = False) -> int:
+    """Bring the cache up to date: recompute a window and upsert it. Returns rows written (0 if
+    skipped). Idempotent; on a normal day it is a few thousand raw rows.
 
-    Starts from `REFRESH_LOOKBACK_DAYS` before today - or earlier when the cache is behind (the
-    pipeline missed days) or when `since` asks for it (ingestion.py --since rewrote history). An
-    empty cache is bootstrapped from the earliest raw data. A missing table is skipped with a
-    warning, not an error: the backend creates it (ddl-auto) and has to have booted once.
+    Default (`full=False`): the trailing window - `REFRESH_LOOKBACK_DAYS` before today through
+    `REFRESH_AHEAD_DAYS` ahead - or earlier when the cache is behind (the pipeline missed days) or
+    when `since` asks for it (ingestion.py --since rewrote history). An empty cache is bootstrapped
+    from the earliest raw data.
+
+    `full=True` (the --rebuild CLI mode): recompute everything from `since` - or the earliest raw
+    data - regardless of what is cached. Use after changing the feature formulas, or if verify()
+    finds drift.
+
+    A missing table is skipped with a warning by the daily refresh (the backend creates it on boot
+    via ddl-auto, and ingestion must not fail before that), but raises for `full=True`: someone
+    asking for a rebuild by hand must not be told it succeeded when nothing was written.
     """
     if not _has_table(engine):
+        if full:
+            raise RuntimeError(f"{TABLE} does not exist - start the backend once so ddl-auto creates it.")
         logger.warning("%s does not exist yet (the backend creates it on boot) - skipping the feature "
                        "refresh; predictions will use the raw tables.", TABLE)
         return 0
     today, end = _window_end(now)
-    last = _max_cached(engine)
+    last = None if full else _max_cached(engine)
     if last is None:
         raw_start = _raw_data_start(engine)
         if raw_start is None:
             logger.warning("No raw wind/solar/gas data yet - nothing to cache.")
             return 0
         start = raw_start.floor("D")
-        logger.info("%s is empty - building it from %s", TABLE, start)
+        if not full:
+            logger.info("%s is empty - building it from %s", TABLE, start)
     else:
         start = min(today, last.floor("D")) - timedelta(days=REFRESH_LOOKBACK_DAYS)
     if since is not None:
-        start = min(start, pd.Timestamp(since).normalize())
-    return _build(engine, start, end)
-
-
-def rebuild(engine: sa.Engine, since=None, now=None) -> int:
-    """Recompute everything from `since` (default: the earliest raw data) through the refresh
-    window's end. Use after changing the feature formulas, or if verify() finds drift."""
-    if not _has_table(engine):
-        raise RuntimeError(f"{TABLE} does not exist - start the backend once so ddl-auto creates it.")
-    _, end = _window_end(now)
-    if since is not None:
-        start = pd.Timestamp(since).normalize()
-    else:
-        raw_start = _raw_data_start(engine)
-        if raw_start is None:
-            logger.warning("No raw wind/solar/gas data yet - nothing to cache.")
-            return 0
-        start = raw_start.floor("D")
+        since_day = pd.Timestamp(since).normalize()
+        start = since_day if full else min(start, since_day)
     return _build(engine, start, end)
 
 
@@ -321,10 +316,7 @@ def main() -> None:
             compared, differing = verify(engine, today - timedelta(days=args.days), today - timedelta(hours=1))
             logger.info("verify: %d hours compared, %d differ", compared, differing)
             sys.exit(0 if differing == 0 else 1)
-        if args.rebuild:
-            rebuild(engine, since=args.since)
-        else:
-            refresh(engine, since=args.since)
+        refresh(engine, since=args.since, full=args.rebuild)
     except Exception:
         logger.exception("Feature cache update FAILED")
         sys.exit(1)

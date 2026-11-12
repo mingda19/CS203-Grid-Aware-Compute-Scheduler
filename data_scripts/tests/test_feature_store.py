@@ -100,12 +100,15 @@ class CacheMatchesRawTests(unittest.TestCase):
             out = pred.load_exogenous(self.engine, datetime(2026, 2, 10), datetime(2026, 3, 8, 23))
         self.assertEqual(len(out), len(pd.date_range("2026-02-10", "2026-03-08 23:00", freq="h")))
 
-    def test_the_four_columns_the_models_consume_are_all_cached(self):
-        self.assertEqual(fs.FEATURE_COLS, [
-            "henry_hub_price_usd_mmbtu_lag2d", "henry_hub_price_usd_mmbtu_lag3d",
-            "wind_power_output_proxy_total", "solar_power_output_proxy_total"])
-        out = pred.load_exogenous(self.engine, datetime(2026, 3, 1), datetime(2026, 3, 1, 23))
-        self.assertEqual(list(out.columns), ["time", *fs.FEATURE_COLS])
+    def test_the_cache_stores_every_column_the_raw_path_produces(self):
+        # Pinned to the RAW path, not a hard-coded list: a feature added to load_exogenous_raw() but
+        # forgotten in FEATURE_COLS would otherwise leave this green while production's cache serves
+        # frames missing it, and every model that needs it raises.
+        start, end = datetime(2026, 3, 1), datetime(2026, 3, 1, 23)
+        raw = pred.load_exogenous_raw(self.engine, start, end)
+        self.assertEqual(list(raw.columns), ["time", *fs.FEATURE_COLS])
+        out = pred.load_exogenous(self.engine, start, end)
+        self.assertEqual(list(out.columns), list(raw.columns))
         self.assertTrue(out[fs.FEATURE_COLS].notna().all().all())
 
     def test_verify_reports_zero_differences(self):
@@ -241,9 +244,24 @@ class RefreshTests(unittest.TestCase):
     def test_rebuild_repairs_a_corrupted_row(self):
         with self.engine.begin() as conn:
             conn.execute(sa.text(f"UPDATE {fs.TABLE} SET solar_power_output_proxy_total = 99999"))
-        fs.rebuild(self.engine, now=NOW)
+        fs.refresh(self.engine, now=NOW, full=True)
         start, end = datetime(2026, 2, 1), datetime(2026, 3, 8, 23)
         assert_same(self, fs.read_cached(self.engine, start, end), pred.load_exogenous_raw(self.engine, start, end))
+
+    def test_full_rebuild_of_a_missing_table_raises_unlike_the_daily_refresh(self):
+        engine = fresh_engine(with_cache=False)
+        self.assertEqual(fs.refresh(engine, now=NOW), 0)
+        with self.assertRaises(RuntimeError):
+            fs.refresh(engine, now=NOW, full=True)
+
+    def test_full_rebuild_with_since_recomputes_from_since_not_from_the_trailing_window(self):
+        with self.engine.begin() as conn:
+            conn.execute(sa.text(f"UPDATE {fs.TABLE} SET wind_power_output_proxy_total = 99999"))
+        fs.refresh(self.engine, now=NOW, since=datetime(2026, 2, 20).date(), full=True)
+        start, end = datetime(2026, 2, 20), datetime(2026, 3, 8, 23)
+        assert_same(self, fs.read_cached(self.engine, start, end), pred.load_exogenous_raw(self.engine, start, end))
+        # before `since` the corrupted rows were left alone - a full rebuild is bounded by since
+        self.assertEqual(self.cached_value("wind_power_output_proxy_total", datetime(2026, 2, 10, 12)), 99999)
 
     def test_a_cache_that_fell_days_behind_catches_up_without_a_gap(self):
         later = datetime(2026, 3, 20, 21, 0, tzinfo=timezone.utc)  # pipeline skipped ~2 weeks
