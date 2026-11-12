@@ -1,10 +1,11 @@
 "use client"
 
 import * as React from "react"
-import { Check, Server } from "lucide-react"
+import { CheckCircle2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Skeleton } from "@/components/ui/skeleton"
 import { facilityApi, type FacilityConfig } from "@/lib/api"
 
 const LOCATIONS = [
@@ -20,6 +21,7 @@ export function FacilityConfigCard() {
   const [error, setError] = React.useState("")
   const [saving, setSaving] = React.useState(false)
   const [saved, setSaved] = React.useState(false)
+  const [reload, setReload] = React.useState(0)
 
   React.useEffect(() => {
     let active = true
@@ -31,7 +33,7 @@ export function FacilityConfigCard() {
       })
       .catch((e) => { if (active) setError(e instanceof Error ? e.message : "Could not load the facility") })
     return () => { active = false }
-  }, [])
+  }, [reload])
 
   const edit = (patch: Partial<FacilityConfig>) => {
     setSaved(false)
@@ -59,34 +61,42 @@ export function FacilityConfigCard() {
     }
   }
 
+  const label = "block text-xs leading-4 text-muted-foreground"
+
   return (
-    <Card className="border border-border shadow-sm">
-      <CardHeader className="pb-3 border-b border-border/60">
-        <CardTitle className="text-base font-bold flex items-center gap-2">
-          <Server className="h-4 w-4 text-teal-500" />
-          Facility
-        </CardTitle>
+    <Card className="min-w-0">
+      <CardHeader className="space-y-1 p-4 pb-0 sm:p-5 sm:pb-0">
+        <CardTitle className="text-sm font-semibold leading-5">Facility</CardTitle>
+        <CardDescription className="text-xs leading-4">The compute capacity and price zone that every plan uses.</CardDescription>
       </CardHeader>
-      <CardContent className="pt-4">
-        {error && <p role="alert" className="mb-3 text-sm text-destructive">{error}</p>}
-        {facility ? (
+      <CardContent className="p-4 sm:p-5">
+        {!facility && error ? (
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="min-w-0 truncate text-sm leading-5 text-muted-foreground" title={error}>Could not load the facility</span>
+            <Button variant="outline" size="sm" className="shrink-0" onClick={() => { setError(""); setReload((n) => n + 1) }}>Retry</Button>
+          </div>
+        ) : !facility ? (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4" role="status" aria-label="Loading facility">
+            {Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-16 w-full" />)}
+          </div>
+        ) : (
           <form onSubmit={save} className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <label className="space-y-2 text-sm">
-              <span className="block font-medium">Name</span>
+            <label className="min-w-0 space-y-2">
+              <span className={label}>Name</span>
               <Input value={facility.name} required onChange={(e) => edit({ name: e.target.value })} />
             </label>
-            <label className="space-y-2 text-sm">
-              <span className="block font-medium">CPU hours per hour</span>
-              <Input type="number" min="0" step="any" required value={facility.maxCpuHours}
+            <label className="min-w-0 space-y-2">
+              <span className={label}>CPU hours per hour</span>
+              <Input type="number" min="0" step="any" required value={facility.maxCpuHours} className="tabular-nums"
                 onChange={(e) => edit({ maxCpuHours: Number(e.target.value) })} />
             </label>
-            <label className="space-y-2 text-sm">
-              <span className="block font-medium">GPU hours per hour</span>
-              <Input type="number" min="0" step="any" required value={facility.maxGpuHours}
+            <label className="min-w-0 space-y-2">
+              <span className={label}>GPU hours per hour</span>
+              <Input type="number" min="0" step="any" required value={facility.maxGpuHours} className="tabular-nums"
                 onChange={(e) => edit({ maxGpuHours: Number(e.target.value) })} />
             </label>
-            <label className="space-y-2 text-sm">
-              <span className="block font-medium">ERCOT zone</span>
+            <label className="min-w-0 space-y-2">
+              <span className={label}>ERCOT zone</span>
               <select
                 value={facility.location}
                 onChange={(e) => edit({ location: e.target.value })}
@@ -95,19 +105,18 @@ export function FacilityConfigCard() {
                 {LOCATIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
               </select>
             </label>
-            <div className="flex items-center justify-end gap-3 sm:col-span-2 lg:col-span-4">
+            <div className="flex min-w-0 flex-wrap items-center justify-end gap-3 sm:col-span-2 lg:col-span-4">
+              {error && <p role="alert" className="min-w-0 break-words text-sm leading-5 text-destructive-foreground">{error}</p>}
               {saved && (
-                <span role="status" className="inline-flex items-center gap-1.5 text-sm text-emerald-600 dark:text-emerald-400">
-                  <Check className="h-4 w-4" />
+                <span role="status" className="inline-flex items-center gap-1.5 text-sm leading-5 text-success-foreground">
+                  <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
                   Saved
                 </span>
               )}
-              <Button type="submit" disabled={saving}>{saving ? "Saving…" : "Save facility"}</Button>
+              <Button type="submit" className="shrink-0" disabled={saving}>{saving ? "Saving…" : "Save facility"}</Button>
             </div>
           </form>
-        ) : !error ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : null}
+        )}
       </CardContent>
     </Card>
   )
