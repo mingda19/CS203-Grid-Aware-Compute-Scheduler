@@ -543,7 +543,14 @@ def build(args) -> str:
     add(f"- **The app's projected savings are off** by "
         f"{min(main.row(q, 'lear')['projection_gap_pct'] for q in REALISTIC):+.1f} to "
         f"{max(main.row(q, 'lear')['projection_gap_pct'] for q in REALISTIC):+.1f} points on the realistic profiles (A6).")
-    add("- **The optimiser itself is sound:** 0 rule violations, 100% of jobs scheduled by their deadline, "
+    violations = int(main.manifest["summary"]["violations"])
+    adherence = float(main.summary["deadline_adherence"].min())
+    excluded = int(main.summary["days_excluded"].sum())
+    sound = violations == 0 and adherence == 1.0
+    add(f"- **{'The optimiser itself is sound' if sound else 'The optimiser broke its own rules: check section 5'}:** "
+        f"{violations} rule violations, "
+        + ("100%" if adherence == 1.0 else f"as low as {adherence:.2%}")
+        + " of jobs scheduled by their deadline, "
         f"{main.manifest['summary']['provenOptimalShare']:.2%} of plans proven optimal.")
     add("")
     add("**Assumption verdicts** (details in section 6):")
@@ -569,7 +576,8 @@ def build(args) -> str:
         "on past data only by `model/evaluate.py` (`model/lear_model.py`, no pretrained file), plus two naive "
         "forecasts. Each day is planned with the forecast made two days before it, which is what the app has. "
         "The training files were rebuilt in the current feature layout by `backtest/build_features.py`.")
-    add("- **Savings rule:** days with an unscheduled job are left out of savings figures (none were).")
+    add("- **Savings rule:** days with an unscheduled job are left out of savings figures "
+        + ("(none were)." if excluded == 0 else f"({excluded:,} profile-source days were, across the main run)."))
     add("")
     add("Runs (all under `backtest/output/report/`, not committed):")
     add("")
