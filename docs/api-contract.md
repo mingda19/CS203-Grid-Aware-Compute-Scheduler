@@ -462,6 +462,45 @@ Retrieves the active profile associated with the provided JWT Bearer token.
 * **Error Responses**:
   * `401 Unauthorized`: Missing, expired, or signature-mismatched JWT token.
 
+#### Update Current User Profile
+
+Changes the full name of the signed-in user. The Settings page uses it.
+
+* **Method**: `PATCH`
+* **Path**: `/api/auth/me` (alias: `/me`)
+* **Access**: Authenticated (`ROLE_USER` or `ROLE_ADMIN`)
+* **Request Headers**:
+  ```http
+  Authorization: Bearer <accessToken>
+  Content-Type: application/json
+  ```
+* **Request Body**:
+  ```json
+  {
+    "fullName": "Elena Ross"
+  }
+  ```
+  `fullName` is required, must not be blank, and has at most 100 characters. The server trims it before it saves it.
+
+* **Success Response (200 OK)**:
+  ```json
+  {
+    "success": true,
+    "message": "Profile updated.",
+    "data": {
+      "id": 2,
+      "email": "engineer@datacenter.io",
+      "fullName": "Elena Ross",
+      "role": "ROLE_USER",
+      "isVerified": true
+    }
+  }
+  ```
+
+* **Error Responses**:
+  * `400 Bad Request`: `fullName` is missing, blank, or longer than 100 characters.
+  * `403 Forbidden`: No access token. Spring Security rejects the request before it reaches the controller.
+
 ---
 
 ### 4.7 User Logout

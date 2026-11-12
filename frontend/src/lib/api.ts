@@ -1058,6 +1058,13 @@ export const authApi = {
     })
   },
 
+  async updateMe(payload: { fullName: string }): Promise<ApiResponse<User>> {
+    return fetchJson<ApiResponse<User>>("/api/auth/me", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    })
+  },
+
   async logout(): Promise<ApiResponse<void>> {
     const headers: Record<string, string> = {}
     const rToken = getRefreshToken()
@@ -1153,4 +1160,19 @@ export function removeStoredUser(): void {
   }
   setAccessToken(null)
   setRefreshToken(null)
+}
+
+/** Window event with the updated `User` as `detail`. The shell listens so the sidebar shows a new name at once. */
+export const USER_UPDATED_EVENT = "gacs-user-updated"
+
+/** Ends the session on the server (errors ignored), clears local auth and goes to the login page. */
+export async function signOut(router: { push: (href: string) => void }): Promise<void> {
+  try {
+    await authApi.logout()
+  } catch {
+    // Ignore network errors on logout
+  } finally {
+    removeStoredUser()
+    router.push("/login")
+  }
 }

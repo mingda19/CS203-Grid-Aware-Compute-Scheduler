@@ -210,6 +210,18 @@ public class AuthController {
         return ResponseEntity.ok(com.gacs.backend.dto.ApiResponse.ok("User session is active.", userDto));
     }
 
+    @Operation(summary = "Update the current user's full name", security = @SecurityRequirement(name = "bearerAuth"))
+    @PatchMapping({"/me", "/api/auth/me"})
+    public ResponseEntity<com.gacs.backend.dto.ApiResponse<UserDto>> updateCurrentUser(
+            Authentication authentication, @Valid @RequestBody UpdateProfileRequest request) {
+        if (authentication == null || !authentication.isAuthenticated() || "anonymousUser".equals(authentication.getPrincipal())) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(com.gacs.backend.dto.ApiResponse.error("Unauthorized: No active session."));
+        }
+        UserDto userDto = authService.updateFullName(authentication.getName(), request.getFullName());
+        return ResponseEntity.ok(com.gacs.backend.dto.ApiResponse.ok("Profile updated.", userDto));
+    }
+
     /**
      * User logout endpoint.
      * Revokes the persistent refresh token, clears HttpOnly cookie, and clears security context.
