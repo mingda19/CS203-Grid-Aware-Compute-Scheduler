@@ -70,12 +70,11 @@ export function ChartCard({ title, description, controls, height, subject, loadi
   )
 }
 
-/** The legend row under a chart. The unit comes last, once. */
+/** The legend row under a chart. The unit and time zone are in the header, so the legend leaves them out. */
 export function ChartLegend({ children }: { children: React.ReactNode }) {
   return (
     <ul className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 px-2 text-xs leading-4 sm:px-1 text-muted-foreground">
       {children}
-      <li className="whitespace-nowrap">$/MWh, {MARKET_ZONE_LABEL}</li>
     </ul>
   )
 }

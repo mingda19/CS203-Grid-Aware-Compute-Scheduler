@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Card, CardContent } from "@/components/ui/card"
 import { Segmented } from "@/components/ui/segmented"
+import { ExpandingSearch } from "@/components/ui/expanding-search"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -384,6 +385,17 @@ export default function JobsPage() {
   /** Only the owner edits a job, and not once it is in an approved plan. Delete stays open. */
   const canEdit = (job: ComputeJob) => !job.approvedRunId && (scope === "mine" || job.ownerEmail?.toLowerCase() === me?.email?.toLowerCase())
 
+  // Search matches the name, the owner, the job type and the status, as shown in the table.
+  const [query, setQuery] = React.useState("")
+  const needle = query.trim().toLowerCase()
+  const shownJobs = needle
+    ? jobs.filter((job) =>
+        [job.name, job.ownerName, job.ownerEmail, WORKLOAD_CATEGORY_LABELS[job.workloadCategory ?? "ML_TRAINING"], jobStatus(job.status).label]
+          .some((field) => field?.toLowerCase().includes(needle)))
+    : jobs
+  // A new search clears the ticks, so Delete never acts on rows the search hides.
+  const search = (value: string) => { setQuery(value); setSelectedIds(new Set()) }
+
   const selectedJobs = jobs.filter((job) => selectedIds.has(job.id))
   const toggleJob = (id: number, checked: boolean) =>
     setSelectedIds((current) => {
@@ -449,7 +461,7 @@ export default function JobsPage() {
       {/* No visible title: the sidebar already says where you are. The heading stays for screen readers. */}
       <h1 className="sr-only">Jobs</h1>
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <div className="flex items-center gap-2">
+        <div data-tour="jobs-actions" className="flex items-center gap-2">
           <Button size="sm" onClick={openCreate}>
             <Plus className="mr-2 size-4" />
             New job
@@ -463,7 +475,8 @@ export default function JobsPage() {
           )}
         </div>
         {/* View controls on the right: which jobs to show, and Refresh. */}
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <ExpandingSearch value={query} onChange={search} label="Search jobs" />
           {isAdmin && (
             <Segmented
               label="Jobs to show"
@@ -490,7 +503,7 @@ export default function JobsPage() {
         </Alert>
       )}
 
-      <Card>
+      <Card data-tour="jobs-table">
         <CardContent className="p-0">
           {loading ? (
             <div className="space-y-2 p-4 sm:p-5" role="status" aria-label="Loading jobs">
@@ -521,7 +534,12 @@ export default function JobsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {jobs.map((job) => (
+                {shownJobs.length === 0 && (
+                  <TableRow className="hover:bg-transparent">
+                    <TableCell colSpan={10} className="px-4 py-6 text-sm text-muted-foreground">No jobs match “{query.trim()}”.</TableCell>
+                  </TableRow>
+                )}
+                {shownJobs.map((job) => (
                   <TableRow
                     key={job.id}
                     data-state={selectedIds.has(job.id) ? "selected" : undefined}

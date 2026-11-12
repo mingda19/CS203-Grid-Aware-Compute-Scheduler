@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { CalendarDays, ChevronLeft, ChevronRight, RefreshCw, Search, User } from "lucide-react"
+import { CalendarDays, ChevronLeft, ChevronRight, List, RefreshCw, Search, User } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Card } from "@/components/ui/card"
@@ -72,7 +72,9 @@ function describe(event: CalendarEvent): string {
 
 export function ScheduleCalendar() {
   const [anchor, setAnchor] = React.useState(() => getMarketDateString(new Date()))
-  const [view, setView] = React.useState<View>("week")
+  // The top-left switch picks calendar or list; the Week/Month switch picks which calendar.
+  const [listMode, setListMode] = React.useState(false)
+  const [calendarView, setCalendarView] = React.useState<"week" | "month">("week")
   const [onlyMine, setOnlyMine] = React.useState(false)
   const [searchOpen, setSearchOpen] = React.useState(false)
   const [query, setQuery] = React.useState("")
@@ -86,7 +88,12 @@ export function ScheduleCalendar() {
 
   // A seven-column grid cannot fit a job title below md, so Week falls back to List there.
   const isMobile = useIsMobile()
-  const effective: View = view === "week" && isMobile ? "list" : view
+  const effective: View = listMode || (calendarView === "week" && isMobile) ? "list" : calendarView
+  // Below md the only calendar is Month, so choosing the calendar there opens Month.
+  const showCalendar = () => {
+    setListMode(false)
+    if (isMobile) setCalendarView("month")
+  }
 
   React.useEffect(() => {
     const timer = setInterval(() => setNowMs(Date.now()), 60_000)
@@ -173,10 +180,20 @@ export function ScheduleCalendar() {
 
   return (
     <Card className="isolate flex h-[calc(100dvh-6rem)] min-h-[480px] flex-col overflow-hidden sm:h-[calc(100dvh-7rem)] lg:h-[calc(100dvh-8rem)]">
-      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border px-3 py-2">
+      <header data-tour="calendar-toolbar" className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border px-3 py-2">
         <div className="flex min-w-0 flex-1 basis-72 items-center gap-1">
-          <Button variant="ghost" size="icon" className="size-9 shrink-0" aria-label="Today" title="Today" onClick={() => setAnchor(todayStr)}>
-            <CalendarDays className="size-4" />
+          <Segmented<"calendar" | "list">
+            label="Layout"
+            className="mr-1 shrink-0"
+            value={effective === "list" ? "list" : "calendar"}
+            onChange={(next) => (next === "list" ? setListMode(true) : showCalendar())}
+            options={[
+              { value: "calendar", label: <CalendarDays />, title: "Calendar" },
+              { value: "list", label: <List />, title: "List" },
+            ]}
+          />
+          <Button variant="ghost" size="sm" className="h-9 shrink-0 px-2.5" onClick={() => setAnchor(todayStr)}>
+            Today
           </Button>
           <Button variant="ghost" size="icon" className="size-9 shrink-0" aria-label="Previous" onClick={() => move(-1)}>
             <ChevronLeft className="size-4" />
@@ -228,16 +245,17 @@ export function ScheduleCalendar() {
           >
             <User />
           </Toggle>
-          <Segmented<View>
-            label="View"
-            value={effective}
-            onChange={setView}
-            options={[
-              ...(isMobile ? [] : [{ value: "week" as const, label: "Week" }]),
-              { value: "month", label: "Month" },
-              { value: "list", label: "List" },
-            ]}
-          />
+          {effective !== "list" && (
+            <Segmented<"week" | "month">
+              label="Calendar range"
+              value={calendarView}
+              onChange={setCalendarView}
+              options={[
+                ...(isMobile ? [] : [{ value: "week" as const, label: "Week" }]),
+                { value: "month", label: "Month" },
+              ]}
+            />
+          )}
           <Button variant="ghost" size="icon" className="size-9" aria-label="Refresh" onClick={refresh} disabled={loading}>
             <RefreshCw className={cn("size-4", loading && "animate-spin")} />
           </Button>
@@ -288,7 +306,7 @@ export function ScheduleCalendar() {
                   segments={segmentsByDay.get(day.dateStr) ?? []}
                   nowMs={nowMs}
                   onOpen={setSelected}
-                  onOpenDay={() => { setAnchor(day.dateStr); setView("list") }}
+                  onOpenDay={() => { setAnchor(day.dateStr); setListMode(true) }}
                 />
               ))}
             </div>
@@ -305,7 +323,7 @@ export function ScheduleCalendar() {
                 key={day.dateStr}
                 day={day}
                 segments={segmentsByDay.get(day.dateStr) ?? []}
-                onOpen={() => { setAnchor(day.dateStr); setView("week") }}
+                onOpen={() => { setAnchor(day.dateStr); setCalendarView("week") }}
               />
             ))}
           </div>

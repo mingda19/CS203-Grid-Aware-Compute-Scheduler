@@ -66,7 +66,7 @@ export function PlanList() {
     router.replace(`${pathname}?tab=${nextTab}${nextPage ? `&page=${nextPage}` : ""}`)
   }
 
-  return <div className="space-y-6">
+  return <div data-tour="plan-list" className="space-y-6">
     {/* No visible title: the sidebar already says where you are. The heading stays for screen readers. */}
     <h1 className="sr-only">Approvals</h1>
     <div className="flex items-center justify-between gap-3">
