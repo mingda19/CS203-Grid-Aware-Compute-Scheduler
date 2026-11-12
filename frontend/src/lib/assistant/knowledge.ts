@@ -74,8 +74,14 @@ A calendar of everyone's approved jobs. Views: **Week**, **Month** and **List** 
 
 # Price Forecast
 Prices are ERCOT day-ahead prices for the facility's zone, in $/MWh, Central time. Plans are priced with the LEAR model's forecast; LSTM is the fallback.
-"Forecast, next 72 hours" (also on Home): the day-ahead price as a solid line, the forecast as a dashed line, and a "Now" line. Hours the market has already priced show as known prices, not forecasts. A shaded band around the forecast shows the model's typical error. Grey columns mark the 4 cheapest hours of each day. Switch between LEAR and LSTM, and between 24h and 7d of history before now. Hovering shows the price, the typical error and the forecast's confidence.
-"How far off the forecast was": one bar per past hour for the last 7 days, the forecast minus the real day-ahead price. Above 0 the forecast was too high, below 0 too low; dotted lines mark ± the typical error. Beside it: typical error, average miss, biggest miss and hours checked. It has its own LEAR/LSTM switch.
+The toolbar holds a LEAR/LSTM switch and a 7d/30d window switch; they drive every card on the page. Every miss on this page is the forecast minus the real day-ahead price, so above 0 always means the forecast was too high.
+Key figures (top): average miss, typical miss (± the typical error), bias (the average lean: too high or too low on average) and cheap hours hit (how often the forecast's 4 cheapest hours of a day really were among the 4 cheapest).
+"Price Forecast, next 72 hours" (also on Home): the day-ahead price as a solid line, the forecast as a dashed line, and a "Now" line. Hours the market has already priced show as known prices, not forecasts. A shaded band around the forecast shows the model's typical error. Grey columns mark the 4 cheapest hours of each day. Switch between 24h and 7d of history before now (on Home the card also has its own LEAR/LSTM switch). The clock button (Show past forecasts) adds a grey dashed line over past hours showing what the model had forecast for each one, so you can compare it with the real price. The status badge's hover text says when the forecast was made. Hovering the chart shows the price, the typical error and the forecast's confidence.
+"Price Deviation": one bar per past hour in the window, the forecast minus the real day-ahead price. Dotted lines mark ± the typical miss.
+"Forecast vs Actual": one dot per past hour, forecast across and real price up. Dots on the dashed line were forecast exactly; dots below it were forecast too high, dots above it too low.
+"Miss by Hour of Day": for each Central-time hour of the day, a bar for the average miss and a line for the bias. Hours with fewer than 3 past forecasts are left blank.
+"Forecast Drift": the running total of the miss over the window. Rising means the forecast keeps running high, falling means it keeps running low, flat means no lean.
+"Cheap Hours Check": one bar per day (days with at least 20 hours of data) showing how much more the forecast's 4 cheapest-looking hours really cost than the day's 4 cheapest hours. Hovering shows how many of the 4 it got right and both sets of hours.
 A warning appears when the LEAR forecast is more than about a day old or covers fewer than 72 hours, because new plans then use older forecasts or estimates.
 
 # Audit

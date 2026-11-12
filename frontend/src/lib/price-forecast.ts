@@ -22,24 +22,28 @@ export interface ForecastRow {
   typicalError: number | null
   /** 0-1, or null when the model has no score for the hour. */
   confidence: number | null
+  /** For a past hour: what the model had forecast for it, from the latest run made before the hour. */
+  pastForecast: number | null
 }
 
 /**
  * Merges known prices and forecasts into one row per hour inside [from, to].
  * A known price always wins: forecasts start after the last known hour. That last known hour also
  * carries the forecast values, so the dashed lines start where the solid one ends.
+ * `pastForecasts` (optional) puts each past hour's old forecast beside its known price.
  */
 export function buildForecastRows(
   history: PricePoint[],
   forecast: PriceForecastPoint[],
   from: number,
   to: number,
+  pastForecasts: ForecastAccuracyPoint[] = [],
 ): ForecastRow[] {
   const rows = new Map<number, ForecastRow>()
   const row = (t: number) => {
     let r = rows.get(t)
     if (!r) {
-      r = { t, price: null, forecast: null, band: null, typicalError: null, confidence: null }
+      r = { t, price: null, forecast: null, band: null, typicalError: null, confidence: null, pastForecast: null }
       rows.set(t, r)
     }
     return r
@@ -63,6 +67,11 @@ export function buildForecastRows(
     r.typicalError = error
     r.band = error == null ? null : [p.predictedPrice - error, p.predictedPrice + error]
     r.confidence = p.confidenceScore ?? null
+  }
+
+  for (const p of pastForecasts) {
+    const t = parseIsoDate(p.intervalStartUtc).getTime()
+    if (inWindow(t)) row(t).pastForecast = p.predictedPrice
   }
 
   const anchor = rows.get(lastKnown)

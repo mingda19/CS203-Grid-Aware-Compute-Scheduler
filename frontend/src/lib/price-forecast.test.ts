@@ -29,7 +29,7 @@ describe("buildForecastRows", () => {
   const start = Date.parse("2026-11-12T06:00:00Z")
   const hourRows = (prices: Array<number | null>, knownCount = 0): ForecastRow[] => prices.map((p, i) => ({
     t: start + i * HOUR_MS, price: i < knownCount ? p : null, forecast: i < knownCount ? null : p,
-    band: null, typicalError: null, confidence: null,
+    band: null, typicalError: null, confidence: null, pastForecast: null,
   }))
 
   it("cheapestHours marks the 4 cheapest hours of each CT day, known or forecast, from fromHour on", () => {
@@ -66,6 +66,12 @@ describe("buildForecastRows", () => {
     })
     const rows = deviationRows([p(1, 21, 20), p(3, 18, 20)], ms(1), ms(3))
     expect(rows.map((r) => r.deviation)).toEqual([1, null, -2])
+  })
+
+  it("puts a past hour's old forecast beside its known price", () => {
+    const past = [{ intervalStartUtc: at(1), predictedPrice: 25, actualPrice: 20, modelVersion: "lear_y0_x", generatedAt: at(0) }]
+    const rows = buildForecastRows([{ intervalStartUtc: at(1), sppUsdMwh: 20 }], [], ms(0), ms(8), past)
+    expect(rows).toEqual([expect.objectContaining({ t: ms(1), price: 20, pastForecast: 25, forecast: null })])
   })
 
   it("leaves out hours outside the window", () => {

@@ -28,6 +28,11 @@ function loadHistory(zone: string) {
   )
 }
 
+/** What each past hour in the 7d window had been forecast, for the past-forecast overlay. */
+function loadPastForecasts(zone: string, model: ForecastModel) {
+  return unwrap(priceApi.getForecastAccuracy({ location: zone, model, days: HISTORY_DAYS }), "Unable to load past forecasts")
+}
+
 function loadForecast(zone: string, model: ForecastModel) {
   return unwrap(priceApi.getForecast({ location: zone, hours: FORECAST_HOURS, model }), "Unable to load the forecast")
 }
@@ -49,11 +54,14 @@ export function useForecastCard(zone: string | null, pageModel?: ForecastModel) 
   const [ownModel, setModel] = React.useState<ForecastModel>("lear")
   const model = pageModel ?? ownModel
   const [pastWindow, setPastWindow] = React.useState<PastWindow>("24h")
+  const [showPast, setShowPast] = React.useState(false)
 
   const history = useLoad(zone && `history:${zone}`, () => loadHistory(zone ?? DEFAULT_ZONE), REFRESH_MS)
   const learForecast = useLoad(zone && `lear:${zone}`, () => loadForecast(zone ?? DEFAULT_ZONE, "lear"), REFRESH_MS)
   const lstmForecast = useLoad(zone && `lstm:${zone}`, () => loadForecast(zone ?? DEFAULT_ZONE, "lstm"), REFRESH_MS)
   const forecast = model === "lear" ? learForecast : lstmForecast
+  // Loads only once the overlay is turned on, and again for each model.
+  const past = useLoad(showPast && zone ? `past:${model}:${zone}` : null, () => loadPastForecasts(zone ?? DEFAULT_ZONE, model), REFRESH_MS)
 
   const [nowMs, setNowMs] = React.useState(() => Date.now())
   React.useEffect(() => {
@@ -65,9 +73,10 @@ export function useForecastCard(zone: string | null, pageModel?: ForecastModel) 
   const to = nowMs + FORECAST_HOURS * HOUR_MS
   const historyPoints = history.data?.points
   const forecastPoints = forecast.data?.points
+  const pastPoints = showPast ? past.data?.points : undefined
   const rows = React.useMemo(
-    () => buildForecastRows(historyPoints ?? [], forecastPoints ?? [], from, to),
-    [historyPoints, forecastPoints, from, to],
+    () => buildForecastRows(historyPoints ?? [], forecastPoints ?? [], from, to, pastPoints),
+    [historyPoints, forecastPoints, from, to, pastPoints],
   )
   const hourStart = currentMarketHourStart(nowMs).getTime()
   const lowHours = React.useMemo(() => cheapestHours(rows, hourStart), [rows, hourStart])
@@ -82,12 +91,18 @@ export function useForecastCard(zone: string | null, pageModel?: ForecastModel) 
     history.reload()
     learForecast.reload()
     lstmForecast.reload()
+    if (showPast) past.reload()
   }
   // What failed while the rest still draws, so the card names it instead of dropping it silently.
-  const failed = [history.error && "recorded prices", forecast.error && "forecast"].filter((s): s is string => !!s)
+  const failed = [
+    history.error && "recorded prices",
+    forecast.error && "forecast",
+    showPast && past.error && "past forecasts",
+  ].filter((s): s is string => !!s)
   // Retry only what failed, so the data that loaded stays.
   const retry = () => {
     for (const l of [history, learForecast, lstmForecast]) if (l.error) l.reload()
+    if (showPast && past.error) past.reload()
   }
 
   return {
@@ -102,6 +117,8 @@ export function useForecastCard(zone: string | null, pageModel?: ForecastModel) 
       onModelChange: pageModel ? undefined : setModel,
       pastWindow,
       onPastWindowChange: setPastWindow,
+      showPast,
+      onShowPastChange: setShowPast,
       run: run ? { generatedAt: run } : null,
       status,
       lowHours,

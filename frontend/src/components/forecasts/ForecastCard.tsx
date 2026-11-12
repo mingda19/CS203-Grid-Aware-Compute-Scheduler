@@ -13,11 +13,13 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
+import { History } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { DataStatusBadge, type DataStatusType } from "@/components/ui/data-status-badge"
 import { Segmented } from "@/components/ui/segmented"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Toggle } from "@/components/ui/toggle"
 import type { ForecastModel } from "@/lib/api"
 import { formatMarketChartTick, formatShortDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { formatConfidence } from "@/lib/forecast-confidence"
@@ -42,6 +44,9 @@ interface ForecastCardProps {
   onModelChange?: (model: ForecastModel) => void
   pastWindow: PastWindow
   onPastWindowChange: (window: PastWindow) => void
+  /** Draws what each past hour had been forecast, over the known price. */
+  showPast: boolean
+  onShowPastChange: (show: boolean) => void
   /** The shown model's latest run, shown in the status badge's hover text. */
   run: { generatedAt: string } | null
   status: DataStatusType
@@ -71,7 +76,7 @@ export function LegendItem({ swatch, children }: { swatch: React.ReactNode; chil
 
 /** The next 72 hours with the model's typical error as a band. Home and the Forecast page both show it; `useForecastCard` feeds it. */
 export function ForecastCard({
-  zone, rows, nowMs, from, to, model, onModelChange, pastWindow, onPastWindowChange, run, status, lowHours, loading, error, failed, onRetry, footerAction,
+  zone, rows, nowMs, from, to, model, onModelChange, pastWindow, onPastWindowChange, showPast, onShowPastChange, run, status, lowHours, loading, error, failed, onRetry, footerAction,
 }: ForecastCardProps) {
   const ticks = React.useMemo(() => timeTicks(from, to), [from, to])
   const lowSpans = React.useMemo(() => hourSpans(lowHours), [lowHours])
@@ -90,6 +95,16 @@ export function ForecastCard({
             <DataStatusBadge size="sm" status={status} updatedAt={run?.generatedAt ?? null} source={`${name} forecast for ${zone}, ${MODEL_ROLE[model]}`} />
           )}
           {onModelChange && <Segmented label="Forecast model" value={model} onChange={onModelChange} options={MODEL_OPTIONS} />}
+          <Toggle
+            size="sm"
+            pressed={showPast}
+            onPressedChange={onShowPastChange}
+            aria-label="Show past forecasts"
+            title="Show past forecasts"
+            className="px-0 data-[state=on]:bg-primary/15 data-[state=on]:text-foreground"
+          >
+            <History />
+          </Toggle>
           <Segmented label="Past window" value={pastWindow} onChange={onPastWindowChange} options={PAST_OPTIONS} />
         </div>
       </div>
@@ -147,6 +162,7 @@ export function ForecastCard({
                       if (!row) return null
                       const lines: Array<[string, React.ReactNode]> = []
                       if (row.price != null) lines.push([row.t > nowMs ? "Day-ahead price (known)" : "Day-ahead price", <>{money(row.price)}{PER_MWH}</>])
+                      if (row.pastForecast != null) lines.push([`Was forecast (${name})`, <>{money(row.pastForecast)}{PER_MWH}</>])
                       if (row.price == null && row.forecast != null) {
                         lines.push([`Forecast (${name})`, <>{money(row.forecast)}{PER_MWH}</>])
                         if (row.typicalError != null) lines.push(["Typical error", <>± {money(row.typicalError)}{PER_MWH}</>])
@@ -182,6 +198,11 @@ export function ForecastCard({
                   />
                   <Line dataKey="price" stroke="var(--primary)" strokeWidth={2} dot={false} isAnimationActive={false}
                     activeDot={{ r: 4, stroke: "var(--primary)", strokeWidth: 2, fill: "var(--card)" }} />
+                  {/* Past forecasts are muted so the real price stays the line that reads first. */}
+                  {showPast && (
+                    <Line dataKey="pastForecast" stroke="var(--muted-foreground)" strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false}
+                      activeDot={{ r: 4, stroke: "var(--muted-foreground)", strokeWidth: 2, fill: "var(--card)" }} />
+                  )}
                   <Line dataKey="forecast" stroke="var(--primary)" strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false}
                     activeDot={{ r: 4, stroke: "var(--primary)", strokeWidth: 2, fill: "var(--card)" }} />
                 </ComposedChart>
@@ -192,6 +213,7 @@ export function ForecastCard({
               <ul className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 <LegendItem swatch={<span className="h-0.5 w-5 shrink-0 bg-primary" aria-hidden="true" />}>Day-ahead price</LegendItem>
                 <LegendItem swatch={<DashSwatch color="var(--primary)" />}>Forecast ({name})</LegendItem>
+                {showPast && <LegendItem swatch={<DashSwatch color="var(--muted-foreground)" />}>Past forecast ({name})</LegendItem>}
                 <LegendItem swatch={<span className="h-3 w-5 shrink-0 rounded-sm bg-primary/15" aria-hidden="true" />}>Typical error</LegendItem>
                 {lowSpans.length > 0 && (
                   <LegendItem swatch={<span className="h-3 w-5 shrink-0 rounded-sm bg-muted-foreground/15" aria-hidden="true" />}>
