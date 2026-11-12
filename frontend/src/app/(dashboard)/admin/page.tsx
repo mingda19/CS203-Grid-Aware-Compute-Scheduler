@@ -3,12 +3,16 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { ShieldCheck, ShieldAlert, Users, UserCheck, Search, ArrowLeft, RefreshCw, AlertCircle, CheckCircle2, Shield, Clock } from "lucide-react"
+import { ShieldCheck, ShieldAlert, Users, UserCheck, Search, RefreshCw, AlertCircle, CheckCircle2, Shield, Clock } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Segmented } from "@/components/ui/segmented"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { adminApi, authApi, removeStoredUser, type User } from "@/lib/api"
+import { StatCard } from "@/components/home/StatCard"
+import { adminApi, authApi, removeStoredUser, signOut, type User } from "@/lib/api"
 import { FacilityConfigCard } from "@/components/admin/FacilityConfigCard"
 import { ApprovalSettingsCard } from "@/components/admin/ApprovalSettingsCard"
 
@@ -23,6 +27,7 @@ export default function AdminPage() {
   const [roleFilter, setRoleFilter] = React.useState<"ALL" | "ROLE_ADMIN" | "ROLE_USER">("ALL")
   const [actionLoadingId, setActionLoadingId] = React.useState<number | null>(null)
   const [feedback, setFeedback] = React.useState<{ type: "success" | "error"; message: string } | null>(null)
+  const [loadError, setLoadError] = React.useState("")
 
   // Resolve administrator access from the authenticated API response.
   React.useEffect(() => {
@@ -51,10 +56,17 @@ export default function AdminPage() {
       if (!response.success || !response.data) throw new Error(response.message || "Could not load registered users")
       setUsers(response.data)
     }).catch(error => {
-      if (active) setFeedback({ type: "error", message: error instanceof Error ? error.message : "Could not load registered users" })
+      if (active) setLoadError(error instanceof Error ? error.message : "Could not load registered users")
     }).finally(() => { if (active) setIsLoading(false) })
     return () => { active = false }
   }, [isAuthorized, usersReload])
+
+  const reloadUsers = () => {
+    setIsLoading(true)
+    setFeedback(null)
+    setLoadError("")
+    setUsersReload(key => key + 1)
+  }
 
   // Handle Role Change
   const handleToggleRole = async (targetUser: User) => {
@@ -87,7 +99,7 @@ export default function AdminPage() {
         )
         setFeedback({
           type: "success",
-          message: `Successfully updated ${targetUser.fullName || targetUser.email}'s role to ${newRole}.`,
+          message: `${targetUser.fullName || targetUser.email} is now ${newRole === "ROLE_ADMIN" ? "an administrator" : "a standard user"}.`,
         })
       }
     } catch (err: unknown) {
@@ -100,16 +112,7 @@ export default function AdminPage() {
     }
   }
 
-  const handleLogout = async () => {
-    try {
-      await authApi.logout()
-    } catch {
-      // Ignore
-    } finally {
-      removeStoredUser()
-      router.push("/login")
-    }
-  }
+  const handleLogout = () => signOut(router)
 
   // Filtered Users
   const filteredUsers = users.filter((u) => {
@@ -136,13 +139,12 @@ export default function AdminPage() {
   // Loading / Auth Verification screen
   if (isAuthorized === null) {
     return (
-      <div className="min-h-[50vh] flex items-center justify-center p-4">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground animate-pulse">
-            Verifying Admin Authorization...
-          </p>
+      <div className="space-y-6" role="status" aria-label="Checking access">
+        <h1 className="sr-only">Admin</h1>
+        <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-28 w-full" />)}
         </div>
+        <Skeleton className="h-64 w-full" />
       </div>
     )
   }
@@ -150,33 +152,27 @@ export default function AdminPage() {
   // Unauthorized screen
   if (isAuthorized === false) {
     return (
-      <div className="min-h-[50vh] flex items-center justify-center p-4">
-        <Card className="max-w-md w-full border-red-500/30 bg-card/90 shadow-2xl">
-          <CardHeader className="text-center space-y-2">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-red-500/10 border border-red-500/20 text-red-500">
-              <ShieldAlert className="h-7 w-7" />
+      <div className="flex min-h-[50vh] items-center justify-center">
+        <h1 className="sr-only">Admin</h1>
+        <Card className="w-full max-w-md">
+          <CardContent className="space-y-4 p-4 sm:p-5">
+            <div className="space-y-1">
+              <h2 className="flex items-center gap-2 text-lg font-semibold leading-7">
+                <ShieldAlert className="size-5 shrink-0 text-destructive-foreground" aria-hidden="true" />
+                Administrators only
+              </h2>
+              <p className="break-words text-sm leading-5 text-muted-foreground">
+                Your account (<span className="font-medium text-foreground">{currentUser?.email}</span>) does not have administrator access.
+              </p>
             </div>
-            <CardTitle className="text-xl font-bold">Access Restricted</CardTitle>
-            <CardDescription className="text-xs">
-              This area is restricted to system administrators. Your account (
-              <strong className="text-foreground">{currentUser?.email}</strong>) does not have
-              the required <code className="text-emerald-500 font-mono">ROLE_ADMIN</code> privilege.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="pt-2 flex flex-col gap-2">
-            <Button asChild className="w-full bg-primary hover:bg-primary/90 text-primary-foreground">
-              <Link href="/home" className="flex items-center justify-center gap-2">
-                <ArrowLeft className="h-4 w-4" />
-                Return to Operations Dashboard
-              </Link>
-            </Button>
-            <Button
-              variant="outline"
-              onClick={handleLogout}
-              className="w-full text-xs text-muted-foreground hover:text-foreground"
-            >
-              Sign out and switch account
-            </Button>
+            <div className="flex flex-col gap-2 sm:flex-row-reverse">
+              <Button asChild>
+                <Link href="/home">Back to Home</Link>
+              </Button>
+              <Button variant="outline" onClick={handleLogout}>
+                Sign out
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -188,195 +184,106 @@ export default function AdminPage() {
       {/* No visible title. The heading stays for screen readers. */}
       <h1 className="sr-only">Admin</h1>
 
-      {/* Toolbar */}
-      <div className="flex items-center justify-end">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => { setIsLoading(true); setFeedback(null); setUsersReload(key => key + 1) }}
-          disabled={isLoading}
-          className="h-8 gap-1.5 text-xs cursor-pointer"
+      {loadError && (
+        <Alert variant="destructive" className="flex items-center justify-between gap-3">
+          <AlertDescription className="min-w-0 break-words">{loadError}</AlertDescription>
+          <Button variant="outline" size="sm" className="shrink-0" onClick={reloadUsers}>Retry</Button>
+        </Alert>
+      )}
+
+      {feedback && (
+        <Alert
+          variant={feedback.type === "success" ? "success" : "destructive"}
+          role={feedback.type === "success" ? "status" : "alert"}
+          className="flex items-center justify-between gap-3"
         >
-          <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
-          Refresh
-        </Button>
+          <div className="flex min-w-0 items-center gap-2">
+            {feedback.type === "success" ? (
+              <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
+            ) : (
+              <AlertCircle className="size-4 shrink-0" aria-hidden="true" />
+            )}
+            <AlertDescription className="min-w-0 break-words">{feedback.message}</AlertDescription>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {feedback.type === "error" && feedback.message.includes("session expired") && (
+              <Button asChild variant="outline" size="sm">
+                <Link href="/login">Sign in</Link>
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={() => setFeedback(null)}>
+              Dismiss
+            </Button>
+          </div>
+        </Alert>
+      )}
+
+      <FacilityConfigCard />
+
+      <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label={<><Users className="size-3.5 shrink-0" aria-hidden="true" />Users</>} value={String(totalUsers)} supporting="Registered accounts" loading={isLoading} error={!!loadError} />
+        <StatCard label={<><ShieldCheck className="size-3.5 shrink-0" aria-hidden="true" />Administrators</>} value={String(totalAdmins)} supporting="Can change roles and settings" loading={isLoading} error={!!loadError} />
+        <StatCard label={<><Shield className="size-3.5 shrink-0" aria-hidden="true" />Standard users</>} value={String(totalOperators)} supporting="Can submit jobs" loading={isLoading} error={!!loadError} />
+        <StatCard
+          label={<><UserCheck className="size-3.5 shrink-0" aria-hidden="true" />Verified accounts</>}
+          value={String(totalVerified)}
+          unit={`of ${totalUsers}`}
+          supporting={totalVerified === totalUsers ? "All accounts verified" : `${totalUsers - totalVerified} waiting for a code`}
+          loading={isLoading}
+          error={!!loadError}
+        />
       </div>
 
-      {/* Main Content */}
-      <div className="space-y-6">
-        {/* Banner Alert Feedback */}
-        {feedback && (
-          <div
-            className={`flex items-center justify-between p-3 rounded-lg border text-xs ${
-              feedback.type === "success"
-                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                : "border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400"
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              {feedback.type === "success" ? (
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
-              ) : (
-                <AlertCircle className="h-4 w-4 shrink-0" />
-              )}
-              <span>{feedback.message}</span>
+      <ApprovalSettingsCard />
+
+      {/* User Management Section */}
+      <Card className="min-w-0">
+          <CardHeader className="flex flex-col gap-3 space-y-0 border-b p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0 flex-1 space-y-1">
+              <CardTitle className="text-sm font-semibold leading-5">Users and roles</CardTitle>
+              <CardDescription className="text-xs leading-4">
+                Only an administrator can give or remove administrator access.
+              </CardDescription>
             </div>
-            <div className="flex items-center gap-2">
-              {feedback.type === "error" && feedback.message.includes("session expired") && (
-                <Link
-                  href="/login"
-                  className="px-2.5 py-1 rounded bg-red-600 hover:bg-red-700 text-white font-semibold text-xs"
-                >
-                  Log In
-                </Link>
-              )}
-              <button
-                onClick={() => setFeedback(null)}
-                className="text-xs underline hover:opacity-80 cursor-pointer"
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        )}
 
-        {/* Overview Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <Card className="border border-border/80 bg-card/60 backdrop-blur-xs">
-            <CardContent className="p-4 flex items-center justify-between">
-              <div>
-                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Total Users
-                </p>
-                <p className="text-2xl font-bold mt-1 font-mono">{totalUsers}</p>
+            <div className="flex min-w-0 flex-wrap items-center gap-2 lg:shrink-0">
+              <div className="relative w-full sm:w-60">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                <Input
+                  placeholder="Search name or email"
+                  aria-label="Search name or email"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="h-9 pl-8"
+                />
               </div>
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-500">
-                <Users className="h-5 w-5" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border border-border/80 bg-card/60 backdrop-blur-xs">
-            <CardContent className="p-4 flex items-center justify-between">
-              <div>
-                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Administrators
-                </p>
-                <p className="text-2xl font-bold mt-1 font-mono text-emerald-600 dark:text-emerald-400">
-                  {totalAdmins}
-                </p>
-              </div>
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-500">
-                <ShieldCheck className="h-5 w-5" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border border-border/80 bg-card/60 backdrop-blur-xs">
-            <CardContent className="p-4 flex items-center justify-between">
-              <div>
-                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Standard Operators
-                </p>
-                <p className="text-2xl font-bold mt-1 font-mono">{totalOperators}</p>
-              </div>
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-500">
-                <Shield className="h-5 w-5" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border border-border/80 bg-card/60 backdrop-blur-xs">
-            <CardContent className="p-4 flex items-center justify-between">
-              <div>
-                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Verified Accounts
-                </p>
-                <p className="text-2xl font-bold mt-1 font-mono">
-                  {totalVerified} / {totalUsers}
-                </p>
-              </div>
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-500">
-                <UserCheck className="h-5 w-5" />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <FacilityConfigCard />
-        <ApprovalSettingsCard />
-
-        {/* User Management Section */}
-        <Card className="border border-border shadow-sm">
-          <CardHeader className="pb-3 border-b border-border/60">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-              <div>
-                <CardTitle className="text-base font-bold flex items-center gap-2">
-                  <ShieldCheck className="h-5 w-5 text-emerald-500" />
-                  User Authorization & Roles
-                </CardTitle>
-                <CardDescription className="text-xs mt-1">
-                  Manage platform privilege levels. Normal accounts default to standard user; only administrators can grant or revoke administrative access.
-                </CardDescription>
-              </div>
-
-              {/* Search & Filter Toolbar */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="relative w-full sm:w-60">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                  <Input
-                    placeholder="Search name or email..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-8 h-8 text-xs"
-                  />
-                </div>
-
-                <div className="flex items-center rounded-lg border border-border bg-muted/40 p-0.5 text-xs">
-                  <button
-                    onClick={() => setRoleFilter("ALL")}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                      roleFilter === "ALL"
-                        ? "bg-background text-foreground shadow-xs font-semibold"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    All ({users.length})
-                  </button>
-                  <button
-                    onClick={() => setRoleFilter("ROLE_ADMIN")}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                      roleFilter === "ROLE_ADMIN"
-                        ? "bg-background text-foreground shadow-xs font-semibold"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    Admins ({totalAdmins})
-                  </button>
-                  <button
-                    onClick={() => setRoleFilter("ROLE_USER")}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                      roleFilter === "ROLE_USER"
-                        ? "bg-background text-foreground shadow-xs font-semibold"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    Users ({totalOperators})
-                  </button>
-                </div>
+              <div className="flex items-center gap-1">
+                <Segmented
+                  label="Roles to show"
+                  value={roleFilter}
+                  onChange={setRoleFilter}
+                  options={[
+                    { value: "ALL", label: `All (${users.length})` },
+                    { value: "ROLE_ADMIN", label: `Admins (${totalAdmins})` },
+                    { value: "ROLE_USER", label: `Users (${totalOperators})` },
+                  ]}
+                />
+                <Button variant="ghost" size="icon" className="size-9" aria-label="Refresh users" title="Refresh users" disabled={isLoading} onClick={reloadUsers}>
+                  <RefreshCw className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
+                </Button>
               </div>
             </div>
           </CardHeader>
 
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-muted/40 text-muted-foreground border-b border-border uppercase tracking-wider text-[10px]">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-muted/40 text-muted-foreground border-b border-border text-xs">
                   <tr>
-                    <th className="py-3 px-4 font-semibold">User Details</th>
-                    <th className="py-3 px-4 font-semibold">Status</th>
-                    <th className="py-3 px-4 font-semibold">Role Privilege</th>
-                    <th className="py-3 px-4 font-semibold text-right">Actions</th>
+                    <th className="py-3 px-4 font-medium">User Details</th>
+                    <th className="py-3 px-4 font-medium">Status</th>
+                    <th className="py-3 px-4 font-medium">Role Privilege</th>
+                    <th className="py-3 px-4 font-medium text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/60">
@@ -411,7 +318,7 @@ export default function AdminPage() {
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-3">
                               <div
-                                className={`h-8 w-8 rounded-full flex items-center justify-center font-bold text-xs ${
+                                className={`h-8 w-8 rounded-full flex items-center justify-center font-semibold text-xs ${
                                   isAdmin
                                     ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30"
                                     : "bg-muted text-muted-foreground border border-border"
@@ -420,15 +327,15 @@ export default function AdminPage() {
                                 {(u.fullName || u.email)[0].toUpperCase()}
                               </div>
                               <div>
-                                <div className="font-semibold text-foreground flex items-center gap-1.5">
+                                <div className="font-medium text-foreground flex items-center gap-1.5">
                                   {u.fullName || u.email.split("@")[0]}
                                   {isSelf && (
-                                    <span className="text-[10px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 px-1.5 py-0.2 rounded font-mono font-medium">
+                                    <span className="text-xs bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 px-1.5 py-0.2 rounded font-medium">
                                       You
                                     </span>
                                   )}
                                 </div>
-                                <div className="text-[11px] text-muted-foreground font-mono">
+                                <div className="text-xs leading-4 text-muted-foreground">
                                   {u.email}
                                 </div>
                               </div>
@@ -437,12 +344,12 @@ export default function AdminPage() {
 
                           <td className="py-3 px-4">
                             {Boolean(u.isVerified ?? u.verified) ? (
-                              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                              <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
                                 <CheckCircle2 className="h-3.5 w-3.5" />
                                 Verified
                               </span>
                             ) : (
-                              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-500">
+                              <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-500">
                                 <Clock className="h-3.5 w-3.5" />
                                 Pending OTP
                               </span>
@@ -451,12 +358,12 @@ export default function AdminPage() {
 
                           <td className="py-3 px-4">
                             {isAdmin ? (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
                                 <ShieldCheck className="h-3.5 w-3.5" />
                                 ROLE_ADMIN
                               </span>
                             ) : (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-muted text-muted-foreground border border-border">
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-muted text-muted-foreground border border-border">
                                 <Shield className="h-3.5 w-3.5" />
                                 ROLE_USER
                               </span>
@@ -509,7 +416,6 @@ export default function AdminPage() {
             </div>
           </CardContent>
         </Card>
-      </div>
     </div>
   )
 }

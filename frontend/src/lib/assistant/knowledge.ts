@@ -26,7 +26,7 @@ GACS helps a data center run flexible compute work when electricity is cheaper. 
 All times in the app are ERCOT market local time (Central, America/Chicago), labelled CT. The header shows the zone in effect: CST (UTC-6) in winter, CDT (UTC-5) in summer. The Audit page is the exception: it shows timestamps in UTC.
 
 # Navigation
-The menu on the left has Home, Jobs, Approvals, Schedule, Price Forecast and Audit. Admins also see Admin. The bell at the top shows data-freshness notifications, which can be marked as read. The help button at the top reopens the welcome guide.
+The menu on the left has Home, Jobs, Approvals, Schedule, Price Forecast and Audit. Admins also see Admin. The bell at the top shows data-freshness notifications, which can be marked as read. The help button at the top reopens the welcome guide. The gear icon at the bottom of the menu, next to log out, opens Settings: change your **Full name**, set a new password with a code sent to your email (**Send code**, then **Update password**; you then sign in again), choose **Light**, **Dark** or **System** appearance for this device, **Restart tour**, and **Sign out**.
 
 # Home
 Shows the price now (compared with the 24-hour average), scheduled use against the facility's capacity (worked out from approved plans; measured use needs execution data, and it warns when scheduled use is over capacity), plans that need your approval, the 72-hour price forecast (the same card as on Price Forecast, with a Details link there), upcoming jobs, and the status of the price data.

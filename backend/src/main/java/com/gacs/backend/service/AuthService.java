@@ -369,6 +369,17 @@ public class AuthService {
         return new UserDto(user);
     }
 
+    /**
+     * Updates the current user's full name.
+     */
+    @Transactional
+    public UserDto updateFullName(String email, String fullName) {
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new IllegalArgumentException("User account not found."));
+        user.setFullName(fullName.trim());
+        return new UserDto(userRepository.save(user));
+    }
+
     private void addRefreshTokenCookie(HttpServletResponse response, String refreshToken, long maxAgeSeconds) {
         boolean secure = cookieSecure || "None".equalsIgnoreCase(cookieSameSite);
         ResponseCookie cookie = ResponseCookie.from("refreshToken", refreshToken)
