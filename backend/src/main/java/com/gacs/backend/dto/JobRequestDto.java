@@ -72,6 +72,10 @@ public class JobRequestDto {
     @Size(max = 1000, message = "rawConstraints must not exceed 1000 characters")
     private String rawConstraints;
 
+    @Schema(description = "Confirmed PRECEDENCE, DEPENDENCY or MUTUAL_EXCLUSION relationships. Omitted/null preserves existing rules; [] clears them.")
+    @Size(max = 25, message = "At most 25 pair constraints may be attached to a job")
+    private java.util.List<com.gacs.backend.model.JobConstraint> pairConstraints;
+
     @Schema(description = "Actual caller-supplied parser timestamp in UTC ISO-8601; omitted on update preserves it, null clears it", example = "2026-10-20T09:30:00")
     private LocalDateTime parsedAt;
 
