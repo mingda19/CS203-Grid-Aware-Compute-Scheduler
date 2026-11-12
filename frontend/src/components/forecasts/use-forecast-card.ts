@@ -73,7 +73,8 @@ export function useForecastCard(zone: string | null, pageModel?: ForecastModel) 
   const to = nowMs + FORECAST_HOURS * HOUR_MS
   const historyPoints = history.data?.points
   const forecastPoints = forecast.data?.points
-  const pastPoints = showPast ? past.data?.points : undefined
+  // Old data stays while a new model loads, so check the model to keep the other model's line off the chart.
+  const pastPoints = showPast && past.data?.modelKind === model ? past.data.points : undefined
   const rows = React.useMemo(
     () => buildForecastRows(historyPoints ?? [], forecastPoints ?? [], from, to, pastPoints),
     [historyPoints, forecastPoints, from, to, pastPoints],
