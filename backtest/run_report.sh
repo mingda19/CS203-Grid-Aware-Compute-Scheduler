@@ -27,9 +27,11 @@ echo "== 1/4 features, forecasts, prices"
 run() { # run <runId> [extra -D settings...]
     local id="$1"; shift
     echo "== backtest $id"
+    rm -rf "${OUT:?}/$id"   # run ids are fixed: a failed run must not pass on the previous run's files
     (cd backend && ./mvnw -q test -Dtest=BacktestRun -Dsurefire.failIfNoSpecifiedTests=false -Dbacktest.run=true \
         -Dbacktest.dataDir="$DATA" -Dbacktest.outDir="$OUT" -Dbacktest.runId="$id" \
-        -Dbacktest.from="$FROM" -Dbacktest.to="$TO" "$@") | grep -E "^Backtest |^  " || true
+        -Dbacktest.from="$FROM" -Dbacktest.to="$TO" "$@") | { grep -E "^Backtest |^  |^\[ERROR\]" || true; } \
+        || { echo "run $id failed" >&2; exit 1; }   # pipefail: this is mvn's exit status, grep's is swallowed
     test -f "$OUT/$id/metrics.json" || { echo "run $id failed" >&2; exit 1; }
 }
 
