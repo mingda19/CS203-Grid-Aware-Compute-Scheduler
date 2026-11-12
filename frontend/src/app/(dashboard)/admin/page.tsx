@@ -28,6 +28,11 @@ export default function AdminPage() {
   // The row and the action that is running, so only the clicked button shows a spinner.
   const [actionLoading, setActionLoading] = React.useState<{ id: number; kind: "role" | "ban" } | null>(null)
   const [feedback, setFeedback] = React.useState<{ type: "success" | "error"; message: string } | null>(null)
+  const feedbackRef = React.useRef<HTMLDivElement>(null)
+  // The message sits above the table, so bring it into view when a row action reports back.
+  React.useEffect(() => {
+    if (feedback) feedbackRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+  }, [feedback])
   const [loadError, setLoadError] = React.useState("")
 
   // Resolve administrator access from the authenticated API response.
@@ -123,15 +128,14 @@ export default function AdminPage() {
 
     try {
       const response = await adminApi.setUserBanned(targetUser.id, ban)
-      if (response.data) {
-        setUsers((prev) =>
-          prev.map((u) => (u.id === targetUser.id ? response.data! : u))
-        )
-        setFeedback({
-          type: "success",
-          message: ban ? `${name} is banned. They cannot log in.` : `${name} is unbanned. They can log in again.`,
-        })
-      }
+      const updated = response.data
+      // An older backend without ban support answers without the flag; say so instead of doing nothing.
+      if (updated?.banned !== ban) throw new Error("The server did not save the change. It may not support banning yet.")
+      setUsers((prev) => prev.map((u) => (u.id === targetUser.id ? updated : u)))
+      setFeedback({
+        type: "success",
+        message: ban ? `${name} is banned. They cannot log in.` : `${name} is unbanned. They can log in again.`,
+      })
     } catch (err: unknown) {
       setFeedback({
         type: "error",
@@ -223,6 +227,7 @@ export default function AdminPage() {
 
       {feedback && (
         <Alert
+          ref={feedbackRef}
           variant={feedback.type === "success" ? "success" : "destructive"}
           role={feedback.type === "success" ? "status" : "alert"}
           className="flex items-center justify-between gap-3"
