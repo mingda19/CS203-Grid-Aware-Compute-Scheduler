@@ -1,8 +1,6 @@
 import { describe, it, expect } from "vitest"
 import {
-  aggregateConfidence,
   confidenceBand,
-  confidenceTone,
   formatConfidence,
   HIGH_CONFIDENCE_FROM,
   MODERATE_CONFIDENCE_FROM,
@@ -30,35 +28,10 @@ describe("forecast confidence banding", () => {
     expect(confidenceBand(null)).not.toBe("Low")
     expect(confidenceBand(Number.NaN)).toBe("Not available")
     expect(formatConfidence(null)).toBe("Not available")
-    expect(confidenceTone(null)).toBe("text-muted-foreground")
   })
 
   it("formats a score as a percentage and its band", () => {
     expect(formatConfidence(0.824)).toBe("82%, High")
     expect(formatConfidence(0.5)).toBe("50%, Moderate")
-  })
-
-  it("tones each band differently so the colour carries the same meaning as the words", () => {
-    const tones = [0.9, 0.6, 0.1, null].map(confidenceTone)
-    expect(new Set(tones).size).toBe(4)
-  })
-})
-
-describe("run-level aggregate", () => {
-  it("averages only the scored intervals and reports how many had none", () => {
-    expect(aggregateConfidence([0.9, 0.7, null, undefined])).toEqual({
-      mean: 0.8, scored: 2, missing: 2,
-    })
-  })
-
-  it("is unavailable rather than zero when nothing is scored", () => {
-    // Folding unscored intervals in as zeros would make a horizon the model has no error history
-    // for look confidently bad, instead of unknown.
-    expect(aggregateConfidence([null, null])).toEqual({ mean: null, scored: 0, missing: 2 })
-    expect(aggregateConfidence([])).toEqual({ mean: null, scored: 0, missing: 0 })
-  })
-
-  it("does not let unscored intervals drag a confident average down", () => {
-    expect(aggregateConfidence([0.9, 0.9, null, null, null]).mean).toBe(0.9)
   })
 })

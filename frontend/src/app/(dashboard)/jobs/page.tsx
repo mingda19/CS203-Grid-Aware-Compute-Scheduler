@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useRouter, useSearchParams } from "next/navigation"
-import { Clock, Ellipsis, Lock, LockOpen, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react"
+import { CalendarSync, Clock, Ellipsis, Loader2, Lock, LockOpen, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react"
 import {
   jobsApi,
   priceApi,
@@ -37,6 +37,8 @@ import {
 } from "@/components/ui/dialog"
 import { EstimatedPriceBadge } from "@/components/ui/estimated-price-badge"
 import { ConstraintParseReview } from "@/components/jobs/ConstraintParseReview"
+import { confirmedPairConstraints } from "@/lib/constraint-review"
+import { CONSTRAINT_LABELS } from "@/lib/constraint-confirmation"
 import { BLOCKED_NUMBER_KEYS, JOB_TEMPLATES, effectiveFlexHours, forecastEndMs, maxJobHours, usesEstimatedPrices, type ScheduleMode, toInputDate, toApiUtcDate, windowHours } from "@/lib/job-form-utils"
 import { canRecompute, isPlanning, jobStatus } from "@/lib/job-status"
 import { StatusBadge } from "@/components/ui/status-badge"
@@ -56,6 +58,7 @@ type FormState = {
   rawConstraints?: string | null
   parsedAt?: string | null
   confirmationOutcome?: ComputeJobPayload["confirmationOutcome"]
+  pairConstraints: NonNullable<ComputeJobPayload["pairConstraints"]>
 }
 
 const blankForm = (): FormState => ({
@@ -69,6 +72,7 @@ const blankForm = (): FormState => ({
   scheduleMode: "flexible",
   priority: "NORMAL",
   workloadCategory: "ML_TRAINING",
+  pairConstraints: [],
 })
 
 // The column headers and detail labels name the zone, so values leave it off.
@@ -235,6 +239,7 @@ export default function JobsPage() {
       rawConstraints: job.rawConstraints,
       parsedAt: job.parsedAt,
       confirmationOutcome: job.confirmationOutcome,
+      pairConstraints: job.pairConstraints ?? [],
     })
     setFormOpen(true)
   }
@@ -311,6 +316,7 @@ export default function JobsPage() {
       rawConstraints: form.rawConstraints,
       parsedAt: form.parsedAt,
       confirmationOutcome: form.confirmationOutcome,
+      pairConstraints: form.pairConstraints,
     }
     // Ask once when the save newly pushes the window past the forecast (an edit that already was past it stays quiet).
     if (usesEstimatedPrices(payload.deadline, forecastEnd) && !(editing && usesEstimatedPrices(editing.deadline, forecastEnd))) {
@@ -421,7 +427,13 @@ export default function JobsPage() {
     try {
       const response = await jobsApi.recompute()
       const failed = response.data?.failed ?? 0
-      if (failed > 0) setError(`${failed} ${failed === 1 ? "job" : "jobs"} could not be planned. Open ${failed === 1 ? "it" : "them"} to see why.`)
+      if (failed > 0) {
+        const ids = response.data?.failedJobIds ?? []
+        const subject = ids.length
+          ? `${ids.length === 1 ? "Job" : "Jobs"} ${ids.map(id => `#${id}`).join(", ")}`
+          : `${failed} ${failed === 1 ? "job" : "jobs"}`
+        setError(`${subject} could not be planned. Open ${failed === 1 ? "the job" : "these jobs"} to see why.`)
+      }
       await refreshJobs()
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not plan your jobs")
@@ -438,6 +450,20 @@ export default function JobsPage() {
       <h1 className="sr-only">Jobs</h1>
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div className="flex items-center gap-2">
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="mr-2 size-4" />
+            New job
+          </Button>
+          {/* The system plans new jobs by itself. This is the manual fallback. */}
+          {canRecompute(ownJobs) && (
+            <Button variant="outline" size="sm" onClick={() => void recompute()} disabled={recomputing || loading}>
+              {recomputing ? <Loader2 className="mr-2 size-4 animate-spin" /> : <CalendarSync className="mr-2 size-4" />}
+              {recomputing ? "Planning…" : "Recompute"}
+            </Button>
+          )}
+        </div>
+        {/* View controls on the right: which jobs to show, and Refresh. */}
+        <div className="flex items-center gap-2">
           {isAdmin && (
             <Segmented
               label="Jobs to show"
@@ -446,21 +472,8 @@ export default function JobsPage() {
               onChange={(value) => { if (value !== scope) { setScope(value); setSelectedIds(new Set()); setLoading(true) } }}
             />
           )}
-        </div>
-        <div className="flex items-center gap-2">
-          {/* The system plans new jobs by itself. This is the manual fallback. */}
-          {canRecompute(ownJobs) && (
-            <Button variant="outline" size="sm" onClick={() => void recompute()} disabled={recomputing || loading}>
-              <RefreshCw className={`mr-2 size-4 ${recomputing ? "animate-spin" : ""}`} />
-              {recomputing ? "Planning…" : "Recompute"}
-            </Button>
-          )}
           <Button variant="ghost" size="icon" className="size-9" aria-label="Refresh jobs" title="Refresh jobs" onClick={() => void refreshClick()} disabled={refreshing || loading}>
             <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
-          </Button>
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="mr-2 size-4" />
-            New job
           </Button>
         </div>
       </div>
@@ -750,6 +763,7 @@ export default function JobsPage() {
               </fieldset>
             </div>
             {formOpen && <ConstraintParseReview
+              editingJobId={editing?.id}
               draft={{
                 originalStartTime: form.originalStartTime ? toApiUtcDate(form.originalStartTime, true) : null,
                 deadline: form.deadline ? toApiUtcDate(form.deadline) : null,
@@ -768,12 +782,20 @@ export default function JobsPage() {
                   scheduleMode: (result.fields.isExempt ?? current.scheduleMode === "locked") ? "locked" : "flexible",
                   priority: result.fields.priority ?? current.priority,
                   rawConstraints,
+                  pairConstraints: confirmedPairConstraints(result.suggestions ?? []),
                   parsedAt: result.parsedAt,
                   confirmationOutcome: "CONFIRMED",
                 }))
                 setError("")
               }}
             />}
+            {form.pairConstraints.length > 0 && <div className="space-y-2 text-sm">
+              <p className="font-medium">Job relationships to save</p>
+              {form.pairConstraints.map((rule, index) => <div key={`${rule.type}-${rule.referencedJobId}`} className="flex items-center justify-between gap-2">
+                <span>{CONSTRAINT_LABELS[rule.type]}: {jobs.find(job => job.id === rule.referencedJobId)?.name ?? `job #${rule.referencedJobId}`}</span>
+                <Button type="button" variant="ghost" onClick={() => setForm(current => ({ ...current, pairConstraints: current.pairConstraints.filter((_, i) => i !== index) }))}>Remove</Button>
+              </div>)}
+            </div>}
             {error && <p role="alert" className="my-4 text-sm text-destructive">{error}</p>}
             <DialogFooter className="mt-6">
               <Button type="button" variant="outline" onClick={() => setFormOpen(false)}>
@@ -830,6 +852,8 @@ export default function JobsPage() {
                 <Detail label="Priority" value={PRIORITY_LABELS[viewing.priority ?? "NORMAL"]} />
                 <Detail label="Job type" value={WORKLOAD_CATEGORY_LABELS[viewing.workloadCategory ?? "ML_TRAINING"]} />
                 <Detail label="Scheduling" value={viewing.isExempt ? "Locked" : "Flexible"} />
+                {(viewing.pairConstraints ?? []).map(rule => <Detail key={`${rule.type}-${rule.referencedJobId}`}
+                  label="Relationship" value={`${CONSTRAINT_LABELS[rule.type]}: ${jobs.find(job => job.id === rule.referencedJobId)?.name ?? `job #${rule.referencedJobId}`}`} />)}
                 {viewing.approvedRunId && <Detail label="Plan" value="Approved" />}
                 <Detail label="Job ID" value={String(viewing.id)} mono />
               </dl>

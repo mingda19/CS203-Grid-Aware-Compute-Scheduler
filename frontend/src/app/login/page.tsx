@@ -1,31 +1,20 @@
 "use client"
 
 import * as React from "react"
+import Image from "next/image"
 import { useRouter } from "next/navigation"
-import {
-  Lock,
-  Mail,
-  User as UserIcon,
-  ArrowRight,
-  CheckCircle,
-  AlertCircle,
-  KeyRound,
-  RotateCcw,
-  ArrowLeft,
-  Eye,
-  EyeOff,
-} from "lucide-react"
+import { AlertCircle, CheckCircle2, Eye, EyeOff, Loader2 } from "lucide-react"
 
+import { Alert } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Checkbox } from "@/components/ui/checkbox"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { authApi, getStoredUser, setStoredUser, removeStoredUser } from "@/lib/api"
 
 import { PASSWORD_HINT, passwordError } from "@/lib/password-policy"
 import { Intro } from "./intro"
-import { LoginBackdrop } from "./backdrop"
 import { GacsLogo } from "./gacs-logo"
 
 const INTRO_SEEN_KEY = "gacs_intro_seen"
@@ -33,26 +22,27 @@ const INTRO_SEEN_KEY = "gacs_intro_seen"
 type AuthMode = "login" | "register" | "verify-otp" | "forgot-password" | "reset-password"
 
 const OTP_LENGTH = 6
-const TICK_MS = 500 // how long the success tick shows before moving on
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+const INVALID = "aria-invalid:border-destructive aria-invalid:focus-visible:ring-destructive"
 
-/** Self-drawing check mark; styles live in globals.css. */
-function AnimatedTick({ className }: { className?: string }) {
+/** A visible label above its control; `action` sits at the right of the label row. */
+function Field({ id, label, action, children }: { id: string; label: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round"
-      aria-hidden="true" className={`animate-tick-pop ${className ?? ""}`}>
-      <path d="M5 12.5l4.5 4.5L19 7.5" pathLength={1} className="animate-tick-draw" />
-    </svg>
+    <div className="space-y-2">
+      <div className="flex min-h-5 items-center justify-between gap-2">
+        <Label htmlFor={id}>{label}</Label>
+        {action}
+      </div>
+      {children}
+    </div>
   )
 }
 
-/** Password input with a leading lock icon and its own show/hide toggle. */
-function PasswordField({ id, placeholder, value, onChange, autoComplete, minLength, maxLength, invalid, describedBy }: {
+/** Password input with its own show/hide toggle. */
+function PasswordField({ id, autoComplete, value, onChange, minLength, maxLength, invalid, describedBy }: {
   id: string
-  placeholder: string
+  autoComplete: string
   value: string
   onChange: (next: string) => void
-  autoComplete: string
   minLength?: number
   maxLength?: number
   invalid?: boolean
@@ -61,12 +51,9 @@ function PasswordField({ id, placeholder, value, onChange, autoComplete, minLeng
   const [visible, setVisible] = React.useState(false)
   return (
     <div className="relative">
-      <Lock className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground pointer-events-none" />
       <Input
         id={id}
         type={visible ? "text" : "password"}
-        aria-label={placeholder}
-        placeholder={placeholder}
         autoComplete={autoComplete}
         minLength={minLength}
         maxLength={maxLength}
@@ -75,16 +62,19 @@ function PasswordField({ id, placeholder, value, onChange, autoComplete, minLeng
         value={value}
         onChange={(e) => onChange(e.target.value)}
         required
-        className={`pl-12 pr-12 h-12 text-base ${invalid ? "border-red-500/60 focus-visible:ring-red-500" : ""}`}
+        className={`pr-10 ${INVALID}`}
       />
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="icon"
         onClick={() => setVisible((prev) => !prev)}
         aria-label={visible ? "Hide password" : "Show password"}
-        className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+        title={visible ? "Hide password" : "Show password"}
+        className="absolute right-0 top-0"
       >
-        {visible ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-      </button>
+        {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+      </Button>
     </div>
   )
 }
@@ -149,7 +139,7 @@ function OtpInput({ value, onChange, onComplete, disabled }: {
             const pasted = e.clipboardData.getData("text").replace(/\D/g, "")
             if (pasted) commit(pasted, pasted.length)
           }}
-          className="h-14 min-w-0 px-0 text-center font-mono text-2xl font-semibold tabular-nums"
+          className="h-12 min-w-0 px-0 text-center text-lg font-medium tabular-nums"
         />
       ))}
     </div>
@@ -174,24 +164,6 @@ export default function LoginPage() {
   const [successMessage, setSuccessMessage] = React.useState<string | null>(null)
   const [resendCooldown, setResendCooldown] = React.useState(0)
   const [showIntro, setShowIntro] = React.useState(false)
-  const [showTick, setShowTick] = React.useState(false)
-  const cardRef = React.useRef<HTMLDivElement>(null)
-
-  // Shake the card whenever a new error appears (skipped for reduced-motion users).
-  React.useEffect(() => {
-    if (!errorMessage || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return
-    cardRef.current?.animate?.(
-      [
-        { transform: "translateX(0)" },
-        { transform: "translateX(-10px)" },
-        { transform: "translateX(9px)" },
-        { transform: "translateX(-6px)" },
-        { transform: "translateX(4px)" },
-        { transform: "translateX(0)" },
-      ],
-      { duration: 420, easing: "ease-in-out" },
-    )
-  }, [errorMessage])
 
   // Layout effect so first-time visitors get the intro before the form paints.
   React.useLayoutEffect(() => {
@@ -236,7 +208,7 @@ export default function LoginPage() {
       const response = await authApi.login({ email, password, rememberMe })
 
       if (response.requiresOtp) {
-        setSuccessMessage("Account verification required. A new OTP has been sent to your email.")
+        setSuccessMessage("Account verification required. A new code has been sent to your email.")
         setMode("verify-otp")
         setResendCooldown(60)
         return
@@ -244,11 +216,9 @@ export default function LoginPage() {
 
       if (!response.success || !response.user) throw new Error(response.message || "Sign-in failed. Please try again.")
       setStoredUser(response.user, response.refreshExpiresIn)
-      setShowTick(true) // stays on until the redirect unmounts the page
-      await sleep(TICK_MS)
       router.replace("/")
     } catch (err: unknown) {
-      setErrorMessage((err instanceof Error ? err.message : "") || "Invalid work email or password.")
+      setErrorMessage((err instanceof Error ? err.message : "") || "Invalid email or password.")
     } finally {
       setIsLoading(false)
     }
@@ -272,9 +242,6 @@ export default function LoginPage() {
       })
 
       if (!response.success) throw new Error(response.message || "Registration failed")
-      setShowTick(true)
-      await sleep(TICK_MS)
-      setShowTick(false)
       setSuccessMessage(response.message || "Verification code sent to your email. Enter it below.")
       setMode("verify-otp")
       setResendCooldown(60)
@@ -296,9 +263,6 @@ export default function LoginPage() {
       const response = await authApi.verifyOtp({ email, otp: code })
       if (!response.success) throw new Error(response.message || "Verification failed")
 
-      setShowTick(true)
-      await sleep(TICK_MS)
-      setShowTick(false)
 
       setSuccessMessage("Account verified successfully! Please sign in with your password.")
       setOtpCode("")
@@ -307,7 +271,7 @@ export default function LoginPage() {
       setConfirmPassword("")
     } catch (err: unknown) {
       setOtpCode("") // clear the boxes so the user can retype
-      setErrorMessage((err instanceof Error ? err.message : "") || "Invalid or expired OTP code.")
+      setErrorMessage((err instanceof Error ? err.message : "") || "Invalid or expired code.")
     } finally {
       setIsLoading(false)
     }
@@ -325,7 +289,7 @@ export default function LoginPage() {
       setSuccessMessage("A new code has been sent to your email.")
       setResendCooldown(60)
     } catch (err: unknown) {
-      setErrorMessage((err instanceof Error ? err.message : "") || "Failed to resend OTP. Please try again.")
+      setErrorMessage((err instanceof Error ? err.message : "") || "Failed to resend code. Please try again.")
     } finally {
       setIsLoading(false)
     }
@@ -374,18 +338,10 @@ export default function LoginPage() {
   // Register / reset: flag a mismatch as soon as the user has started typing the confirmation.
   const passwordsMismatch = confirmPassword.length > 0 && password !== confirmPassword
   const mismatchNote = passwordsMismatch ? (
-    <p id="confirm-password-error" role="alert" className="text-xs text-red-600 dark:text-red-400">
+    <p id="confirm-password-error" role="alert" className="text-xs text-destructive-foreground">
       Passwords do not match.
     </p>
   ) : null
-
-  // Logo + heading shared by every auth screen.
-  const brandTitle = (text: string) => (
-    <span className="flex items-center gap-2.5">
-      <GacsLogo className="h-11 w-11 shrink-0 text-emerald-500" />
-      <span className="text-2xl font-extrabold tracking-tight">{text}</span>
-    </span>
-  )
 
   const goToLogin = () => {
     setOtpCode("")
@@ -397,423 +353,224 @@ export default function LoginPage() {
     setSuccessMessage(null)
   }
 
-  const submitButtonClass =
-    "w-full h-14 font-bold text-base shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer"
-  const spinner = <span className="h-5 w-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+  const openMode = (next: AuthMode) => {
+    setMode(next)
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setPassword("")
+    setConfirmPassword("")
+    setRecoveryCode("")
+  }
+
+  /** Full-width submit button; shows a spinner and `pending` text while a request runs. */
+  const submit = (label: string, pending: string, disabled = false) => (
+    <Button type="submit" className="w-full" disabled={isLoading || disabled}>
+      {isLoading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />{pending}</>) : label}
+    </Button>
+  )
+
+  const backToSignIn = (
+    <Button type="button" variant="link" className="h-auto p-0 text-sm" disabled={isLoading} onClick={goToLogin}>
+      Back to sign in
+    </Button>
+  )
+
+  const titles: Record<AuthMode, [string, string]> = {
+    login: ["Sign in", ""],
+    register: ["Create account", "Use your work email. We’ll send a code to confirm it."],
+    "verify-otp": ["Check your email", `We sent a 6-digit code to ${email}.`],
+    "forgot-password": ["Reset your password", "Enter your account email to request a recovery code."],
+    "reset-password": ["Set a new password", `Paste the recovery code emailed to ${email}. It expires in 10 minutes.`],
+  }
+  const [title, description] = titles[mode]
 
   return (
-    <div className="relative min-h-screen flex items-center justify-center p-4 bg-background selection:bg-emerald-500 selection:text-white overflow-hidden">
-      <LoginBackdrop />
-
-      <div className="relative z-10 w-full max-w-md space-y-5">
-        {/* Environment badge, styled like the pill on the intro end card */}
-        <div className="text-center">
-          <div className="inline-flex items-center gap-2.5 rounded-full border border-emerald-500/40 bg-emerald-500/5 px-4 py-1.5 text-[11px] font-mono font-semibold tracking-[0.2em] text-emerald-600 dark:text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.15)]">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span>GRID-AWARE COMPUTE SCHEDULER</span>
+    <div className="grid min-h-screen bg-background lg:grid-cols-[minmax(0,1fr)_32rem]">
+      {/* #f1f8f8 is the image's own sky and #0e1313 its ground band (BAND in references/extract_login_layers.py): the picture sits in the vertical middle, the ground fill continues below it. */}
+      <div className="relative hidden overflow-hidden border-r border-border bg-[#f1f8f8] lg:block" aria-hidden="true">
+        <div className="absolute inset-x-0 bottom-0 h-1/2 bg-[#0e1313]" />
+        {/* One box with the image's shape, 2% wider than the panel so the cut-off cable end at its top-right corner falls outside it, so both layers stay aligned at every width. Its background turns dark where the picture is solid ground, so no sky shows at the subpixel bottom edge. */}
+        <div className="absolute inset-x-[-1%] top-1/2 aspect-[1024/765] -translate-y-1/2 overflow-hidden bg-[linear-gradient(#f1f8f8_80%,#0e1313_80%)]">
+          {/* eslint-disable-next-line @next/next/no-img-element -- SVG, nothing for next/image to optimise */}
+          <img src="/login/design3-sun.svg" alt="" className="absolute" style={{ left: "52.051%", top: "55.948%", width: "25.547%" }} />
+          <Image src="/login/design3-front.png" alt="" fill sizes="(min-width: 1024px) 66vw, 0px" />
+        </div>
+      </div>
+      <div className="flex items-center justify-center p-4">
+      <div className="w-full max-w-sm space-y-6">
+        {/* Brand lockup, same layout as the sidebar header */}
+        <div className="flex items-center justify-center gap-3">
+          <GacsLogo className="h-10 w-10 shrink-0" />
+          <div className="flex min-w-0 flex-col">
+            <span className="text-xl font-semibold leading-none">GACS</span>
+            <span className="mt-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">Grid-Aware Compute Scheduler</span>
           </div>
         </div>
 
-        {/* Auth Card. Concentric corners: inner radius = outer radius (--card-r) - padding (--card-p). */}
-        <Card
-          ref={cardRef}
-          style={{ "--card-r": "2rem", "--card-p": "1.5rem", "--inner-r": "calc(var(--card-r) - var(--card-p))" } as React.CSSProperties}
-          className="rounded-[var(--card-r)] border border-border/80 bg-card/90 backdrop-blur-xl shadow-2xl [&_input]:rounded-[var(--inner-r)] [&_button[type=submit]]:rounded-[var(--inner-r)]"
-        >
-          <CardHeader className="space-y-2 pb-4">
-            <div className="flex items-center justify-between pt-1">
-              <CardTitle className="text-base font-bold text-foreground">
-                {mode === "login" && brandTitle("Sign in to GACS")}
-                {mode === "register" && brandTitle("Create an Account")}
-                {mode === "verify-otp" && brandTitle("Verify Email with OTP")}
-                {mode === "forgot-password" && brandTitle("Forgot password?")}
-                {mode === "reset-password" && brandTitle("Set a new password")}
-              </CardTitle>
-              {mode !== "login" && (
-                <button
-                  type="button"
-                  disabled={isLoading}
-                  onClick={goToLogin}
-                  className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 cursor-pointer"
-                >
-                  <ArrowLeft className="h-3 w-3" /> Back
-                </button>
-              )}
-            </div>
-            {(mode === "forgot-password" || mode === "reset-password") && (
-              <CardDescription className="text-sm">
-                {mode === "forgot-password" && "Enter your account email to request a recovery code."}
-                {mode === "reset-password" && `Paste the recovery code emailed to ${email}. It expires in 10 minutes.`}
-              </CardDescription>
-            )}
+        <Card>
+          <CardHeader className="space-y-1">
+            <CardTitle className="text-lg font-semibold">{title}</CardTitle>
+            {description && <CardDescription className="break-words">{description}</CardDescription>}
           </CardHeader>
 
-          <CardContent className="space-y-4 pt-1">
-            {/* Accessible Feedback Banners */}
+          <CardContent className="space-y-4">
             {errorMessage && (
-              <div
-                role="alert"
-                aria-live="assertive"
-                className="flex items-start gap-2 p-3 text-xs rounded-[var(--inner-r)] border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400"
-              >
-                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                <span className="leading-tight">{errorMessage}</span>
-              </div>
+              <Alert variant="destructive" aria-live="assertive">
+                <AlertCircle className="h-4 w-4" />
+                <div className="text-sm">{errorMessage}</div>
+              </Alert>
             )}
-
             {successMessage && (
-              <div
-                role="status"
-                aria-live="polite"
-                className="flex items-start gap-2 p-3 text-xs rounded-[var(--inner-r)] border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-              >
-                <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                <span className="leading-tight">{successMessage}</span>
-              </div>
+              <Alert variant="success" role="status" aria-live="polite">
+                <CheckCircle2 className="h-4 w-4" />
+                <div className="text-sm">{successMessage}</div>
+              </Alert>
             )}
 
-            {/* MODE: STANDARD SIGN-IN FORM */}
             {mode === "login" && (
               <form onSubmit={handleLogin} className="space-y-4">
-                <div className="relative">
-                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground pointer-events-none" />
-                  <Input
-                    id="login-email"
-                    type="email"
-                    aria-label="Work email"
-                    placeholder="Work email"
-                    autoComplete="username"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                    className="pl-12 h-12 text-base"
-                  />
+                <Field id="login-email" label="Email">
+                  <Input id="login-email" type="email" placeholder="name@company.com" autoComplete="username"
+                    value={email} onChange={(e) => setEmail(e.target.value)} required />
+                </Field>
+
+                <Field
+                  id="login-password"
+                  label="Password"
+                  action={
+                    <Button type="button" variant="link" className="h-auto p-0 text-xs" onClick={() => openMode("forgot-password")}>
+                      Forgot password?
+                    </Button>
+                  }
+                >
+                  <PasswordField id="login-password" autoComplete="current-password" value={password} onChange={setPassword} />
+                </Field>
+
+                <div className="flex items-center gap-2">
+                  <Checkbox id="remember-me" checked={rememberMe} onCheckedChange={(checked) => setRememberMe(Boolean(checked))} />
+                  <Label htmlFor="remember-me" className="text-sm font-normal">Keep me signed in</Label>
                 </div>
 
-                <div className="pt-1">
-                  <PasswordField
-                    id="login-password"
-                    placeholder="Password"
-                    autoComplete="current-password"
-                    value={password}
-                    onChange={setPassword}
-                  />
-                </div>
+                {submit("Sign in", "Signing in…")}
 
-                <div className="flex items-center justify-between py-0.5">
-                  <div className="flex items-center space-x-2">
-                    <Checkbox
-                      id="remember-me"
-                      checked={rememberMe}
-                      onCheckedChange={(checked) => setRememberMe(Boolean(checked))}
-                    />
-                    <Label
-                      htmlFor="remember-me"
-                      className="text-sm font-medium cursor-pointer text-muted-foreground hover:text-foreground select-none"
-                    >
-                      Remember this workstation
-                    </Label>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMode("forgot-password")
-                      setErrorMessage(null)
-                      setSuccessMessage(null)
-                      setPassword("")
-                      setConfirmPassword("")
-                      setRecoveryCode("")
-                    }}
-                    className="text-sm text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
-                  >
-                    Forgot password?
-                  </button>
-                </div>
-
-                <Button type="submit" className={`${submitButtonClass} mt-1`} disabled={isLoading || showTick}>
-                  {showTick ? (
-                    <>
-                      <AnimatedTick className="h-7 w-7" />
-                      <span className="sr-only">Signed in</span>
-                    </>
-                  ) : isLoading ? (
-                    <span className="flex items-center gap-2">
-                      {spinner}
-                      Verifying session...
-                    </span>
-                  ) : (
-                    <>
-                      <span>Log in</span>
-                      <ArrowRight className="h-5 w-5" />
-                    </>
-                  )}
-                </Button>
-
-                <div className="text-center pt-1.5">
-                  <p className="text-sm text-muted-foreground">
-                    Need new credentials?{" "}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMode("register")
-                        setErrorMessage(null)
-                        setSuccessMessage(null)
-                      }}
-                      className="text-emerald-600 dark:text-emerald-400 font-semibold hover:underline cursor-pointer"
-                    >
-                      Register with OTP
-                    </button>
-                  </p>
-                </div>
+                <p className="text-center text-sm text-muted-foreground">
+                  No account?{" "}
+                  <Button type="button" variant="link" className="h-auto p-0 text-sm" onClick={() => openMode("register")}>
+                    Create one
+                  </Button>
+                </p>
               </form>
             )}
 
-            {/* MODE: FORGOT PASSWORD */}
             {mode === "forgot-password" && (
-              <form onSubmit={(event) => { event.preventDefault(); void requestRecovery() }} className="space-y-5">
-                <div className="relative">
-                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground pointer-events-none" />
-                  <Input id="recovery-email" type="email" aria-label="Account email" placeholder="Account email"
-                    autoComplete="email" required autoFocus
-                    value={email} onChange={(event) => setEmail(event.target.value)} disabled={isLoading}
-                    className="pl-12 h-12 text-base" />
-                </div>
-                <Button type="submit" className={submitButtonClass} disabled={isLoading}>
-                  {isLoading ? (
-                    <span className="flex items-center gap-2">
-                      {spinner}
-                      Sending...
-                    </span>
-                  ) : (
-                    <>
-                      <span>Send recovery code</span>
-                      <ArrowRight className="h-5 w-5" />
-                    </>
-                  )}
-                </Button>
+              <form onSubmit={(event) => { event.preventDefault(); void requestRecovery() }} className="space-y-4">
+                <Field id="recovery-email" label="Email">
+                  <Input id="recovery-email" type="email" placeholder="name@company.com" autoComplete="email" required autoFocus
+                    value={email} onChange={(event) => setEmail(event.target.value)} disabled={isLoading} />
+                </Field>
+                {submit("Send recovery code", "Sending…")}
+                <div className="text-center">{backToSignIn}</div>
               </form>
             )}
 
-            {/* MODE: RESET PASSWORD */}
             {mode === "reset-password" && (
-              <form onSubmit={handleResetPassword} className="space-y-5">
-                <div className="relative">
-                  <KeyRound className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground pointer-events-none" />
-                  <Input id="recovery-code" aria-label="Recovery code" placeholder="Recovery code"
-                    autoComplete="one-time-code" autoCapitalize="none" spellCheck={false}
+              <form onSubmit={handleResetPassword} className="space-y-4">
+                <Field id="recovery-code" label="Recovery code">
+                  <Input id="recovery-code" autoComplete="one-time-code" autoCapitalize="none" spellCheck={false}
                     required autoFocus minLength={43} maxLength={43} pattern="[A-Za-z0-9_-]{43}"
                     title="Paste the complete 43-character code from your email"
-                    value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)}
-                    className="pl-12 h-12 text-base" />
-                </div>
+                    value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} />
+                </Field>
 
-                <div className="space-y-1.5">
-                  <PasswordField
-                    id="new-password"
-                    placeholder="New password"
-                    autoComplete="new-password"
-                    minLength={15}
-                    maxLength={72}
-                    describedBy="password-hint"
-                    value={password}
-                    onChange={setPassword}
-                  />
+                <Field id="new-password" label="New password">
+                  <PasswordField id="new-password" autoComplete="new-password" minLength={15} maxLength={72}
+                    describedBy="password-hint" value={password} onChange={setPassword} />
                   <p id="password-hint" className="text-xs text-muted-foreground">{PASSWORD_HINT}</p>
-                </div>
+                </Field>
 
-                <div className="space-y-1.5">
-                  <PasswordField
-                    id="confirm-password"
-                    placeholder="Confirm new password"
-                    autoComplete="new-password"
-                    minLength={15}
-                    maxLength={72}
-                    invalid={passwordsMismatch}
-                    describedBy={passwordsMismatch ? "confirm-password-error" : undefined}
-                    value={confirmPassword}
-                    onChange={setConfirmPassword}
-                  />
+                <Field id="confirm-password" label="Confirm new password">
+                  <PasswordField id="confirm-password" autoComplete="new-password" minLength={15} maxLength={72}
+                    invalid={passwordsMismatch} describedBy={passwordsMismatch ? "confirm-password-error" : undefined}
+                    value={confirmPassword} onChange={setConfirmPassword} />
                   {mismatchNote}
-                </div>
+                </Field>
 
-                <Button type="submit" className={submitButtonClass} disabled={isLoading || passwordsMismatch}>
-                  {isLoading ? (
-                    <span className="flex items-center gap-2">
-                      {spinner}
-                      Updating...
-                    </span>
-                  ) : (
-                    <>
-                      <span>Update password</span>
-                      <ArrowRight className="h-5 w-5" />
-                    </>
-                  )}
-                </Button>
+                {submit("Update password", "Updating…", passwordsMismatch)}
 
-                <div className="text-center">
-                  <button type="button" onClick={() => void requestRecovery()} disabled={isLoading || resendCooldown > 0}
-                    className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-50 cursor-pointer">
-                    {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : "Send a new recovery code"}
-                  </button>
+                <div className="flex items-center justify-between gap-2">
+                  <Button type="button" variant="link" className="h-auto p-0 text-sm" onClick={() => void requestRecovery()}
+                    disabled={isLoading || resendCooldown > 0}>
+                    {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : "Send a new code"}
+                  </Button>
+                  {backToSignIn}
                 </div>
               </form>
             )}
 
-            {/* MODE: REGISTER FORM */}
             {mode === "register" && (
-              <form onSubmit={handleRegister} className="space-y-5">
-                <div className="relative">
-                  <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground pointer-events-none" />
-                  <Input
-                    id="reg-fullname"
-                    type="text"
-                    aria-label="Full name"
-                    placeholder="Full name"
-                    autoComplete="name"
-                    value={fullName}
-                    onChange={(e) => setFullName(e.target.value)}
-                    required
-                    className="pl-12 h-12 text-base"
-                  />
-                </div>
+              <form onSubmit={handleRegister} className="space-y-4">
+                <Field id="reg-fullname" label="Full name">
+                  <Input id="reg-fullname" autoComplete="name" placeholder="Alex Tan"
+                    value={fullName} onChange={(e) => setFullName(e.target.value)} required />
+                </Field>
 
-                <div className="relative">
-                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground pointer-events-none" />
-                  <Input
-                    id="reg-email"
-                    type="email"
-                    aria-label="Work email"
-                    placeholder="Work email"
-                    autoComplete="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                    className="pl-12 h-12 text-base"
-                  />
-                </div>
+                <Field id="reg-email" label="Email">
+                  <Input id="reg-email" type="email" placeholder="name@company.com" autoComplete="email"
+                    value={email} onChange={(e) => setEmail(e.target.value)} required />
+                </Field>
 
-                <div className="space-y-1.5">
-                  <PasswordField
-                    id="reg-password"
-                    placeholder="Set password"
-                    autoComplete="new-password"
-                    minLength={15}
-                    maxLength={72}
-                    describedBy="register-password-hint"
-                    value={password}
-                    onChange={setPassword}
-                  />
+                <Field id="reg-password" label="Password">
+                  <PasswordField id="reg-password" autoComplete="new-password" minLength={15} maxLength={72}
+                    describedBy="register-password-hint" value={password} onChange={setPassword} />
                   <p id="register-password-hint" className="text-xs text-muted-foreground">{PASSWORD_HINT}</p>
-                </div>
+                </Field>
 
-                <div className="space-y-1.5">
-                  <PasswordField
-                    id="reg-confirm-password"
-                    placeholder="Confirm password"
-                    autoComplete="new-password"
-                    minLength={15}
-                    maxLength={72}
-                    invalid={passwordsMismatch}
-                    describedBy={passwordsMismatch ? "confirm-password-error" : undefined}
-                    value={confirmPassword}
-                    onChange={setConfirmPassword}
-                  />
+                <Field id="reg-confirm-password" label="Confirm password">
+                  <PasswordField id="reg-confirm-password" autoComplete="new-password" minLength={15} maxLength={72}
+                    invalid={passwordsMismatch} describedBy={passwordsMismatch ? "confirm-password-error" : undefined}
+                    value={confirmPassword} onChange={setConfirmPassword} />
                   {mismatchNote}
-                </div>
+                </Field>
 
-                <Button type="submit" className={`${submitButtonClass} mt-3`} disabled={isLoading || showTick || passwordsMismatch}>
-                  {showTick ? (
-                    <>
-                      <AnimatedTick className="h-7 w-7" />
-                      <span className="sr-only">Code sent</span>
-                    </>
-                  ) : isLoading ? (
-                    <span className="flex items-center gap-2">
-                      {spinner}
-                      Sending OTP...
-                    </span>
-                  ) : (
-                    <>
-                      <span>Send 6-Digit OTP</span>
-                      <ArrowRight className="h-5 w-5" />
-                    </>
-                  )}
-                </Button>
+                {submit("Create account", "Creating account…", passwordsMismatch)}
+                <div className="text-center">{backToSignIn}</div>
               </form>
             )}
 
-            {/* MODE: OTP VERIFICATION */}
             {mode === "verify-otp" && (
-              <div className="space-y-5">
-                <p className="text-center text-sm text-balance text-muted-foreground">
-                  A 6-digit OTP has been sent to{" "}
-                  <span className="font-semibold text-foreground break-all">{email}</span>
-                </p>
-                <OtpInput
-                  value={otpCode}
-                  onChange={setOtpCode}
-                  onComplete={(code) => void verifyOtp(code)}
-                  disabled={isLoading}
-                />
-                {showTick ? (
-                  <p role="status" className="flex items-center justify-center gap-2 text-sm font-semibold text-emerald-600 dark:text-emerald-400">
-                    <AnimatedTick className="h-5 w-5" />
-                    Verified
-                  </p>
-                ) : isLoading ? (
+              <div className="space-y-4">
+                <OtpInput value={otpCode} onChange={setOtpCode} onComplete={(code) => void verifyOtp(code)} disabled={isLoading} />
+                {isLoading ? (
                   <p role="status" className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-                    <span className="h-4 w-4 border-2 border-muted-foreground/40 border-t-muted-foreground rounded-full animate-spin" />
-                    Verifying...
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Verifying…
                   </p>
                 ) : (
-                  <p className="text-[11px] text-muted-foreground text-center">
-                    Your code is valid for 10 minutes. Check your spam folder if it hasn’t arrived.
+                  <p className="text-center text-xs text-muted-foreground">
+                    The code is valid for 10 minutes. Check your spam folder if it hasn’t arrived.
                   </p>
                 )}
 
-                <div className="flex items-center justify-between text-xs pt-1">
-                  <button
-                    type="button"
-                    onClick={handleResendOtp}
-                    disabled={resendCooldown > 0 || isLoading}
-                    className="text-emerald-600 dark:text-emerald-400 font-semibold hover:underline flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                  >
-                    <RotateCcw className="h-3 w-3" />
+                <div className="flex items-center justify-between gap-2">
+                  <Button type="button" variant="link" className="h-auto p-0 text-sm" onClick={handleResendOtp}
+                    disabled={resendCooldown > 0 || isLoading}>
                     {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : "Resend code"}
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={isLoading}
-                    onClick={() => {
-                      setOtpCode("")
-                      setConfirmPassword("")
-                      setMode("login")
-                      setErrorMessage(null)
-                      setSuccessMessage(null)
-                    }}
-                    className="text-muted-foreground hover:text-foreground cursor-pointer"
-                  >
-                    Change email
-                  </button>
+                  </Button>
+                  <Button type="button" variant="link" className="h-auto p-0 text-sm" disabled={isLoading} onClick={goToLogin}>
+                    Use a different email
+                  </Button>
                 </div>
               </div>
             )}
           </CardContent>
         </Card>
 
-        {/* Replay the intro video */}
-        <div className="flex justify-center">
-          <button
-            type="button"
-            onClick={() => setShowIntro(true)}
-            aria-label="Replay intro"
-            title="Replay intro"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-border/60 bg-card/60 text-muted-foreground backdrop-blur transition-colors hover:border-emerald-500/50 hover:text-foreground cursor-pointer"
-          >
-            <RotateCcw className="h-4 w-4" />
-          </button>
+        <div className="text-center">
+          <Button type="button" variant="link" className="h-auto p-0 text-xs text-muted-foreground" onClick={() => setShowIntro(true)}>
+            Watch intro
+          </Button>
         </div>
+      </div>
       </div>
 
       {showIntro && <Intro onDone={closeIntro} />}

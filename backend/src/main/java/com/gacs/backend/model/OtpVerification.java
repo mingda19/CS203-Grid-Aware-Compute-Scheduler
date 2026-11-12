@@ -2,6 +2,7 @@ package com.gacs.backend.model;
 
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 
 @Entity
 @Table(name = "otp_verifications")
@@ -37,11 +38,11 @@ public class OtpVerification {
 
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
+        this.createdAt = LocalDateTime.now(ZoneOffset.UTC);
     }
 
     public boolean isExpired() {
-        return LocalDateTime.now().isAfter(this.expiresAt);
+        return !this.expiresAt.isAfter(LocalDateTime.now(ZoneOffset.UTC));
     }
 
     // Getters and Setters

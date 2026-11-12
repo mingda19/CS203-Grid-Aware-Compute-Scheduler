@@ -3,6 +3,8 @@ package com.gacs.backend.service;
 import com.gacs.backend.model.PredictedPrice;
 import com.gacs.backend.repository.ElectricalPriceRepository;
 import com.gacs.backend.repository.PredictedPriceRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -17,10 +19,12 @@ import java.util.Map;
  * Builds the hourly price curve the optimizer runs against.
  *
  * <p>Prefers the latest stored forecast from one configured model kind
- * ({@code gacs.optimiser.forecast-model}, default {@code lstm}) for the requested location and
- * window. Reading a single model matters: LSTM and LEAR run as separate jobs, and taking the
- * newest row per hour across both would stitch two models into one curve, so the optimizer
- * would shift jobs on model disagreement rather than price.
+ * ({@code gacs.optimiser.forecast-model}, default {@code lear}) for the requested location and
+ * window. When that model covers fewer hours of the window than the fallback model
+ * ({@code gacs.optimiser.forecast-fallback-model}, default {@code lstm}; blank turns it off) - its
+ * daily run failed or has not landed - the fallback model prices the whole run instead.
+ * One run always reads a single model: LSTM and LEAR run as separate jobs, and stitching both
+ * into one curve would make the optimizer shift jobs on model disagreement rather than price.
  * When no forecast rows cover that window at all, falls back to a 24-hour curve built from
  * stored settlement prices (see {@link #fallbackCurve}) so an optimization run still succeeds
  * instead of failing on absent model output (GRID-124 AC5.2).
@@ -52,6 +56,7 @@ public class PriceSeriesProvider {
         82.0, 64.0, 48.0, 36.0, 27.0, 21.0    // 18:00-23:00 evening decline
     };
 
+    private static final Logger log = LoggerFactory.getLogger(PriceSeriesProvider.class);
     private static final int RECENT_WINDOW_DAYS = 30;
     private static final int RECENT_MAX_STALENESS_DAYS = 7;
 
@@ -59,21 +64,30 @@ public class PriceSeriesProvider {
     private final ElectricalPriceRepository history;
     private final double recentWeight;
     private final String forecastModel;
+    private final String fallbackModel; // null when there is no fallback model
 
     public PriceSeriesProvider(
         PredictedPriceRepository predictions,
         ElectricalPriceRepository history,
         @Value("${gacs.optimiser.fallback-recent-weight:0.5}") double recentWeight,
-        @Value("${gacs.optimiser.forecast-model:lstm}") String forecastModel
+        @Value("${gacs.optimiser.forecast-model:lear}") String forecastModel,
+        @Value("${gacs.optimiser.forecast-fallback-model:lstm}") String fallbackModel
     ) {
-        if (!PredictedPriceRepository.MODEL_KINDS.contains(forecastModel)) {
-            throw new IllegalArgumentException("gacs.optimiser.forecast-model must be one of "
-                + PredictedPriceRepository.MODEL_KINDS + ", got: " + forecastModel);
-        }
+        requireModelKind("gacs.optimiser.forecast-model", forecastModel);
+        boolean noFallback = fallbackModel == null || fallbackModel.isBlank() || fallbackModel.equals(forecastModel);
+        if (!noFallback) requireModelKind("gacs.optimiser.forecast-fallback-model", fallbackModel);
         this.predictions = predictions;
         this.history = history;
         this.recentWeight = recentWeight;
         this.forecastModel = forecastModel;
+        this.fallbackModel = noFallback ? null : fallbackModel;
+    }
+
+    private static void requireModelKind(String property, String model) {
+        if (!PredictedPriceRepository.MODEL_KINDS.contains(model)) {
+            throw new IllegalArgumentException(property + " must be one of "
+                + PredictedPriceRepository.MODEL_KINDS + ", got: " + model);
+        }
     }
 
     /**
@@ -81,8 +95,29 @@ public class PriceSeriesProvider {
      */
     public PriceSeries load(String location, LocalDateTime horizonStart, int horizonHours) {
         LocalDateTime horizonEnd = horizonStart.plusHours(horizonHours);
+        Map<LocalDateTime, Double> forecast = forecast(forecastModel, location, horizonStart, horizonEnd);
+        // Only look at the fallback when the preferred model leaves hours uncovered.
+        if (fallbackModel != null && forecast.size() < horizonHours) {
+            Map<LocalDateTime, Double> fallback = forecast(fallbackModel, location, horizonStart, horizonEnd);
+            if (fallback.size() > forecast.size()) {
+                log.warn("Forecast model {} covers {}/{} hours of {} from {}; pricing this run with {} ({} hours)",
+                    forecastModel, forecast.size(), horizonHours, location, horizonStart, fallbackModel, fallback.size());
+                forecast = fallback;
+            }
+        }
+
+        if (forecast.isEmpty()) {
+            return new PriceSeries(
+                fallbackSlots(fallbackCurve(location, horizonStart), horizonStart, horizonHours), true);
+        }
+        return withGapsFilled(forecast, location, horizonStart, horizonHours);
+    }
+
+    /** One model's latest forecast for the window, keyed by hour. */
+    private Map<LocalDateTime, Double> forecast(String model, String location,
+                                                LocalDateTime horizonStart, LocalDateTime horizonEnd) {
         List<PredictedPrice> rows = predictions.findLatestForecastForModel(
-            location, forecastModel, horizonStart, horizonEnd);
+            location, model, horizonStart, horizonEnd);
 
         Map<LocalDateTime, Double> forecast = new LinkedHashMap<>();
         for (PredictedPrice row : rows) {
@@ -98,12 +133,7 @@ public class PriceSeriesProvider {
             // the duplicate so the curve stays single-valued and the run stays deterministic.
             forecast.putIfAbsent(slot, row.getPredictedPrice());
         }
-
-        if (forecast.isEmpty()) {
-            return new PriceSeries(
-                fallbackSlots(fallbackCurve(location, horizonStart), horizonStart, horizonHours), true);
-        }
-        return withGapsFilled(forecast, location, horizonStart, horizonHours);
+        return forecast;
     }
 
     /**

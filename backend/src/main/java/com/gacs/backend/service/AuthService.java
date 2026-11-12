@@ -28,7 +28,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
+import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
@@ -58,6 +60,9 @@ public class AuthService {
     @Autowired
     private RefreshTokenService refreshTokenService;
 
+    @Autowired
+    private Clock clock = Clock.systemUTC();
+
     @Value("${security.jwt.cookie-secure:false}")
     private boolean cookieSecure;
 
@@ -70,18 +75,33 @@ public class AuthService {
         String email = request.getEmail().trim().toLowerCase(java.util.Locale.ROOT);
         User user = userRepository.lockByEmail(email).orElse(null);
         String message = "If this email has a verified account, a recovery code will be sent.";
-        LocalDateTime now = LocalDateTime.now();
-        if (user == null || !user.isVerified() ||
-                (user.getPasswordResetRequestedAt() != null &&
-                 user.getPasswordResetRequestedAt().isAfter(now.minusSeconds(60)))) {
+        LocalDateTime now = nowUtc();
+        // Internal categories explain skipped sends without logging addresses or codes.
+        // Keep the public response identical for every outcome.
+        if (user == null) {
+            logger.info("Password recovery email skipped: account not found");
+            return ApiResponse.ok(message);
+        }
+        if (!user.isVerified()) {
+            logger.info("Password recovery email skipped: account is not verified");
+            return ApiResponse.ok(message);
+        }
+        LocalDateTime requestedAt = user.getPasswordResetRequestedAt();
+        // Older local servers wrote Singapore wall time into these timezone-less
+        // columns. A far-future value must not impose an eight-hour cooldown.
+        // Allow a minute of clock skew between servers without bypassing throttling.
+        if (requestedAt != null && !requestedAt.isAfter(now.plusSeconds(60)) &&
+                requestedAt.isAfter(now.minusSeconds(60))) {
+            logger.info("Password recovery email skipped: 60-second cooldown is active");
             return ApiResponse.ok(message);
         }
         byte[] bytes = new byte[32];
         secureRandom.nextBytes(bytes);
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-        // Do not log recovery tokens, including when SMTP delivery fails.
+        // Do not log recovery tokens, including when Gmail API delivery fails.
         try {
             emailService.sendPasswordResetEmail(email, token);
+            logger.info("Password recovery email accepted by Gmail API");
             user.setPasswordResetHash(passwordEncoder.encode(token));
             user.setPasswordResetExpiresAt(now.plusMinutes(10));
         } catch (RuntimeException ex) {
@@ -97,9 +117,12 @@ public class AuthService {
     public ApiResponse<String> resetPassword(ResetPasswordRequest request) {
         User user = userRepository.lockByEmail(request.email().trim().toLowerCase(java.util.Locale.ROOT))
                 .orElseThrow(() -> new IllegalArgumentException("Invalid or expired recovery code. Request a new code."));
+        LocalDateTime now = nowUtc();
         if (!user.isVerified() || user.getPasswordResetHash() == null ||
                 user.getPasswordResetExpiresAt() == null ||
-                !user.getPasswordResetExpiresAt().isAfter(LocalDateTime.now()) ||
+                !user.getPasswordResetExpiresAt().isAfter(now) ||
+                // Do not extend legacy Singapore-local codes to eight hours in UTC.
+                user.getPasswordResetExpiresAt().isAfter(now.plusMinutes(10)) ||
                 !passwordEncoder.matches(request.token(), user.getPasswordResetHash())) {
             throw new IllegalArgumentException("Invalid or expired recovery code. Request a new code.");
         }
@@ -112,10 +135,14 @@ public class AuthService {
         return ApiResponse.ok("Password updated. Sign in with your new password.");
     }
 
+    private LocalDateTime nowUtc() {
+        return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
+    }
+
     /**
      * Registers a new user or refreshes registration for an unverified account.
      * Encrypts the password using BCrypt before storing in the database.
-     * Generates a 6-digit OTP and sends it to the user's email via SMTP.
+     * Generates a 6-digit OTP and sends it to the user's email via Gmail API.
      */
     @Transactional
     public AuthResponse register(RegisterRequest request) {
@@ -123,6 +150,7 @@ public class AuthService {
         String email = request.getEmail().trim().toLowerCase();
 
         Optional<User> existingUserOpt = userRepository.findByEmail(email);
+        User userToSave;
         if (existingUserOpt.isPresent()) {
             User existingUser = existingUserOpt.get();
             if (existingUser.isVerified()) {
@@ -134,22 +162,19 @@ public class AuthService {
                 existingUser.setFullName(request.getFullName().trim());
             }
             existingUser.setRole("ROLE_USER");
-            userRepository.save(existingUser);
+            userToSave = existingUser;
         } else {
             // New user registration - encrypt password with BCrypt, always assign ROLE_USER
             String encryptedPassword = passwordEncoder.encode(request.getPassword());
             User newUser = new User(email, encryptedPassword, request.getFullName(), "ROLE_USER");
             newUser.setVerified(false);
-            userRepository.save(newUser);
+            userToSave = newUser;
         }
 
         // Generate and send OTP
         String otpCode = generateAndSaveOtp(email);
-        try {
-            emailService.sendOtpEmail(email, otpCode);
-        } catch (Exception e) {
-            logger.warn("Could not deliver OTP email: {}. OTP code for development is: {}", e.getMessage(), otpCode);
-        }
+        emailService.sendOtpEmail(email, otpCode);
+        userRepository.save(userToSave);
 
         return AuthResponse.otpRequired("Registration initiated. A 6-digit OTP has been sent to " + email + ". Please verify to complete registration.", email);
     }
@@ -165,7 +190,7 @@ public class AuthService {
         OtpVerification otp = otpRepository.findTopByEmailAndOtpCodeAndIsUsedFalseOrderByCreatedAtDesc(email, code)
                 .orElseThrow(() -> new IllegalArgumentException("Invalid OTP verification code."));
 
-        if (otp.isExpired()) {
+        if (!otp.getExpiresAt().isAfter(nowUtc())) {
             throw new IllegalArgumentException("OTP verification code has expired. Please request a new OTP.");
         }
 
@@ -197,11 +222,7 @@ public class AuthService {
         }
 
         String otpCode = generateAndSaveOtp(email);
-        try {
-            emailService.sendOtpEmail(email, otpCode);
-        } catch (Exception e) {
-            logger.warn("Could not deliver OTP email: {}. OTP code for development is: {}", e.getMessage(), otpCode);
-        }
+        emailService.sendOtpEmail(email, otpCode);
 
         return ApiResponse.ok("A new OTP code has been sent to " + email + ".");
     }
@@ -229,11 +250,7 @@ public class AuthService {
         // Check if account has completed OTP verification
         if (!user.isVerified()) {
             String otpCode = generateAndSaveOtp(email);
-            try {
-                emailService.sendOtpEmail(email, otpCode);
-            } catch (Exception e) {
-                logger.warn("Could not deliver OTP email: {}. OTP code is: {}", e.getMessage(), otpCode);
-            }
+            emailService.sendOtpEmail(email, otpCode);
             return AuthResponse.otpRequired("Account is not yet verified. A fresh OTP has been sent to your email.", email);
         }
 
@@ -412,7 +429,7 @@ public class AuthService {
         OtpVerification otp = new OtpVerification(
                 email,
                 otpCode,
-                LocalDateTime.now().plusMinutes(OTP_EXPIRY_MINUTES)
+                nowUtc().plusMinutes(OTP_EXPIRY_MINUTES)
         );
         otpRepository.save(otp);
         return otpCode;

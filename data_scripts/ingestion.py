@@ -29,8 +29,16 @@ Design decisions:
 
 Usage:
   python ingestion.py                      # normal daily run, all sources
-  python ingestion.py --only weather,eia    # subset
+  python ingestion.py --only weather,eia    # subset (the feature cache still refreshes - see below)
   python ingestion.py --since 2024-01-01    # backfill history (where supported)
+
+The LAST step of every run refreshes the model-feature cache (feature_store.py) from the
+freshly ingested wind/solar/gas rows, so predictions read a few MB of pre-computed hourly
+features instead of re-deriving them from years of per-site weather. It runs whenever weather or
+EIA did (`--only features` runs just it), with `--since` passed through so a historical backfill
+refreshes the cache over the same dates. A failed refresh is isolated like any other source: it
+exits 2 (incomplete), never blocks the data already ingested, and the failed refresh removes the
+stale cached tail so predictions fall back to the raw tables instead of reading it.
 
 Or import: from ingestion import run_ingestion
 """
@@ -643,22 +651,34 @@ class IngestionResult:
     weather_ok: bool = True
     eia_ok: bool = True
     dam_ok: bool = True
+    features_ok: bool = True
     errors: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
-        return self.weather_ok and self.eia_ok and self.dam_ok
+        return self.weather_ok and self.eia_ok and self.dam_ok and self.features_ok
+
+
+def refresh_feature_cache(engine: sa.Engine, since: date | None = None) -> int:
+    """Last ingestion step: refresh the model_features_hourly cache from the raw rows the earlier
+    steps just wrote (feature_store.refresh). Imported here, not at module top: feature_store
+    imports predictions, which imports this module."""
+    import feature_store
+    return feature_store.refresh(engine, since=since)
 
 
 def run_ingestion(engine: sa.Engine, weather_fn: Callable | None = None, eia_fn: Callable | None = None,
-                  dam_fn: Callable | None = None, now: datetime | None = None) -> IngestionResult:
+                  dam_fn: Callable | None = None, now: datetime | None = None,
+                  features_fn: Callable | None = None) -> IngestionResult:
     weather_fn = weather_fn or (lambda eng: update_all_weather(eng))
     eia_fn = eia_fn or (lambda eng: update_all_eia_data(eng))
     dam_fn = dam_fn or (lambda eng: update_all_dam_prices(eng))
+    features_fn = features_fn or (lambda eng: refresh_feature_cache(eng))
 
     result = IngestionResult()
+    # features last: it derives from what weather and eia just wrote.
     for name, fn, attr in [("weather", weather_fn, "weather_ok"), ("eia", eia_fn, "eia_ok"),
-                           ("dam", dam_fn, "dam_ok")]:
+                           ("dam", dam_fn, "dam_ok"), ("features", features_fn, "features_ok")]:
         try:
             fn(engine)
         except Exception as e:  # one source failing must not stop the others
@@ -671,14 +691,17 @@ def run_ingestion(engine: sa.Engine, weather_fn: Callable | None = None, eia_fn:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Daily ingestion: Open-Meteo weather + EIA + GridStatus DAM price.")
     parser.add_argument("--since", type=date.fromisoformat, help="backfill from YYYY-MM-DD (where supported)")
-    parser.add_argument("--only", help="comma-separated: weather,eia,dam")
+    parser.add_argument("--only", help="comma-separated: weather,eia,dam,features")
     args = parser.parse_args()
 
     logging.Formatter.converter = time.gmtime
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         datefmt="%Y-%m-%dT%H:%M:%SZ")
 
-    only = set(args.only.split(",")) if args.only else {"weather", "eia", "dam"}
+    only = set(args.only.split(",")) if args.only else {"weather", "eia", "dam", "features"}
+    # The feature cache derives from weather and gas: refresh it whenever either was just re-ingested,
+    # even if --only didn't name it, or the cache would keep serving the superseded forecast.
+    refresh_features = bool(only & {"weather", "eia", "features"})
     engine = make_engine()
 
     try:
@@ -687,6 +710,8 @@ def main() -> None:
             weather_fn=(lambda eng: update_all_weather(eng, since=args.since)) if "weather" in only else (lambda eng: None),
             eia_fn=(lambda eng: update_all_eia_data(eng, since=args.since)) if "eia" in only else (lambda eng: None),
             dam_fn=(lambda eng: update_all_dam_prices(eng, since=args.since)) if "dam" in only else (lambda eng: None),
+            features_fn=((lambda eng: refresh_feature_cache(eng, since=args.since)) if refresh_features
+                         else (lambda eng: None)),
         )
     except Exception:
         logger.exception("Ingestion FAILED")

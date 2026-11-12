@@ -119,10 +119,10 @@ class JevAnswerReaderTest {
 
     @Test
     void aConfidentDirectionIsAppliedWithoutAsking() {
-        List<ClassifiedConstraint> read = read("dependency");
+        List<ClassifiedConstraint> read = read("precedence");
 
         assertThat(new ConstraintGuardrail(0.7, 0.3)
-                .review(MESSAGES.get("dependency"), read, Set.of(ConstraintType.values()), 999L, CANDIDATES)
+                .review(MESSAGES.get("precedence"), read, Set.of(ConstraintType.values()), 999L, CANDIDATES)
                 .accepted()).singleElement()
                 .extracting(ConstraintGuardrail.Accepted::needsConfirmation).isEqualTo(false);
     }
@@ -185,15 +185,52 @@ class JevAnswerReaderTest {
 
     @Test
     void probabilityIsCarriedThrough_SoTheGuardrailCanBandIt() {
-        // min(ordering 0.87, direction certainty 0.89) - the weaker of the two judgements the
-        // reading rests on, so neither can be confident on the other's behalf.
+        // min(ordering 0.87, direction 0.89, mentions another job 0.72, choice 0.98).
         assertThat(read("precedence")).singleElement()
                 .extracting(ClassifiedConstraint::probability)
-                .satisfies(p -> assertThat((double) p).isEqualTo(0.87, org.assertj.core.data.Offset.offset(0.001)));
+                .satisfies(p -> assertThat((double) p).isEqualTo(0.72, org.assertj.core.data.Offset.offset(0.001)));
     }
 
     private List<ConstraintType> typesFor(String fixture) {
         return read(fixture).stream().map(ClassifiedConstraint::type).toList();
+    }
+
+    @Test
+    void uncertainDirectionDoesNotLetOrderingAndExclusionDiscardEachOther() {
+        var recorded = withDirection("precedence", 0.5);
+        var answers = new java.util.LinkedHashMap<>(recorded.answers());
+        answers.put("states_mutual_exclusion", new JevAnswers.Answer("noul", 0.60, null, null, null));
+        var proposals = reader.read(new JevAnswers(recorded.model(), answers, recorded.usage()),
+                MESSAGES.get("precedence"), CANDIDATES);
+        assertThat(proposals).singleElement().satisfies(p -> {
+            assertThat(p.type()).isEqualTo(ConstraintType.PRECEDENCE);
+            assertThat(p.probability()).isEqualTo(0.5);
+        });
+    }
+
+    @Test
+    void missingDirectionCannotBecomeAConfidentDependency() {
+        var recorded = load("precedence");
+        var answers = new java.util.LinkedHashMap<>(recorded.answers());
+        answers.remove(ConstraintQuestions.THIS_JOB_FIRST);
+        assertThat(reader.read(new JevAnswers(recorded.model(), answers, recorded.usage()),
+                MESSAGES.get("precedence"), CANDIDATES))
+                .noneMatch(p -> p.type() == ConstraintType.PRECEDENCE || p.type() == ConstraintType.DEPENDENCY);
+    }
+
+    @Test
+    void anUncertainReferencedJobRequiresConfirmation() {
+        var recorded = load("precedence");
+        var answers = new java.util.LinkedHashMap<>(recorded.answers());
+        var choice = answers.get(ConstraintQuestions.REFERENCED_JOB);
+        answers.put(ConstraintQuestions.REFERENCED_JOB, new JevAnswers.Answer("choice", null,
+                choice.choice(), .99, Map.of(choice.choice(), .4)));
+        var proposals = reader.read(new JevAnswers(recorded.model(), answers, recorded.usage()),
+                MESSAGES.get("precedence"), CANDIDATES);
+        assertThat(proposals).singleElement().extracting(ClassifiedConstraint::probability).isEqualTo(.4);
+        assertThat(new ConstraintGuardrail(.7, .3).review(MESSAGES.get("precedence"), proposals,
+                Set.of(ConstraintType.values()), null, CANDIDATES).accepted())
+                .singleElement().extracting(ConstraintGuardrail.Accepted::needsConfirmation).isEqualTo(true);
     }
 
     private List<ClassifiedConstraint> read(String fixture) {

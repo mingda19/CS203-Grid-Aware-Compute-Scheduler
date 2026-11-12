@@ -51,9 +51,26 @@ export interface PriceForecastPoint {
    * so null means "not known", never "no confidence". Contract FR-10.
    */
   confidenceScore: number | null
+  /** The model's typical error for this hour in $/MWh (reference RMSE). Omitted when there is none. */
+  typicalErrorUsdMwh?: number | null
 }
 
 export type ForecastModel = "lstm" | "lear"
+
+/** One past hour: what the model forecast (latest run made before the hour) and what the price was. */
+export interface ForecastAccuracyPoint {
+  intervalStartUtc: string
+  predictedPrice: number
+  actualPrice: number
+  modelVersion: string
+  generatedAt: string
+}
+
+export interface ForecastAccuracy {
+  points: ForecastAccuracyPoint[]
+  days: number
+  modelKind: ForecastModel
+}
 
 export interface PriceForecast {
   points: PriceForecastPoint[]
@@ -125,6 +142,7 @@ export interface ComputeJob {
   priority?: JobPriority
   workloadCategory?: WorkloadCategory
   rawConstraints?: string | null
+  pairConstraints?: JobPairConstraint[]
   parsedAt?: string | null
   confirmationOutcome?: ConfirmationOutcome | null
   status: JobStatus
@@ -139,6 +157,7 @@ export type ComputeJobPayload = Pick<ComputeJob,
 > & {
   description?: string | null
   rawConstraints?: string | null
+  pairConstraints?: JobPairConstraint[]
   parsedAt?: string | null
   confirmationOutcome?: ConfirmationOutcome | null
   priority?: JobPriority
@@ -153,15 +172,23 @@ export interface ConstraintDraft {
   isExempt: boolean | null
 }
 
+export interface JobPairConstraint {
+  type: "PRECEDENCE" | "DEPENDENCY" | "MUTUAL_EXCLUSION"
+  referencedJobId: number
+}
+
 export interface ConstraintParseRequest {
   rawConstraints: string
   draft: ConstraintDraft
   timeZone: string
+  editingJobId?: number
 }
 
 import type { ConstraintTypeName } from "./constraint-confirmation"
 
 export interface ConstraintParseResponse {
+  classificationStatus?: "DISABLED" | "SUCCEEDED" | "FAILED"
+  warnings?: string[]
   status: "PARSED" | "NEEDS_CLARIFICATION" | "INVALID"
   fields: ConstraintDraft
   evidence: Array<{ field: keyof ConstraintDraft; value: string; phrase: string; start: number; end: number }>
@@ -654,6 +681,11 @@ export const priceApi = {
     return response
   },
 
+  getForecastAccuracy(params: { location: string; model: ForecastModel; days?: number }): Promise<ApiResponse<ForecastAccuracy>> {
+    const query = new URLSearchParams({ location: params.location, model: params.model, days: String(params.days ?? 7) })
+    return fetchJson<ApiResponse<ForecastAccuracy>>(`/api/prices/forecast-accuracy?${query.toString()}`, { cache: "no-store" })
+  },
+
   getHistory(params: { location: string; startDate: string; endDate: string; limit?: number; offset?: number }): Promise<ApiResponse<PriceHistory>> {
     const query = new URLSearchParams({
       location: params.location,
@@ -708,8 +740,8 @@ export const jobsApi = {
     return fetchJson<ApiResponse<void>>(`/api/jobs/${id}`, { method: "DELETE" })
   },
   /** Plans the caller's jobs that have no live plan, and the ones turned away or failed. */
-  recompute(): Promise<ApiResponse<{ runIds: string[]; failed: number }>> {
-    return fetchJson<ApiResponse<{ runIds: string[]; failed: number }>>("/api/schedules/recompute", { method: "POST" })
+  recompute(): Promise<ApiResponse<{ runIds: string[]; failed: number; failedJobIds?: number[] }>> {
+    return fetchJson<ApiResponse<{ runIds: string[]; failed: number; failedJobIds?: number[] }>>("/api/schedules/recompute", { method: "POST" })
   },
   /** Admin only: every user's jobs, each with its owner's name. */
   listAll(): Promise<ApiResponse<ComputeJob[]>> {

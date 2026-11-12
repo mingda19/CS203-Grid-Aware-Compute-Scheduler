@@ -97,9 +97,15 @@ public final class JevAnswerReader {
                 Math.max(exclusionScore, probabilityOf(response, byId, ConstraintType.SYNCHRONIZED_FINISH)));
 
         String referent = referencedJobName(response, candidates);
+        double referenceCertainty = Math.min(
+                response.answer(ConstraintQuestions.REFERS_TO_ANOTHER_JOB).nounProbability(),
+                response.answer(ConstraintQuestions.REFERENCED_JOB).chosenProbability());
         Set<String> pairIds = Set.copyOf(ConstraintQuestions.pairQuestionIds());
 
-        double thisJobFirst = response.answer(ConstraintQuestions.THIS_JOB_FIRST).nounProbability();
+        Double direction = response.answer(ConstraintQuestions.THIS_JOB_FIRST).noul();
+        boolean hasDirection = direction != null && Double.isFinite(direction)
+                && direction >= 0 && direction <= 1;
+        double thisJobFirst = hasDirection ? direction : 0.5;
 
         List<ClassifiedConstraint> proposals = new ArrayList<>();
         for (Map.Entry<String, ConstraintQuestions.TypeQuestion> entry : byId.entrySet()) {
@@ -113,6 +119,10 @@ public final class JevAnswerReader {
             // direction is confirmed by the operator rather than guessed. Both readings order the
             // same pair, so only one of them is ever proposed.
             if (type == ConstraintType.PRECEDENCE) {
+                // A missing answer is not a confident "other job first" answer.
+                if (!hasDirection) {
+                    continue;
+                }
                 probability = Math.min(probability, directionCertainty(thisJobFirst));
                 if (probability < floor) {
                     continue;
@@ -130,11 +140,12 @@ public final class JevAnswerReader {
             // does fire on real answers: the three pair questions bleed into each other, scoring
             // 0.34 for exclusion on a 0.88 precedence message and 0.32 for precedence on a 0.96
             // exclusion one.
-            if (type == ConstraintType.MUTUAL_EXCLUSION && precedenceScore > probability) {
+            if (type == ConstraintType.MUTUAL_EXCLUSION && hasDirection && precedenceScore >= floor
+                    && precedenceScore >= probability) {
                 continue;
             }
             if ((type == ConstraintType.PRECEDENCE || type == ConstraintType.DEPENDENCY)
-                    && exclusionScore > probability) {
+                    && exclusionScore > precedenceScore) {
                 continue;
             }
             // A pair constraint needs a second job. With none named there is nothing to bind to,
@@ -150,6 +161,7 @@ public final class JevAnswerReader {
             // The whole message is cited: these questions judge the message, not a span of it, and
             // the guardrail requires a span that is really in the text. Claiming a narrower one
             // would be inventing precision the answer does not carry.
+            if (pairIds.contains(entry.getKey())) probability = Math.min(probability, referenceCertainty);
             proposals.add(new ClassifiedConstraint(type, probability, text, 0, text.length(),
                     pairIds.contains(entry.getKey()) ? referent : null));
         }
