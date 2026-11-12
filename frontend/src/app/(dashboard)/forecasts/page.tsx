@@ -7,13 +7,11 @@ import { Button } from "@/components/ui/button"
 import { unwrap, useLoad } from "@/components/home/use-load"
 import { AccuracyCard } from "@/components/forecasts/AccuracyCard"
 import { ForecastCard } from "@/components/forecasts/ForecastCard"
-import { HISTORY_DAYS, latestRun, STALE_AFTER_MS, useForecastCard } from "@/components/forecasts/use-forecast-card"
+import { DEFAULT_ZONE, HISTORY_DAYS, latestRun, STALE_AFTER_MS, useForecastCard } from "@/components/forecasts/use-forecast-card"
 import { facilityApi, priceApi, type ForecastModel } from "@/lib/api"
 import { formatRelativeAgo, parseIsoDate } from "@/lib/date-utils"
 import { FORECAST_HOURS } from "@/lib/price-forecast"
 import { cn } from "@/lib/utils"
-
-const DEFAULT_ZONE = "LZ_NORTH"
 
 function loadAccuracy(zone: string, model: ForecastModel) {
   return unwrap(priceApi.getForecastAccuracy({ location: zone, model, days: HISTORY_DAYS }), "Unable to load forecast accuracy")

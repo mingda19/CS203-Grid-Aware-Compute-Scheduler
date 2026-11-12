@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { accuracyStats, buildForecastRows, cheapestHours, deviationRows, hourSpans, HOUR_MS, type ForecastRow } from "./price-forecast"
+import { accuracyStats, buildForecastRows, cardStatus, cheapestHours, deviationRows, hourSpans, HOUR_MS, type ForecastRow } from "./price-forecast"
 import type { PriceForecastPoint } from "./api"
 
 const at = (h: number) => `2026-11-11T${String(h).padStart(2, "0")}:00:00`
@@ -68,5 +68,24 @@ describe("buildForecastRows", () => {
   it("leaves out hours outside the window", () => {
     const rows = buildForecastRows([{ intervalStartUtc: at(1), sppUsdMwh: 20 }], [fc(9, 30)], ms(2), ms(8))
     expect(rows).toEqual([])
+  })
+})
+
+describe("cardStatus", () => {
+  const base = { failed: false, runAgeMs: 2 * HOUR_MS, loadAgesMs: [60_000, 60_000], staleAfterMs: 26 * HOUR_MS, refreshMs: 15 * 60_000 }
+
+  it("is live when the run is recent and both sources refreshed lately", () => {
+    expect(cardStatus(base)).toBe("live")
+  })
+  it("is unavailable when a load failed or there is no forecast run", () => {
+    expect(cardStatus({ ...base, failed: true })).toBe("unavailable")
+    expect(cardStatus({ ...base, runAgeMs: null })).toBe("unavailable")
+  })
+  it("is cached when the forecast run is older than the stale limit", () => {
+    expect(cardStatus({ ...base, runAgeMs: 27 * HOUR_MS })).toBe("cached")
+  })
+  it("is cached when a background refresh has stalled for over two polls, even with a fresh run", () => {
+    expect(cardStatus({ ...base, loadAgesMs: [60_000, 31 * 60_000] })).toBe("cached")
+    expect(cardStatus({ ...base, loadAgesMs: [60_000, 29 * 60_000] })).toBe("live")
   })
 })
