@@ -1,5 +1,7 @@
 package com.gacs.backend.security;
 
+import com.gacs.backend.model.User;
+import com.gacs.backend.repository.UserRepository;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.Cookie;
@@ -27,6 +29,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     @Autowired(required = false)
     private JwtUtils jwtUtils;
 
+    @Autowired(required = false)
+    private UserRepository userRepository;
+
     @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
@@ -35,6 +40,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             String jwt = parseJwt(request);
             if (jwtUtils != null && jwt != null && jwtUtils.validateToken(jwt)) {
                 String email = jwtUtils.getEmailFromToken(jwt);
+                // A ban only revokes refresh tokens, so refuse a banned user's still-valid access token here.
+                if (userRepository != null && userRepository.findByEmail(email).map(User::isBanned).orElse(false)) {
+                    filterChain.doFilter(request, response);
+                    return;
+                }
                 String rawRole = jwtUtils.getRoleFromToken(jwt);
 
                 String authorityName;

@@ -97,6 +97,25 @@ class BanIntegrationTest {
     }
 
     @Test
+    void banEndsAnOpenSession() throws Exception {
+        String body = login(target).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String accessToken = new com.fasterxml.jackson.databind.ObjectMapper().readTree(body).get("accessToken").asText();
+
+        mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk());
+
+        setBanned(target, true).andExpect(status().isOk());
+
+        mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().is4xxClientError());
+
+        setBanned(target, false).andExpect(status().isOk());
+
+        mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void adminCannotBanSelf() throws Exception {
         setBanned(admin, true).andExpect(status().isBadRequest());
         login(admin).andExpect(status().isOk());
