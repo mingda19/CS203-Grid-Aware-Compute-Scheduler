@@ -50,7 +50,7 @@ export function ChartCard({ title, description, controls, height, subject, loadi
           <h2 className="truncate text-sm font-semibold leading-5" title={title}>{title}</h2>
           <p className="text-xs leading-4 text-muted-foreground">{description}</p>
         </div>
-        {controls && <div className="flex shrink-0 flex-nowrap items-center gap-2">{controls}</div>}
+        {controls && <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">{controls}</div>}
       </div>
       {loading ? (
         <div className="px-4 pb-4 sm:px-5 sm:pb-5">

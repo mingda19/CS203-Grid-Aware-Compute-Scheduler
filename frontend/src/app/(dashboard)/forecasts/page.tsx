@@ -8,7 +8,7 @@ import { unwrap, useLoad } from "@/components/home/use-load"
 import { AccuracyCard } from "@/components/forecasts/AccuracyCard"
 import { CheapHoursCard, DriftCard, HourOfDayCard, KeyFigures, ScatterCard } from "@/components/forecasts/AnalysisCards"
 import { ForecastCard } from "@/components/forecasts/ForecastCard"
-import { latestRun, STALE_AFTER_MS, useForecastCard } from "@/components/forecasts/use-forecast-card"
+import { latestRun, REFRESH_MS, STALE_AFTER_MS, useForecastCard } from "@/components/forecasts/use-forecast-card"
 import { Segmented } from "@/components/ui/segmented"
 import { facilityApi, priceApi, type ForecastModel } from "@/lib/api"
 import { formatRelativeAgo, parseIsoDate } from "@/lib/date-utils"
@@ -38,8 +38,8 @@ export default function ForecastsPage() {
   const { nowMs, learForecast } = forecast
 
   // Both models load up front, so a switch is instant.
-  const learAccuracy = useLoad(zone && `lear-accuracy:${zone}`, () => loadAccuracy(zone ?? DEFAULT_ZONE, "lear"))
-  const lstmAccuracy = useLoad(zone && `lstm-accuracy:${zone}`, () => loadAccuracy(zone ?? DEFAULT_ZONE, "lstm"))
+  const learAccuracy = useLoad(zone && `lear-accuracy:${zone}`, () => loadAccuracy(zone ?? DEFAULT_ZONE, "lear"), REFRESH_MS)
+  const lstmAccuracy = useLoad(zone && `lstm-accuracy:${zone}`, () => loadAccuracy(zone ?? DEFAULT_ZONE, "lstm"), REFRESH_MS)
   const shownAccuracy = model === "lear" ? learAccuracy : lstmAccuracy
   const accuracyLoading = !zone || shownAccuracy.loading
   const from = nowMs - WINDOW_DAYS[analysisWindow] * 24 * HOUR_MS
@@ -67,9 +67,9 @@ export default function ForecastsPage() {
       {/* No visible title. The heading stays for screen readers. */}
       <h1 className="sr-only">Price forecast</h1>
 
-      {/* One row at every width: the two switches stay together on the left, Refresh on the right. */}
+      {/* The switches stay on the left and Refresh on the right. The switches wrap when the row is too narrow. */}
       <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-nowrap items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Segmented label="Forecast model" value={model} onChange={setModel} options={MODEL_OPTIONS} />
           <Segmented label="Window" value={analysisWindow} onChange={setAnalysisWindow} options={WINDOW_OPTIONS} />
         </div>
