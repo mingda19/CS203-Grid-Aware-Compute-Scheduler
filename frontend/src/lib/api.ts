@@ -5,6 +5,7 @@ export interface User {
   role: string
   isVerified?: boolean
   verified?: boolean
+  banned?: boolean
 }
 
 export interface AuthResponse {
@@ -1108,6 +1109,13 @@ export const adminApi = {
     return fetchJson<ApiResponse<User>>(`/api/admin/users/${userId}/role`, {
       method: "PATCH",
       body: JSON.stringify({ role }),
+    })
+  },
+
+  async setUserBanned(userId: number, banned: boolean): Promise<ApiResponse<User>> {
+    return fetchJson<ApiResponse<User>>(`/api/admin/users/${userId}/ban`, {
+      method: "PATCH",
+      body: JSON.stringify({ banned }),
     })
   },
 }

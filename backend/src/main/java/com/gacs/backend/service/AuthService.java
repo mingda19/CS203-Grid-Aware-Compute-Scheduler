@@ -247,6 +247,12 @@ public class AuthService {
             throw new BadCredentialsException("Invalid email or password.");
         }
 
+        // After the password check, so only the owner learns the account is disabled;
+        // before the OTP check, so a banned account gets no OTP emails.
+        if (user.isBanned()) {
+            throw new BadCredentialsException("This account is disabled. Contact an administrator.");
+        }
+
         // Check if account has completed OTP verification
         if (!user.isVerified()) {
             String otpCode = generateAndSaveOtp(email);
