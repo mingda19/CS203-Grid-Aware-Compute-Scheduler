@@ -46,7 +46,8 @@ interface ForecastCardProps {
   onPastWindowChange: (window: PastWindow) => void
   /** Draws what each past hour had been forecast, over the known price. */
   showPast: boolean
-  onShowPastChange: (show: boolean) => void
+  /** Leave out to hide the past-forecasts toggle (Home does). */
+  onShowPastChange?: (show: boolean) => void
   /** The shown model's latest run, shown in the status badge's hover text. */
   run: { generatedAt: string } | null
   status: DataStatusType
@@ -95,16 +96,18 @@ export function ForecastCard({
             <DataStatusBadge size="sm" status={status} updatedAt={run?.generatedAt ?? null} source={`${name} forecast for ${zone}, ${MODEL_ROLE[model]}`} />
           )}
           {onModelChange && <Segmented label="Forecast model" value={model} onChange={onModelChange} options={MODEL_OPTIONS} />}
-          <Toggle
-            size="sm"
-            pressed={showPast}
-            onPressedChange={onShowPastChange}
-            aria-label="Show past forecasts"
-            title="Show past forecasts"
-            className="px-0 data-[state=on]:bg-primary/15 data-[state=on]:text-foreground"
-          >
-            <History />
-          </Toggle>
+          {onShowPastChange && (
+            <Toggle
+              size="sm"
+              pressed={showPast}
+              onPressedChange={onShowPastChange}
+              aria-label="Show past forecasts"
+              title="Show past forecasts"
+              className="px-0 data-[state=on]:bg-primary/15 data-[state=on]:text-foreground"
+            >
+              <History />
+            </Toggle>
+          )}
           <Segmented label="Past window" value={pastWindow} onChange={onPastWindowChange} options={PAST_OPTIONS} />
         </div>
       </div>

@@ -13,9 +13,11 @@ import java.util.List;
 public class AdminService {
 
     private final UserRepository userRepository;
+    private final RefreshTokenService refreshTokenService;
 
-    public AdminService(UserRepository userRepository) {
+    public AdminService(UserRepository userRepository, RefreshTokenService refreshTokenService) {
         this.userRepository = userRepository;
+        this.refreshTokenService = refreshTokenService;
     }
 
     /**
@@ -49,5 +51,23 @@ public class AdminService {
         user.setRole(newRole);
         User savedUser = userRepository.save(user);
         return new UserDto(savedUser);
+    }
+
+    /**
+     * Bans or unbans a user. A ban also logs the user out of all sessions.
+     */
+    @Transactional
+    public UserDto setBanned(Long userId, boolean banned, String currentAdminEmail) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found with id: " + userId));
+        if (user.getEmail().equalsIgnoreCase(currentAdminEmail)) {
+            throw new IllegalArgumentException("You cannot ban your own account.");
+        }
+        user.setBanned(banned);
+        User saved = userRepository.save(user);
+        if (banned) {
+            refreshTokenService.revokeAllUserTokens(saved);
+        }
+        return new UserDto(saved);
     }
 }

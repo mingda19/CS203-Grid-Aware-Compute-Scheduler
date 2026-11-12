@@ -48,6 +48,13 @@ public class User {
     public LocalDateTime getPasswordResetRequestedAt() { return passwordResetRequestedAt; }
     public void setPasswordResetRequestedAt(LocalDateTime value) { passwordResetRequestedAt = value; }
 
+    // Default needed so ddl-auto=update can add NOT NULL to a table that already has rows.
+    @Column(name = "banned", nullable = false, columnDefinition = "boolean default false")
+    private boolean banned = false;
+
+    public boolean isBanned() { return banned; }
+    public void setBanned(boolean banned) { this.banned = banned; }
+
     public User() {
     }
 

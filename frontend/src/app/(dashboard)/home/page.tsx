@@ -134,6 +134,7 @@ export default function HomePage() {
 
       <ForecastCard
         {...forecast.card}
+        onShowPastChange={undefined}
         footerAction={
           <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs leading-4">
             <Link href="/forecasts">Details</Link>

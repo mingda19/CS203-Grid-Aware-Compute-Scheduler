@@ -457,6 +457,24 @@ class AuthServiceTest {
     }
 
     @Test
+    void login_ShouldFail_WhenUserBanned() {
+        String hashedPassword = passwordEncoder.encode("P@ssw0rd2026!");
+        User bannedUser = new User("elena.vance@datacenter.io", hashedPassword, "Elena Vance", "ROLE_USER");
+        bannedUser.setVerified(true);
+        bannedUser.setBanned(true);
+
+        when(userRepository.findByEmail("elena.vance@datacenter.io")).thenReturn(Optional.of(bannedUser));
+
+        MockHttpServletRequest mockRequest = new MockHttpServletRequest();
+        LoginRequest loginRequest = new LoginRequest("elena.vance@datacenter.io", "P@ssw0rd2026!");
+
+        BadCredentialsException ex = assertThrows(BadCredentialsException.class,
+                () -> authService.login(loginRequest, mockRequest));
+        assertEquals("This account is disabled. Contact an administrator.", ex.getMessage());
+        verify(refreshTokenService, never()).createRefreshToken(any(), anyBoolean());
+    }
+
+    @Test
     void refreshToken_ShouldRotateTokenAndSetNewCookie() {
         User user = new User("elena.vance@datacenter.io", "encoded", "Elena Vance", "ROLE_USER");
         RefreshToken rotatedToken = new RefreshToken("rotatedToken999", user, Instant.now().plusSeconds(1209600), true);

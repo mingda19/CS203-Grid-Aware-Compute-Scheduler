@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { ShieldCheck, ShieldAlert, Users, UserCheck, Search, RefreshCw, AlertCircle, CheckCircle2, Shield, Clock } from "lucide-react"
+import { ShieldCheck, ShieldAlert, Users, UserCheck, Search, RefreshCw, AlertCircle, CheckCircle2, Shield, Clock, Ban } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -25,7 +25,8 @@ export default function AdminPage() {
   const [isLoading, setIsLoading] = React.useState(true)
   const [searchQuery, setSearchQuery] = React.useState("")
   const [roleFilter, setRoleFilter] = React.useState<"ALL" | "ROLE_ADMIN" | "ROLE_USER">("ALL")
-  const [actionLoadingId, setActionLoadingId] = React.useState<number | null>(null)
+  // The row and the action that is running, so only the clicked button shows a spinner.
+  const [actionLoading, setActionLoading] = React.useState<{ id: number; kind: "role" | "ban" } | null>(null)
   const [feedback, setFeedback] = React.useState<{ type: "success" | "error"; message: string } | null>(null)
   const [loadError, setLoadError] = React.useState("")
 
@@ -88,7 +89,7 @@ export default function AdminPage() {
 
     if (!window.confirm(confirmText)) return
 
-    setActionLoadingId(targetUser.id)
+    setActionLoading({ id: targetUser.id, kind: "role" })
     setFeedback(null)
 
     try {
@@ -108,7 +109,36 @@ export default function AdminPage() {
         message: (err instanceof Error ? err.message : "") || "Could not update user role.",
       })
     } finally {
-      setActionLoadingId(null)
+      setActionLoading(null)
+    }
+  }
+
+  const handleToggleBan = async (targetUser: User) => {
+    const name = targetUser.fullName || targetUser.email
+    const ban = !targetUser.banned
+    if (ban && !window.confirm(`Ban ${name}? They are logged out and cannot log back in.`)) return
+
+    setActionLoading({ id: targetUser.id, kind: "ban" })
+    setFeedback(null)
+
+    try {
+      const response = await adminApi.setUserBanned(targetUser.id, ban)
+      if (response.data) {
+        setUsers((prev) =>
+          prev.map((u) => (u.id === targetUser.id ? response.data! : u))
+        )
+        setFeedback({
+          type: "success",
+          message: ban ? `${name} is banned. They cannot log in.` : `${name} is unbanned. They can log in again.`,
+        })
+      }
+    } catch (err: unknown) {
+      setFeedback({
+        type: "error",
+        message: (err instanceof Error ? err.message : "") || (ban ? "Could not ban the user." : "Could not unban the user."),
+      })
+    } finally {
+      setActionLoading(null)
     }
   }
 
@@ -307,6 +337,8 @@ export default function AdminPage() {
                       const isSelf =
                         u.email.toLowerCase() === currentUser?.email?.toLowerCase()
                       const isAdmin = u.role === "ROLE_ADMIN"
+                      const isBusy = actionLoading?.id === u.id
+                      const spinning = (kind: "role" | "ban") => isBusy && actionLoading?.kind === kind
 
                       return (
                         <tr
@@ -343,7 +375,12 @@ export default function AdminPage() {
                           </td>
 
                           <td className="py-3 px-4">
-                            {Boolean(u.isVerified ?? u.verified) ? (
+                            {u.banned ? (
+                              <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600 dark:text-red-400">
+                                <Ban className="h-3.5 w-3.5" />
+                                Banned
+                              </span>
+                            ) : Boolean(u.isVerified ?? u.verified) ? (
                               <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
                                 <CheckCircle2 className="h-3.5 w-3.5" />
                                 Verified
@@ -371,11 +408,12 @@ export default function AdminPage() {
                           </td>
 
                           <td className="py-3 px-4 text-right">
+                            <div className="flex justify-end gap-2">
                             {isAdmin ? (
                               <Button
                                 variant="outline"
                                 size="sm"
-                                disabled={isSelf || actionLoadingId === u.id}
+                                disabled={isSelf || isBusy}
                                 onClick={() => handleToggleRole(u)}
                                 className="h-7 text-xs border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                                 title={
@@ -384,7 +422,7 @@ export default function AdminPage() {
                                     : "Demote to standard user"
                                 }
                               >
-                                {actionLoadingId === u.id ? (
+                                {spinning("role") ? (
                                   <RefreshCw className="h-3 w-3 animate-spin" />
                                 ) : (
                                   "Demote to User"
@@ -394,18 +432,37 @@ export default function AdminPage() {
                               <Button
                                 variant="outline"
                                 size="sm"
-                                disabled={actionLoadingId === u.id}
+                                disabled={isBusy}
                                 onClick={() => handleToggleRole(u)}
                                 className="h-7 text-xs border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 cursor-pointer"
                                 title="Grant Administrator privileges"
                               >
-                                {actionLoadingId === u.id ? (
+                                {spinning("role") ? (
                                   <RefreshCw className="h-3 w-3 animate-spin" />
                                 ) : (
                                   "Make Admin"
                                 )}
                               </Button>
                             )}
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={isSelf || isBusy}
+                                onClick={() => handleToggleBan(u)}
+                                className={`h-7 text-xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                                  u.banned ? "" : "border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/10"
+                                }`}
+                                title={isSelf ? "Cannot ban your own account" : u.banned ? "Allow this user to log in again" : "Log out and block this user"}
+                              >
+                                {spinning("ban") ? (
+                                  <RefreshCw className="h-3 w-3 animate-spin" />
+                                ) : u.banned ? (
+                                  "Unban"
+                                ) : (
+                                  "Ban"
+                                )}
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       )
