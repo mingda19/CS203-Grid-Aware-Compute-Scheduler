@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: 'Datasets to ingest (leave blank for all: weather,eia,dam,features). The model-feature cache refreshes last, and also after weather or eia on their own.'
+        description: 'Datasets to ingest (leave blank for all: weather,eia,dam,load_forecast)'
         required: false
         default: ''
       anchor_date:

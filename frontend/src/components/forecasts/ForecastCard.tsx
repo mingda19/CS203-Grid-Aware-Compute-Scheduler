@@ -13,13 +13,15 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
+import { History } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { DataStatusBadge, type DataStatusType } from "@/components/ui/data-status-badge"
 import { Segmented } from "@/components/ui/segmented"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Toggle } from "@/components/ui/toggle"
 import type { ForecastModel } from "@/lib/api"
-import { formatMarketChartTick, formatMarketDateTime, formatShortDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
+import { formatMarketChartTick, formatShortDateTime, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { formatConfidence } from "@/lib/forecast-confidence"
 import { money } from "@/lib/format"
 import { hourSpans, LOW_HOURS_PER_DAY, MODEL_LABEL, MODEL_OPTIONS, MODEL_ROLE, timeTicks, type ForecastRow } from "@/lib/price-forecast"
@@ -38,10 +40,14 @@ interface ForecastCardProps {
   from: number
   to: number
   model: ForecastModel
-  onModelChange: (model: ForecastModel) => void
+  /** Leave out when the page owns the model switch: the card then hides its own. */
+  onModelChange?: (model: ForecastModel) => void
   pastWindow: PastWindow
   onPastWindowChange: (window: PastWindow) => void
-  /** The shown model's latest run, for the caption. */
+  /** Draws what each past hour had been forecast, over the known price. */
+  showPast: boolean
+  onShowPastChange: (show: boolean) => void
+  /** The shown model's latest run, shown in the status badge's hover text. */
   run: { generatedAt: string } | null
   status: DataStatusType
   /** Start times of the cheapest hours of each day, shaded on the chart. */
@@ -56,21 +62,21 @@ interface ForecastCardProps {
   footerAction?: React.ReactNode
 }
 
-function DashSwatch({ color }: { color: string }) {
+export function DashSwatch({ color, dash = "5 3" }: { color: string; dash?: string }) {
   return (
     <svg width="20" height="2" aria-hidden="true" className="shrink-0">
-      <line x1="0" y1="1" x2="20" y2="1" stroke={color} strokeWidth="2" strokeDasharray="5 3" />
+      <line x1="0" y1="1" x2="20" y2="1" stroke={color} strokeWidth="2" strokeDasharray={dash} />
     </svg>
   )
 }
 
-function LegendItem({ swatch, children }: { swatch: React.ReactNode; children: React.ReactNode }) {
+export function LegendItem({ swatch, children }: { swatch: React.ReactNode; children: React.ReactNode }) {
   return <li className="inline-flex items-center gap-1.5 whitespace-nowrap">{swatch}{children}</li>
 }
 
 /** The next 72 hours with the model's typical error as a band. Home and the Forecast page both show it; `useForecastCard` feeds it. */
 export function ForecastCard({
-  zone, rows, nowMs, from, to, model, onModelChange, pastWindow, onPastWindowChange, run, status, lowHours, loading, error, failed, onRetry, footerAction,
+  zone, rows, nowMs, from, to, model, onModelChange, pastWindow, onPastWindowChange, showPast, onShowPastChange, run, status, lowHours, loading, error, failed, onRetry, footerAction,
 }: ForecastCardProps) {
   const ticks = React.useMemo(() => timeTicks(from, to), [from, to])
   const lowSpans = React.useMemo(() => hourSpans(lowHours), [lowHours])
@@ -81,14 +87,24 @@ export function ForecastCard({
       {/* Below sm the switches move under the title; they wrap onto a new line when the row is too narrow. */}
       <div className="flex min-w-0 flex-col gap-3 p-4 pb-2 sm:flex-row sm:items-start sm:justify-between sm:p-5 sm:pb-2">
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold leading-5">Forecast, next 72 hours</h2>
-          <p className="truncate text-xs leading-4 text-muted-foreground" title={run ? formatMarketDateTime(run.generatedAt) : undefined}>
-            {zone} · {name}, {MODEL_ROLE[model]}{run ? ` · made ${formatShortDateTime(run.generatedAt)}` : ""}
-          </p>
+          <h2 className="text-sm font-semibold leading-5">Price Forecast, next 72 hours</h2>
+          <p className="text-xs leading-4 text-muted-foreground">Day-ahead prices so far, and the model&apos;s forecast with its typical error.</p>
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
-          {!loading && <DataStatusBadge size="sm" status={status} updatedAt={run?.generatedAt ?? null} source={`${name} forecast for ${zone}`} />}
-          <Segmented label="Forecast model" value={model} onChange={onModelChange} options={MODEL_OPTIONS} />
+          {!loading && (
+            <DataStatusBadge size="sm" status={status} updatedAt={run?.generatedAt ?? null} source={`${name} forecast for ${zone}, ${MODEL_ROLE[model]}`} />
+          )}
+          {onModelChange && <Segmented label="Forecast model" value={model} onChange={onModelChange} options={MODEL_OPTIONS} />}
+          <Toggle
+            size="sm"
+            pressed={showPast}
+            onPressedChange={onShowPastChange}
+            aria-label="Show past forecasts"
+            title="Show past forecasts"
+            className="px-0 data-[state=on]:bg-primary/15 data-[state=on]:text-foreground"
+          >
+            <History />
+          </Toggle>
           <Segmented label="Past window" value={pastWindow} onChange={onPastWindowChange} options={PAST_OPTIONS} />
         </div>
       </div>
@@ -146,6 +162,7 @@ export function ForecastCard({
                       if (!row) return null
                       const lines: Array<[string, React.ReactNode]> = []
                       if (row.price != null) lines.push([row.t > nowMs ? "Day-ahead price (known)" : "Day-ahead price", <>{money(row.price)}{PER_MWH}</>])
+                      if (row.pastForecast != null) lines.push([`Was forecast (${name})`, <>{money(row.pastForecast)}{PER_MWH}</>])
                       if (row.price == null && row.forecast != null) {
                         lines.push([`Forecast (${name})`, <>{money(row.forecast)}{PER_MWH}</>])
                         if (row.typicalError != null) lines.push(["Typical error", <>± {money(row.typicalError)}{PER_MWH}</>])
@@ -181,6 +198,11 @@ export function ForecastCard({
                   />
                   <Line dataKey="price" stroke="var(--primary)" strokeWidth={2} dot={false} isAnimationActive={false}
                     activeDot={{ r: 4, stroke: "var(--primary)", strokeWidth: 2, fill: "var(--card)" }} />
+                  {/* Past forecasts are muted so the real price stays the line that reads first. */}
+                  {showPast && (
+                    <Line dataKey="pastForecast" stroke="var(--muted-foreground)" strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false}
+                      activeDot={{ r: 4, stroke: "var(--muted-foreground)", strokeWidth: 2, fill: "var(--card)" }} />
+                  )}
                   <Line dataKey="forecast" stroke="var(--primary)" strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false}
                     activeDot={{ r: 4, stroke: "var(--primary)", strokeWidth: 2, fill: "var(--card)" }} />
                 </ComposedChart>
@@ -191,6 +213,7 @@ export function ForecastCard({
               <ul className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 <LegendItem swatch={<span className="h-0.5 w-5 shrink-0 bg-primary" aria-hidden="true" />}>Day-ahead price</LegendItem>
                 <LegendItem swatch={<DashSwatch color="var(--primary)" />}>Forecast ({name})</LegendItem>
+                {showPast && <LegendItem swatch={<DashSwatch color="var(--muted-foreground)" />}>Past forecast ({name})</LegendItem>}
                 <LegendItem swatch={<span className="h-3 w-5 shrink-0 rounded-sm bg-primary/15" aria-hidden="true" />}>Typical error</LegendItem>
                 {lowSpans.length > 0 && (
                   <LegendItem swatch={<span className="h-3 w-5 shrink-0 rounded-sm bg-muted-foreground/15" aria-hidden="true" />}>
@@ -198,6 +221,7 @@ export function ForecastCard({
                   </LegendItem>
                 )}
                 <LegendItem swatch={<span className="h-3 w-0 shrink-0 border-l border-dashed border-foreground" aria-hidden="true" />}>Now</LegendItem>
+                <li className="whitespace-nowrap">$/MWh, {MARKET_ZONE_LABEL}</li>
               </ul>
               {footerAction && <span className="ml-auto shrink-0">{footerAction}</span>}
             </div>
