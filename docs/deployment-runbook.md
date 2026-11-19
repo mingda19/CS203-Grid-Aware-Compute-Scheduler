@@ -47,8 +47,8 @@ flowchart TD
 ### Infrastructure Summary
 | Component | Hosting Provider | Runtime / Platform | Production URL / Domain | Purpose |
 | :--- | :--- | :--- | :--- | :--- |
-| **Backend API** | Render | Docker (Temurin JDK 25) | `https://gacs-backend.onrender.com` | Core business logic, scheduling engine, auth, JWT issuance, price data |
-| **Frontend UI** | Vercel | Node.js 20 / Next.js 16 | `https://gacs-frontend.vercel.app` | Responsive operator dashboard, calendar view, forecast visualizations |
+| **Backend API** | Render | Docker (Temurin JDK 25) | `https://cs203-grid-aware-compute-scheduler-p1qm.onrender.com` | Core business logic, scheduling engine, auth, JWT issuance, price data |
+| **Frontend UI** | Vercel | Node.js 20 / Next.js 16 | `https://cs-203-grid-aware-compute-scheduler.vercel.app` | Responsive operator dashboard, calendar view, forecast visualizations |
 | **Database** | Managed PostgreSQL (Render / Neon / Supabase) | PostgreSQL 16+ | Direct connection string via `DATABASE_URL` | User credentials, compute tasks, grid price history, forecast predictions |
 | **CI / CD Automation** | GitHub Actions | Ubuntu Latest Runner | `.github/workflows/ci.yml`<br>`.github/workflows/cd.yml` | Automated unit/integration tests, staging enforcement, build verification, auto-deploy |
 
@@ -70,14 +70,14 @@ Configure in **Render Dashboard $\rightarrow$ Web Service $\rightarrow$ Environm
 | `JWT_REFRESH_EXPIRATION_MS` | Yes | `86400000` (24 hours) | Expiration time for standard refresh tokens |
 | `JWT_REMEMBER_ME_EXPIRATION_MS` | Yes | `1209600000` (14 days) | Expiration time for extended remember-me refresh tokens |
 | `COOKIE_SECURE` | Yes | `true` | Enforces `Secure` flag on JWT HTTP-only cookies in HTTPS |
-| `CORS_ALLOWED_ORIGINS` | Yes | `https://gacs-frontend.vercel.app` | Comma-delimited list of allowed frontend origins for CORS |
+| `CORS_ALLOWED_ORIGINS` | Yes | `https://cs-203-grid-aware-compute-scheduler.vercel.app` | Comma-delimited list of allowed frontend origins for CORS |
 
 ### 2.2 Frontend Environment Variables (Vercel)
 Configure in **Vercel Project $\rightarrow$ Settings $\rightarrow$ Environment Variables**:
 
 | Variable Name | Environment | Example Value | Description |
 | :--- | :---: | :--- | :--- |
-| `NEXT_PUBLIC_API_URL` | Production & Preview | `https://gacs-backend.onrender.com` | Base URL used by browser fetch client to communicate with backend API |
+| `NEXT_PUBLIC_API_URL` | Production & Preview | `https://cs203-grid-aware-compute-scheduler-p1qm.onrender.com` | Base URL used by browser fetch client to communicate with backend API |
 
 ### 2.3 GitHub Actions Repository Secrets
 Configure in **GitHub Repository $\rightarrow$ Settings $\rightarrow$ Secrets and variables $\rightarrow$ Actions**:
@@ -177,7 +177,7 @@ After an automated deployment triggers, the on-call engineer or release manager 
 ### 5.1 Backend Health Check
 Run the health check endpoint to confirm application status and database connectivity:
 ```bash
-curl -i -X GET "https://gacs-backend.onrender.com/actuator/health"
+curl -i -X GET "https://cs203-grid-aware-compute-scheduler-p1qm.onrender.com/api/health"
 ```
 **Expected Response:**
 ```json
@@ -185,15 +185,17 @@ HTTP/1.1 200 OK
 Content-Type: application/json
 
 {
-  "status": "UP"
+  "data": { "status": "UP", "database": "UP", "timestamp": "..." },
+  "message": "Service is healthy",
+  "success": true
 }
 ```
-*(If `/actuator/health` is protected or unmapped, verify standard health probe `GET /health` or Swagger endpoint `GET /v3/api-docs`)*.
+*(A `503` with `"database": "DOWN"` means the backend is running but cannot reach the database.)*
 
 ### 5.2 API Contract & Authentication Smoke Test
 Verify that the auth flow and token generation operate correctly against the production database:
 ```bash
-curl -i -X POST "https://gacs-backend.onrender.com/api/auth/login" \
+curl -i -X POST "https://cs203-grid-aware-compute-scheduler-p1qm.onrender.com/api/auth/login" \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@datacenter.io","password":"[ConfiguredPassword]"}'
 ```
@@ -202,7 +204,7 @@ curl -i -X POST "https://gacs-backend.onrender.com/api/auth/login" \
 - Returns JSON payload containing user details and set-cookie header with `refreshToken` (`HttpOnly; Secure; SameSite=Strict`).
 
 ### 5.3 Frontend Production Smoke Test
-1. Open `https://gacs-frontend.vercel.app` in an incognito browser window.
+1. Open `https://cs-203-grid-aware-compute-scheduler.vercel.app` in an incognito browser window.
 2. Verify the login page loads cleanly without CORS or network errors in developer tools console (`F12`).
 3. Log in with test credentials and verify that the dashboard widgets (forecast curve, compute workload calendar) render live data.
 
@@ -234,7 +236,7 @@ Render supports zero-downtime instant rollbacks to any prior successful build.
 
 #### Option 1: Instant Dashboard Rollback (Recommended — < 1 Minute)
 1. Navigate to the **[Render Dashboard](https://dashboard.render.com/)**.
-2. Select the `gacs-backend` Web Service.
+2. Select the `cs203-grid-aware-compute-scheduler` Web Service.
 3. In the left navigation, click **Deploys**.
 4. Identify the last known **Live** or successful deployment prior to the failure.
 5. Click the three dots menu `...` on that deploy row and select **Rollback to this deploy**.
@@ -258,7 +260,7 @@ Vercel maintains immutable deployments for every build. Rolling back is instanta
 2. Click on the **Deployments** tab.
 3. Locate the previous stable production deployment.
 4. Click the three dots `...` next to the deployment and click **Instant Rollback** (or **Promote to Production**).
-5. Confirm the dialog. Vercel instantly routes 100% of production domain traffic (`https://gacs-frontend.vercel.app`) to the selected deployment.
+5. Confirm the dialog. Vercel instantly routes 100% of production domain traffic (`https://cs-203-grid-aware-compute-scheduler.vercel.app`) to the selected deployment.
 
 #### Option 2: Rollback via Vercel CLI
 If running from terminal:
@@ -267,7 +269,7 @@ If running from terminal:
 vercel rollback --token="$VERCEL_TOKEN" --yes
 
 # Or re-assign production alias directly to a specific deployment URL
-vercel alias set <previous-deployment-url.vercel.app> gacs-frontend.vercel.app --token="$VERCEL_TOKEN"
+vercel alias set <previous-deployment-url.vercel.app> cs-203-grid-aware-compute-scheduler.vercel.app --token="$VERCEL_TOKEN"
 ```
 
 ---
