@@ -1,3 +1,4 @@
+# CS203 Grid-Aware Compute Scheduler (GACS)
 # Grid-Aware Compute Scheduler (GACS)
 
 GACS moves flexible compute workloads, such as AI training and batch jobs, to the hours when
@@ -58,6 +59,15 @@ Render cron job for the daily run.
 | `data/` | Local data files. Gitignored |
 | `render.yaml` | Render Blueprint for the daily cron job |
 | `.github/workflows/` | CI, CD, the daily pipeline and the weekly model tune |
+
+## Tech stack
+
+| Layer | Stack |
+|---|---|
+| Backend | Spring Boot (Java 25), Spring Security with JWT and refresh tokens, email OTP, PostgreSQL |
+| Frontend | Next.js, TypeScript, Vitest |
+| Forecasting | Python: LEAR, PyTorch LSTM |
+| Ops | GitHub Actions (CI, CD, daily pipeline, weekly retuning), Render |
 
 ## Quick start
 
