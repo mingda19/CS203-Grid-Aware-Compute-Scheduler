@@ -45,7 +45,7 @@ flowchart TD
    * `JWT_REFRESH_EXPIRATION_MS`: `86400000`
    * `JWT_REMEMBER_ME_EXPIRATION_MS`: `1209600000`
    * `COOKIE_SECURE`: `true` (in production HTTPS)
-   * `CORS_ALLOWED_ORIGINS`: Your Vercel frontend URL (e.g. `https://gacs-frontend.vercel.app`)
+   * `CORS_ALLOWED_ORIGINS`: Your Vercel frontend URL (e.g. `https://cs-203-grid-aware-compute-scheduler.vercel.app`)
 5. **Get Deploy Hook URL**:
    * In Service **Settings** $\rightarrow$ scroll to **Deploy Hook**.
    * Click **Add Deploy Hook** $\rightarrow$ copy the generated URL:
@@ -61,7 +61,7 @@ flowchart TD
    * **Framework Preset**: `Next.js`
    * **Root Directory**: `frontend`
 4. Set Environment Variables:
-   * `NEXT_PUBLIC_API_URL`: Your Render backend URL (e.g. `https://gacs-backend.onrender.com`)
+   * `NEXT_PUBLIC_API_URL`: Your Render backend URL (e.g. `https://cs203-grid-aware-compute-scheduler-p1qm.onrender.com`)
 5. Click **Deploy**.
 6. **Obtain Vercel Token and IDs**:
    * `VERCEL_TOKEN`: Vercel Account $\rightarrow$ Settings $\rightarrow$ Tokens $\rightarrow$ Create Token.
