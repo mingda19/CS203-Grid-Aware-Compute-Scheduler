@@ -45,7 +45,7 @@ export function ScheduleExportButtons({ runId, unavailableReason, className }: S
             type="button"
             variant="outline"
             size="sm"
-            className="h-7 gap-1 px-2 text-[11px]"
+            className="h-7 gap-1 px-2 text-xs"
             disabled={!!unavailableReason || pending !== null}
             title={unavailableReason ?? `Download schedule-run-${runId}.${format}`}
             onClick={() => download(format)}
@@ -56,7 +56,7 @@ export function ScheduleExportButtons({ runId, unavailableReason, className }: S
         ))}
       </div>
       {error && (
-        <p role="alert" className="mt-1 max-w-xs text-right text-[11px] leading-snug text-red-600 dark:text-red-400">
+        <p role="alert" className="mt-1 max-w-xs text-right text-xs leading-snug text-destructive-foreground">
           {error}
         </p>
       )}

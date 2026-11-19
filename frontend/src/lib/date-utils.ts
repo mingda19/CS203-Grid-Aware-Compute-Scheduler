@@ -442,3 +442,22 @@ export function currentMarketHourInput(now: Date | string | number = Date.now())
 export function currentMarketHourStart(now: Date | string | number = Date.now()): Date {
   return new Date(Math.floor(parseIsoDate(now).getTime() / 36e5) * 36e5)
 }
+
+/**
+ * The one short display format for a date and time in market time: "Wed 11 Nov, 09:00", 24-hour,
+ * no zone (each surface labels the zone once). The year is added only when it is not the current
+ * year, as "Thu 11 Nov 2027, 09:00". Full dates stay in tooltips (formatMarketDateTime).
+ */
+export function formatShortDateTime(date: Date | string | number, now: Date | string | number = Date.now()): string {
+  const d = parseIsoDate(date)
+  if (isNaN(d.getTime())) return "—"
+  const year = (value: Date) => getMarketDateString(value).slice(0, 4)
+  const day = new Intl.DateTimeFormat(DISPLAY_LOCALE, {
+    timeZone: MARKET_TIMEZONE,
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    ...(year(d) !== year(parseIsoDate(now)) && { year: "numeric" as const }),
+  }).format(d).replace(",", "")
+  return `${day}, ${formatMarketTime(d, false)}`
+}

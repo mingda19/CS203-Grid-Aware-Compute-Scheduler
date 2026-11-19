@@ -4,6 +4,7 @@ import com.gacs.backend.dto.ApiResponse;
 import com.gacs.backend.dto.ExplanationResponseDto;
 import com.gacs.backend.dto.OptimizeRequestDto;
 import com.gacs.backend.dto.OptimizeResponseDto;
+import com.gacs.backend.service.JobPlanningService;
 import com.gacs.backend.service.ScheduleReviewService;
 import com.gacs.backend.service.ScheduleOptimizationService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -35,9 +36,12 @@ public class ScheduleOptimizationController {
 
     private final ScheduleReviewService reviewService;
     private final ScheduleOptimizationService optimizationService;
+    private final JobPlanningService planning;
 
     public ScheduleOptimizationController(ScheduleReviewService reviewService,
-                                          ScheduleOptimizationService optimizationService) {
+                                          ScheduleOptimizationService optimizationService,
+                                          JobPlanningService planning) {
+        this.planning = planning;
         this.reviewService = reviewService;
         this.optimizationService = optimizationService;
     }
@@ -86,6 +90,15 @@ public class ScheduleOptimizationController {
         // itself for the actual solve + explanation persistence.
         OptimizeResponseDto plan = reviewService.optimize(request, principal.getName());
         return ResponseEntity.ok(ApiResponse.ok("Optimized schedule generated", plan));
+    }
+
+    @Operation(summary = "Plan the caller's jobs again",
+        description = "The manual fallback for the autorun. Plans the caller's jobs that have no live plan, "
+            + "and also the ones whose last plan was rejected or that failed. A job in an approved plan is "
+            + "never included. The new plans wait for another user to approve them.")
+    @PostMapping("/recompute")
+    public ResponseEntity<ApiResponse<JobPlanningService.Result>> recompute(Principal principal) {
+        return ResponseEntity.ok(ApiResponse.ok("Jobs planned", planning.plan(principal.getName(), true)));
     }
 
     @Operation(summary = "View a persisted run explanation",

@@ -10,7 +10,7 @@ export async function unwrap<T>(request: Promise<ApiResponse<T>>, fallback: stri
   return response.data
 }
 
-interface LoadState<T> { data: T | null; error: boolean; loading: boolean }
+interface LoadState<T> { data: T | null; error: boolean; loading: boolean; /** ms of the last successful load; a failed quiet refresh leaves it, so callers can tell the data is old. */ updatedAt: number | null }
 
 /**
  * Loads one block of data for the Home page. Every block has a loading, error and ready state.
@@ -18,7 +18,7 @@ interface LoadState<T> { data: T | null; error: boolean; loading: boolean }
  * `pollMs` refreshes the data quietly: no skeleton, and an old value stays if a refresh fails.
  */
 export function useLoad<T>(key: string | null, load: () => Promise<T>, pollMs?: number) {
-  const [state, setState] = React.useState<LoadState<T>>({ data: null, error: false, loading: true })
+  const [state, setState] = React.useState<LoadState<T>>({ data: null, error: false, loading: true, updatedAt: null })
   const [attempt, setAttempt] = React.useState(0)
   const loadRef = React.useRef(load)
   React.useEffect(() => { loadRef.current = load })
@@ -28,8 +28,8 @@ export function useLoad<T>(key: string | null, load: () => Promise<T>, pollMs?: 
     let active = true
     const run = (quiet: boolean) => {
       loadRef.current().then(
-        (data) => { if (active) setState({ data, error: false, loading: false }) },
-        () => { if (active && !quiet) setState({ data: null, error: true, loading: false }) },
+        (data) => { if (active) setState({ data, error: false, loading: false, updatedAt: Date.now() }) },
+        () => { if (active && !quiet) setState({ data: null, error: true, loading: false, updatedAt: null }) },
       )
     }
     run(false)
@@ -38,7 +38,7 @@ export function useLoad<T>(key: string | null, load: () => Promise<T>, pollMs?: 
   }, [key, attempt, pollMs])
 
   const reload = React.useCallback(() => {
-    setState({ data: null, error: false, loading: true })
+    setState({ data: null, error: false, loading: true, updatedAt: null })
     setAttempt((n) => n + 1)
   }, [])
 

@@ -1,0 +1,14 @@
+{
+  "name": "nightly-batch",
+  "description": "CPU batch jobs that normally start just after Texas midnight (00:00-03:00 CDT = 05:00-08:00 UTC) with little room to move.",
+  "version": 1,
+  "seed": 2202,
+  "jobsPerDay": { "min": 4, "max": 8 },
+  "classes": [
+    { "name": "batch", "weight": 1.0,
+      "cpuHours": { "min": 64, "max": 240 }, "gpuHours": { "min": 0, "max": 0 },
+      "startHours": [5, 6, 7, 8],
+      "flexibilityHours": { "min": 0, "max": 4 }, "deadlineSlackHours": { "min": 0, "max": 2 },
+      "exemptShare": 0.0 }
+  ]
+}

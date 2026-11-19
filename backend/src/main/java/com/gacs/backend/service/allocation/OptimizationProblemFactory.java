@@ -85,6 +85,16 @@ public class OptimizationProblemFactory {
     }
 
     public OptimizationProblem build(OptimizeRequestDto request) {
+        return build(request, Map.of());
+    }
+
+    /**
+     * @param reserved what approved plans already use, by hour. The solver gets the capacity left over.
+     *                 Baselines use the whole capacity, so a job that fits alone on an empty facility is
+     *                 never refused here because other work holds its hours: the solver reports it
+     *                 {@code NO_FEASIBLE_SLOT} instead.
+     */
+    public OptimizationProblem build(OptimizeRequestDto request, Map<LocalDateTime, CapacityLimit> reserved) {
         if (request == null) {
             throw invalid("request body is required");
         }
@@ -118,8 +128,9 @@ public class OptimizationProblemFactory {
                         + " days of the earliest job's start, or retire it.");
             }
         }
-        return new OptimizationProblem(jobs, prices, capacity, baselinePlans, pairConstraints(request, jobs),
-                List.of(), earliestStart());
+        // Solve in what approved plans leave free; baselines keep the whole facility.
+        return new OptimizationProblem(jobs, prices, capacity.minus(reserved), baselinePlans,
+                pairConstraints(request, jobs), List.of(), earliestStart(), capacity);
     }
 
     // ------------------------------------------------------------ pair constraints

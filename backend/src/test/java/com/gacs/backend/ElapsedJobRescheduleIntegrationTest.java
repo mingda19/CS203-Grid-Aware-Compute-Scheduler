@@ -59,6 +59,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ElapsedJobRescheduleIntegrationTest {
 
     @Autowired MockMvc mvc;
+    @Autowired com.gacs.backend.service.AppSettingsService appSettings;
     @Autowired UserRepository users;
     @Autowired JobRepository jobs;
     @Autowired FacilityRepository facilities;
@@ -75,6 +76,7 @@ class ElapsedJobRescheduleIntegrationTest {
 
     @BeforeEach
     void setup() {
+        appSettings.update(true);
         owner = users.save(new User(UUID.randomUUID() + "@test.io", "password", "Operator", "ROLE_USER"));
         now = LocalDateTime.now(ZoneOffset.UTC).truncatedTo(ChronoUnit.HOURS);
         // Saved through the repository on purpose: JobService refuses a start time in the past, which
@@ -93,7 +95,7 @@ class ElapsedJobRescheduleIntegrationTest {
         schedules.deleteAll(schedules.findByOwnerEmailOrderByStartUtcAsc(owner.getEmail()));
         for (String run : created) { plans.deleteById(run); runs.deleteById(run); }
         jobs.deleteAll(jobs.findByOwnerEmailOrderByOriginalStartTimeAsc(owner.getEmail()));
-        facilities.deleteAll(facilities.findAllByOwnerEmail(owner.getEmail()));
+        facilities.deleteAll(); // one shared facility: reset it for the next test class
         users.deleteById(owner.getId());
     }
 

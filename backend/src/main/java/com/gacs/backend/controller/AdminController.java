@@ -1,6 +1,7 @@
 package com.gacs.backend.controller;
 
 import com.gacs.backend.dto.ApiResponse;
+import com.gacs.backend.dto.UpdateBanRequest;
 import com.gacs.backend.dto.UpdateRoleRequest;
 import com.gacs.backend.dto.UserDto;
 import com.gacs.backend.service.AdminService;
@@ -98,5 +99,45 @@ public class AdminController {
         String adminEmail = authentication != null ? authentication.getName() : "";
         UserDto updatedUser = adminService.updateUserRole(id, request.getRole(), adminEmail);
         return ResponseEntity.ok(ApiResponse.ok("User role updated successfully", updatedUser));
+    }
+
+    /**
+     * Bans or unbans a user. Only accessible by ADMIN.
+     */
+    @Operation(
+            summary = "Ban or unban a user",
+            description = "Sets the banned flag of a user. A banned user cannot log in, and a ban also logs the user "
+                    + "out of all sessions. An administrator cannot ban their own account. Requires ROLE_ADMIN privilege."
+    )
+    @ApiResponses(value = {
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(
+                    responseCode = "200",
+                    description = "User banned or unbanned successfully.",
+                    content = @Content(schema = @Schema(implementation = ApiResponse.class))
+            ),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(
+                    responseCode = "400",
+                    description = "Missing banned value, target user not found, or attempted self-ban."
+            ),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(
+                    responseCode = "401",
+                    description = "Unauthorized: Invalid or missing JWT token."
+            ),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(
+                    responseCode = "403",
+                    description = "Forbidden: User lacks ROLE_ADMIN privilege."
+            )
+    })
+    @PatchMapping("/{id}/ban")
+    public ResponseEntity<ApiResponse<UserDto>> setUserBanned(
+            @Parameter(description = "Unique numeric identifier of the user to ban or unban", required = true, example = "2")
+            @PathVariable Long id,
+            @Valid @RequestBody UpdateBanRequest request,
+            Authentication authentication
+    ) {
+        String adminEmail = authentication != null ? authentication.getName() : "";
+        boolean banned = request.getBanned();
+        UserDto updatedUser = adminService.setBanned(id, banned, adminEmail);
+        return ResponseEntity.ok(ApiResponse.ok(banned ? "User banned" : "User unbanned", updatedUser));
     }
 }

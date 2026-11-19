@@ -46,7 +46,9 @@ public record ConstraintParseResponseDto(
         LocalDateTime parsedAt,
         String timeZone,
         List<Suggestion> suggestions,
-        List<ClassifierReconciler.Disagreement> disagreements) {
+        List<ClassifierReconciler.Disagreement> disagreements,
+        String classificationStatus,
+        List<String> warnings) {
 
     /** Convenience for the no-classifier case and for every caller predating one. */
     public ConstraintParseResponseDto(String status, Fields fields, List<Evidence> evidence,
@@ -54,7 +56,7 @@ public record ConstraintParseResponseDto(
                                       List<Unsupported> unsupported, String validationError,
                                       LocalDateTime parsedAt, String timeZone) {
         this(status, fields, evidence, ambiguities, conflicts, unsupported, validationError, parsedAt,
-                timeZone, List.of(), List.of());
+                timeZone, List.of(), List.of(), "DISABLED", List.of());
     }
 
     /**

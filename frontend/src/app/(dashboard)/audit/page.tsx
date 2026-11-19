@@ -2,22 +2,20 @@
 
 import * as React from "react"
 import {
-  FileText,
   Search,
   Download,
   CheckCircle2,
   AlertTriangle,
   XCircle,
-  Eye,
   RefreshCw,
   ChevronLeft,
   ChevronRight,
-  FilterX,
 } from "lucide-react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { DataStatusBadge } from "@/components/ui/data-status-badge"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   Dialog,
   DialogContent,
@@ -53,6 +51,7 @@ import {
 const PAGE_SIZE = 20
 const EXPORT_LIMIT = 2000
 const TEXT_FILTER_DEBOUNCE_MS = 350
+const FIELD_LABEL = "flex min-w-0 flex-col gap-2 text-xs leading-4 text-muted-foreground"
 
 const toneClasses = {
   positive: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30",
@@ -63,7 +62,7 @@ const toneClasses = {
 function OutcomeBadge({ action }: { action: AuditActionType }) {
   const tone = outcomeTone(action)
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ${toneClasses[tone]}`}>
+    <span className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded-full text-xs font-medium ${toneClasses[tone]}`}>
       {tone === "positive" ? (
         <CheckCircle2 className="h-3 w-3 text-emerald-500" />
       ) : tone === "negative" ? (
@@ -79,8 +78,8 @@ function OutcomeBadge({ action }: { action: AuditActionType }) {
 function JsonBlock({ title, value }: { title: string; value: unknown }) {
   return (
     <div className="space-y-1">
-      <span className="font-semibold text-foreground">{title}</span>
-      <pre className="p-3 rounded-lg bg-muted/60 border border-border text-[11px] font-mono overflow-x-auto max-h-72 whitespace-pre-wrap break-all text-foreground">
+      <h3 className="text-sm font-semibold leading-5">{title}</h3>
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-3 font-mono text-xs leading-4 text-foreground">
         {JSON.stringify(value, null, 2)}
       </pre>
     </div>
@@ -126,12 +125,6 @@ export default function AuditPage() {
   const updateImmediateFilter = (patch: Partial<Pick<AuditFilters, "fromDate" | "toDate" | "actionType">>) => {
     setFilters((prev) => ({ ...prev, ...patch }))
     setAppliedFilters((prev) => ({ ...prev, ...patch }))
-    setPage(0)
-  }
-
-  const clearFilters = () => {
-    setFilters(EMPTY_AUDIT_FILTERS)
-    setAppliedFilters(EMPTY_AUDIT_FILTERS)
     setPage(0)
   }
 
@@ -212,79 +205,74 @@ export default function AuditPage() {
 
   return (
     <div id="audit-root" className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-gradient-to-r from-card to-card/60 p-6 rounded-2xl border border-border shadow-xs">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold tracking-tight text-foreground">
-              Historical Audit Trail
-            </h1>
-            <DataStatusBadge
-              size="sm"
-              status={error ? "unavailable" : "live"}
-              source="Append-only operator decision audit log"
-            />
-          </div>
-          <p className="text-sm text-muted-foreground mt-1">
-            Searchable, tamper-evident record of your own decisions on optimiser schedules, with the schedule hash each decision was made on. Other operators&apos; decisions are not visible here.
-          </p>
-        </div>
+      {/* No visible title. The heading stays for screen readers. */}
+      <h1 className="sr-only">Audit</h1>
 
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={() => setReloadKey((k) => k + 1)}
-            size="sm"
-            variant="outline"
-            className="gap-2"
-            disabled={isLoading}
-          >
-            <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} /> Refresh
-          </Button>
-          <Button
-            onClick={exportCsv}
-            size="sm"
-            variant="outline"
-            className="gap-2"
-            disabled={isExporting || totalElements === 0}
-            title={totalElements > EXPORT_LIMIT ? `Exports the newest ${EXPORT_LIMIT} matching records` : undefined}
-          >
-            <Download className="h-4 w-4" /> {isExporting ? "Exporting…" : "Export CSV"}
-          </Button>
-        </div>
+      {/* Toolbar: actions only. The filters live in the card, above the list they filter. */}
+      <div className="flex items-center justify-end gap-2">
+        <Button
+          onClick={exportCsv}
+          size="sm"
+          variant="outline"
+          disabled={isExporting || totalElements === 0}
+          title={totalElements > EXPORT_LIMIT ? `Exports the newest ${EXPORT_LIMIT} matching records` : undefined}
+        >
+          <Download className="mr-2 size-4" /> {isExporting ? "Exporting…" : "Export CSV"}
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-9"
+          aria-label="Refresh audit events"
+          title="Refresh audit events"
+          onClick={() => setReloadKey((k) => k + 1)}
+          disabled={isLoading}
+        >
+          <RefreshCw className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
+        </Button>
       </div>
+
+      {error && (
+        <Alert variant="destructive" className="flex items-center justify-between gap-3">
+          <AlertDescription className="min-w-0 break-words">{error}</AlertDescription>
+          <Button variant="outline" size="sm" className="shrink-0" onClick={() => setReloadKey((k) => k + 1)}>
+            Retry
+          </Button>
+        </Alert>
+      )}
 
       {/* Filter and Table Card */}
       <Card>
-        <CardHeader className="space-y-3">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[repeat(6,minmax(0,1fr))_auto] items-end">
-            <label className="space-y-1 text-[11px] font-medium text-muted-foreground">
-              From (UTC)
+        <CardHeader className="space-y-3 p-4 sm:p-5">
+          <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <label className={FIELD_LABEL}>
+              From (CT)
               <Input
                 type="date"
                 value={filters.fromDate}
                 max={filters.toDate || undefined}
                 onChange={(e) => updateImmediateFilter({ fromDate: e.target.value })}
-                className="h-9 text-xs"
+                className="h-9"
                 aria-invalid={rangeInverted}
               />
             </label>
-            <label className="space-y-1 text-[11px] font-medium text-muted-foreground">
-              To (UTC, inclusive)
+            <label className={FIELD_LABEL}>
+              To (CT, inclusive)
               <Input
                 type="date"
                 value={filters.toDate}
                 min={filters.fromDate || undefined}
                 onChange={(e) => updateImmediateFilter({ toDate: e.target.value })}
-                className="h-9 text-xs"
+                className="h-9"
                 aria-invalid={rangeInverted}
               />
             </label>
-            <label className="space-y-1 text-[11px] font-medium text-muted-foreground">
-              Decision outcome
+            <label className={FIELD_LABEL}>
+              Decision
               <select
                 value={filters.actionType}
                 onChange={(e) => updateImmediateFilter({ actionType: e.target.value as AuditFilters["actionType"] })}
-                className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs text-foreground"
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 <option value="ALL">All outcomes</option>
                 {AUDIT_ACTION_TYPES.map((action) => (
@@ -294,70 +282,47 @@ export default function AuditPage() {
                 ))}
               </select>
             </label>
-            <label className="space-y-1 text-[11px] font-medium text-muted-foreground">
-              Target run ID
+            <label className={FIELD_LABEL}>
+              Run ID
               <div className="relative">
-                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" aria-hidden="true" />
                 <Input
                   placeholder="e.g. 7f3c1e52"
                   value={filters.runId}
                   onChange={(e) => setFilters((prev) => ({ ...prev, runId: e.target.value }))}
-                  className="pl-8 h-9 text-xs font-mono"
+                  className="h-9 pl-8 font-mono"
                 />
               </div>
             </label>
-            <label className="space-y-1 text-[11px] font-medium text-muted-foreground">
-              Target job ID
+            <label className={FIELD_LABEL}>
+              Job ID
               <div className="relative">
-                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" aria-hidden="true" />
                 <Input
                   placeholder="e.g. 101"
                   inputMode="numeric"
                   value={filters.jobId}
                   onChange={(e) => setFilters((prev) => ({ ...prev, jobId: e.target.value }))}
-                  className="pl-8 h-9 text-xs font-mono"
+                  className="h-9 pl-8 font-mono"
                   aria-invalid={filters.jobId.trim() !== "" && parseJobId(filters.jobId) === undefined}
                 />
               </div>
             </label>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-9 gap-1 text-xs"
-              onClick={clearFilters}
-              disabled={!hasActiveFilters(filters)}
-            >
-              <FilterX className="h-3.5 w-3.5" /> Clear
-            </Button>
           </div>
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            {rangeInverted ? (
-              <span className="text-red-600 dark:text-red-400">The end date must be on or after the start date.</span>
-            ) : (
-              <span>
-                Showing <span className="font-semibold text-foreground">{firstRow}–{lastRow}</span> of{" "}
-                <span className="font-semibold text-foreground">{totalElements}</span> records
-              </span>
-            )}
-          </div>
+          {rangeInverted && (
+            <p className="flex items-center gap-2 text-xs leading-4 text-destructive-foreground">
+              <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
+              The end date must be on or after the start date.
+            </p>
+          )}
         </CardHeader>
         <CardContent>
-          {error && (
-            <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
-              <span className="flex items-center gap-2">
-                <XCircle className="h-4 w-4" /> {error}
-              </span>
-              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setReloadKey((k) => k + 1)}>
-                Retry
-              </Button>
-            </div>
-          )}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-border text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                <tr className="border-b border-border text-xs font-medium text-muted-foreground">
                   <th className="pb-3 pl-2">Event ID</th>
-                  <th className="pb-3">Timestamp (UTC)</th>
+                  <th className="pb-3">Timestamp</th>
                   <th className="pb-3">Decision</th>
                   <th className="pb-3">Target Run</th>
                   <th className="pb-3">Rationale</th>
@@ -366,10 +331,10 @@ export default function AuditPage() {
               <tbody className={`divide-y divide-border/60 ${isLoading ? "opacity-50" : ""}`}>
                 {events.map((log) => (
                   <tr key={log.id} className="hover:bg-muted/40 transition-colors">
-                    <td className="py-3 pl-2 font-mono text-xs font-semibold text-foreground">
+                    <td className="py-3 pl-2 font-mono text-xs text-muted-foreground">
                       AUD-{log.id}
                     </td>
-                    <td className="py-3 text-xs text-muted-foreground font-mono whitespace-nowrap">
+                    <td className="py-3 text-sm tabular-nums whitespace-nowrap">
                       {formatAuditTimestamp(log.timestamp)}
                     </td>
                     <td className="py-3">
@@ -378,14 +343,14 @@ export default function AuditPage() {
                     <td className="py-3 text-xs text-muted-foreground font-mono" title={log.runId}>
                       {log.runId.length > 13 ? `${log.runId.slice(0, 13)}…` : log.runId}
                     </td>
-                    <td className="py-3 text-xs text-muted-foreground max-w-xs truncate" title={log.operatorRationale}>
+                    <td className="py-3 text-sm max-w-xs truncate" title={log.operatorRationale}>
                       {log.operatorRationale}
                     </td>
                   </tr>
                 ))}
                 {!isLoading && !error && events.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="py-10 text-center text-xs text-muted-foreground">
+                    <td colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
                       {hasActiveFilters(appliedFilters)
                         ? "No audit events match these filters."
                         : "No audit events have been recorded yet."}
@@ -394,7 +359,7 @@ export default function AuditPage() {
                 )}
                 {isLoading && events.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="py-10 text-center text-xs text-muted-foreground">
+                    <td colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
                       <RefreshCw className="mx-auto mb-2 h-4 w-4 animate-spin text-emerald-500" />
                       Loading audit events…
                     </td>
@@ -403,8 +368,12 @@ export default function AuditPage() {
               </tbody>
             </table>
           </div>
-          {totalPages > 1 && (
-            <div className="mt-4 flex items-center justify-end gap-2 text-xs text-muted-foreground">
+          <div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="mr-auto tabular-nums">
+              {firstRow}–{lastRow} of {totalElements} records
+            </span>
+            {totalPages > 1 && (
+              <>
               <span>
                 Page {page + 1} of {totalPages}
               </span>
@@ -428,69 +397,63 @@ export default function AuditPage() {
               >
                 <ChevronRight className="h-4 w-4" />
               </Button>
-            </div>
-          )}
+              </>
+            )}
+          </div>
         </CardContent>
       </Card>
 
       {/* Event Details Inspection Dialog */}
       <Dialog open={!!selectedEvent} onOpenChange={(open) => !open && setSelectedEvent(null)}>
-        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <FileText className="h-4 w-4 text-emerald-500" />
-              Audit Event Inspection: AUD-{selectedEvent?.id}
-            </DialogTitle>
+            <DialogTitle className="leading-7">Audit event</DialogTitle>
             <DialogDescription>
               Decision metadata and the schedule snapshot the decision was made on.
             </DialogDescription>
           </DialogHeader>
           {selectedEvent && (
-            <div className="space-y-3 py-2 text-xs">
-              <div className="grid grid-cols-2 gap-2 p-3 rounded-lg bg-muted/30 border border-border">
-                <div>
-                  <span className="text-muted-foreground">Operator:</span>{" "}
-                  <span className="font-semibold text-foreground">{selectedEvent.actor}</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-muted-foreground">Decision:</span> <OutcomeBadge action={selectedEvent.actionType} />
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Timestamp:</span>{" "}
-                  <span className="font-mono text-foreground">{formatAuditTimestamp(selectedEvent.timestamp)}</span>
-                </div>
-                <div className="truncate" title={selectedEvent.runId}>
-                  <span className="text-muted-foreground">Run:</span>{" "}
-                  <span className="font-mono text-foreground">{selectedEvent.runId}</span>
-                </div>
-              </div>
+            <div className="space-y-4 text-sm">
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+                <dt className="text-muted-foreground">Decision</dt>
+                <dd className="min-w-0"><OutcomeBadge action={selectedEvent.actionType} /></dd>
+                <dt className="text-muted-foreground">Operator</dt>
+                <dd className="min-w-0 break-words">{selectedEvent.actor}</dd>
+                <dt className="text-muted-foreground">Time</dt>
+                <dd className="min-w-0 tabular-nums">{formatAuditTimestamp(selectedEvent.timestamp)}</dd>
+                <dt className="text-muted-foreground">Event ID</dt>
+                <dd className="min-w-0 break-all font-mono text-xs leading-5 text-muted-foreground">AUD-{selectedEvent.id}</dd>
+                <dt className="text-muted-foreground">Run ID</dt>
+                <dd className="min-w-0 break-all font-mono text-xs leading-5 text-muted-foreground">{selectedEvent.runId}</dd>
+              </dl>
 
-              <JsonBlock title="Decision Metadata" value={decisionMetadata(detail?.event ?? selectedEvent)} />
+              <JsonBlock title="Decision metadata" value={decisionMetadata(detail?.event ?? selectedEvent)} />
 
               {detailError ? (
-                <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-600 dark:text-red-400">
-                  Could not load the schedule snapshot: {detailError}
-                </div>
+                <p className="text-muted-foreground">Could not load the schedule snapshot: {detailError}</p>
               ) : !detail ? (
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin" /> Loading schedule snapshot…
+                <div className="space-y-2" role="status" aria-label="Loading schedule snapshot">
+                  <Skeleton className="h-5 w-32" />
+                  <Skeleton className="h-24 w-full" />
                 </div>
               ) : (
                 <>
-                  <JsonBlock title="Schedule Snapshot" value={scheduleSnapshot(detail)} />
+                  <JsonBlock title="Schedule snapshot" value={scheduleSnapshot(detail)} />
                   {!detail.run && (
                     <p className="text-muted-foreground">
                       No optimiser run record is stored for this run ID; only the schedule hash is available.
                     </p>
                   )}
                   {detail.scheduleHashMatches === false && (
-                    <div role="alert" className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-600 dark:text-red-400">
-                      <AlertTriangle className="h-4 w-4 shrink-0" />
-                      The stored schedule no longer matches the hash recorded with this decision.
-                    </div>
+                    <Alert variant="destructive">
+                      <AlertTriangle className="size-4" />
+                      <AlertDescription>
+                        The stored schedule no longer matches the hash recorded with this decision.
+                      </AlertDescription>
+                    </Alert>
                   )}
                   {detail.schedule ? (
-                    <JsonBlock title="Stored Schedule" value={detail.schedule} />
+                    <JsonBlock title="Stored schedule" value={detail.schedule} />
                   ) : (
                     <p className="text-muted-foreground">{storedScheduleNote(detail)}</p>
                   )}
@@ -498,17 +461,17 @@ export default function AuditPage() {
               )}
 
               {selectedEvent.actionType === "APPROVE" && (
-                <div className="space-y-1">
-                  <span className="font-semibold text-foreground">Approved Schedule Export</span>
-                  <div className="flex flex-col gap-2 p-3 rounded-lg bg-muted/30 border border-border sm:flex-row sm:items-start sm:justify-between">
-                    <p className="text-muted-foreground">
+                <div className="space-y-2 border-t pt-4">
+                  <h3 className="text-sm font-semibold leading-5">Approved schedule export</h3>
+                  <div className="flex flex-col gap-2">
+                    <p className="text-xs leading-4 text-muted-foreground">
                       Downloads this run&apos;s schedule as CSV or JSON. The server releases it only while the
                       approval still stands: not withdrawn, not superseded, and still matching its jobs.
                     </p>
                     <ScheduleExportButtons
                       key={selectedEvent.id}
                       runId={selectedEvent.runId}
-                      className="shrink-0"
+                      className="self-start"
                       unavailableReason={
                         viewerEmail && viewerEmail.toLowerCase() === selectedEvent.actor.toLowerCase()
                           ? undefined

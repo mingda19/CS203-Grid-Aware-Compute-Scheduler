@@ -4,6 +4,7 @@ import com.gacs.backend.dto.ConstraintParseRequestDto;
 import com.gacs.backend.dto.ConstraintParseResponseDto;
 import com.gacs.backend.dto.JobResponseDto;
 import com.gacs.backend.service.JobService;
+import com.gacs.backend.service.JobStatusResolver;
 import com.gacs.backend.service.ScheduleInputs;
 import com.gacs.backend.service.allocation.ConstraintType;
 import org.junit.jupiter.api.Test;
@@ -31,8 +32,27 @@ class ConstraintParseClassifierWiringTest {
 
     private final com.gacs.backend.repository.JobRepository repository =
             mock(com.gacs.backend.repository.JobRepository.class);
-    private final JobService jobService =
-            new JobService(repository, mock(ScheduleInputs.class), CLOCK);
+    private final JobService jobService = new JobService(repository, mock(ScheduleInputs.class), CLOCK,
+            mock(com.gacs.backend.repository.OptimizationPlanRepository.class),
+            mock(com.gacs.backend.repository.WorkloadScheduleRepository.class),
+            mock(com.gacs.backend.service.AuditEventService.class),
+            mock(com.gacs.backend.repository.UserRepository.class), statusesFromRow());
+
+    /** Job status is derived from plans; here a finished row stays finished and the rest are still scheduling. */
+    @SuppressWarnings("unchecked")
+    private static JobStatusResolver statusesFromRow() {
+        JobStatusResolver statuses = mock(JobStatusResolver.class);
+        when(statuses.resolve(org.mockito.ArgumentMatchers.anyCollection())).thenAnswer(call -> {
+            var derived = new java.util.HashMap<Long, JobStatusResolver.Derived>();
+            for (com.gacs.backend.model.Job job : (java.util.Collection<com.gacs.backend.model.Job>) call.getArgument(0)) {
+                var status = Set.of("COMPLETED", "CANCELLED").contains(job.getStatus())
+                        ? JobStatusResolver.Status.valueOf(job.getStatus()) : JobStatusResolver.Status.SCHEDULING;
+                derived.put(job.getId(), new JobStatusResolver.Derived(status, null, null, false, JobStatusResolver.Cause.NONE));
+            }
+            return derived;
+        });
+        return statuses;
+    }
 
     /** A classifier that records what it was asked and returns what the test tells it to. */
     private static final class Stub implements ConstraintClassifier {
@@ -63,13 +83,56 @@ class ConstraintParseClassifierWiringTest {
         }
     }
 
-    private ConstraintParseService serviceWith(Stub stub) {
+    private ConstraintParseService serviceWith(ConstraintClassifier stub) {
         return new ConstraintParseService(new RuleBasedConstraintParser(), jobService, CLOCK,
                 "America/Chicago", Optional.of(stub), Optional.of(new ConstraintGuardrail(0.7, 0.3)));
     }
 
     private static ConstraintParseRequestDto request(String text) {
         return new ConstraintParseRequestDto(text, null, "America/Chicago");
+    }
+
+    @Test
+    void recognisedPrecedenceIsReadyForReviewInsteadOfUnsupported() {
+        String text = "this job must finish before DeepSeek-R1 Distillation Batch starts";
+        when(repository.findByOwnerEmailOrderByOriginalStartTimeAsc("me@example.com"))
+                .thenReturn(List.of(com.gacs.backend.model.Job.builder().id(9L)
+                        .name("DeepSeek-R1 Distillation Batch").build()));
+        Stub stub = new Stub(List.of(new ClassifiedConstraint(ConstraintType.PRECEDENCE,
+                .94, text, 0, text.length(), "DeepSeek-R1 Distillation Batch")), null);
+        var result = serviceWith(stub).parse(request(text), "me@example.com");
+        assertThat(result.status()).isEqualTo(ConstraintParseResponseDto.PARSED);
+        assertThat(result.unsupported()).isEmpty();
+        assertThat(result.suggestions()).singleElement().satisfies(s -> {
+            assertThat(s.type()).isEqualTo("PRECEDENCE");
+            assertThat(s.referencedJobId()).isEqualTo(9L);
+        });
+        assertThat(result.classificationStatus()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void wholeMessagePairEvidenceDoesNotHideAnUnrelatedUnsupportedClause() {
+        String text = "Finish before render-batch starts; needs 16 GPUs";
+        when(repository.findByOwnerEmailOrderByOriginalStartTimeAsc("me@example.com"))
+                .thenReturn(List.of(com.gacs.backend.model.Job.builder().id(9L).name("render-batch").build()));
+        Stub stub = new Stub(List.of(new ClassifiedConstraint(ConstraintType.PRECEDENCE,
+                .94, text, 0, text.length(), "render-batch")), null);
+        var result = serviceWith(stub).parse(request(text), "me@example.com");
+        assertThat(result.unsupported()).anyMatch(u -> u.phrase().equals("needs 16 GPUs"));
+    }
+
+    @Test
+    void mixedTextClaimsOnlyTheRelationshipClause() {
+        String text = "high priority; this job must finish before render-batch starts; needs 16 GPUs";
+        when(repository.findByOwnerEmailOrderByOriginalStartTimeAsc("me@example.com"))
+                .thenReturn(List.of(com.gacs.backend.model.Job.builder().id(9L).name("render-batch").build()));
+        ConstraintClassifier stub = (source, allowed) -> source.contains("finish before")
+                ? List.of(new ClassifiedConstraint(ConstraintType.PRECEDENCE, .94, source, 0, source.length(), "render-batch"))
+                : List.of();
+        var result = serviceWith(stub).parse(request(text), "me@example.com");
+        assertThat(result.unsupported()).singleElement().extracting(u -> u.phrase()).isEqualTo("needs 16 GPUs");
+        assertThat(result.suggestions()).singleElement().extracting(s -> s.phrase())
+                .isEqualTo("this job must finish before render-batch starts");
     }
 
     private static JobResponseDto job(long id, String name) {
@@ -100,6 +163,8 @@ class ConstraintParseClassifierWiringTest {
         assertThat(result.suggestions()).isEmpty();
         assertThat(result.disagreements()).isEmpty();
         assertThat(result.status()).isEqualTo(ConstraintParseResponseDto.PARSED);
+        assertThat(result.classificationStatus()).isEqualTo("FAILED");
+        assertThat(result.warnings()).isNotEmpty();
     }
 
     @Test

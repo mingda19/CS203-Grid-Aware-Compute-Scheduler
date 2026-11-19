@@ -13,5 +13,6 @@ public interface UserRepository extends JpaRepository<User, Long> {
     Optional<User> lockByEmail(@org.springframework.data.repository.query.Param("email") String email);
 
     Optional<User> findByEmail(String email);
+    java.util.List<User> findByEmailIn(java.util.Collection<String> emails);
     boolean existsByEmail(String email);
 }

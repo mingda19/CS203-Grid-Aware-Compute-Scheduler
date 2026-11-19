@@ -17,6 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /** GRID-126 AC2: forecast rows are mapped to hourly slots, with a seeded fallback when absent. */
@@ -40,7 +42,7 @@ class PriceSeriesProviderTest {
     private PriceSeries load(PredictedPrice... rows) {
         when(predictions.findLatestForecastForModel(LOCATION, "lstm", START, START.plusHours(HOURS)))
             .thenReturn(List.of(rows));
-        return new PriceSeriesProvider(predictions, history, 0.5, "lstm").load(LOCATION, START, HOURS);
+        return new PriceSeriesProvider(predictions, history, 0.5, "lstm", "").load(LOCATION, START, HOURS);
     }
 
     private static List<Object[]> hourlyAverages(double... pricesFromHour0) {
@@ -73,7 +75,7 @@ class PriceSeriesProviderTest {
         when(predictions.findLatestForecastForModel(eq(LOCATION), eq("lear"), any(), any()))
             .thenReturn(List.of(row(START, 61.0)));
 
-        PriceSeries series = new PriceSeriesProvider(predictions, history, 0.5, "lear").load(LOCATION, START, HOURS);
+        PriceSeries series = new PriceSeriesProvider(predictions, history, 0.5, "lear", "").load(LOCATION, START, HOURS);
 
         assertThat(series.priceAt(START)).contains(61.0);
     }
@@ -81,9 +83,72 @@ class PriceSeriesProviderTest {
     @Test
     @DisplayName("an unknown forecast model is rejected at startup")
     void unknownModelIsRejected() {
-        assertThatThrownBy(() -> new PriceSeriesProvider(predictions, history, 0.5, "xgboost"))
+        assertThatThrownBy(() -> new PriceSeriesProvider(predictions, history, 0.5, "xgboost", ""))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("xgboost");
+    }
+
+    @Test
+    @DisplayName("an unknown fallback model is rejected at startup")
+    void unknownFallbackModelIsRejected() {
+        assertThatThrownBy(() -> new PriceSeriesProvider(predictions, history, 0.5, "lear", "xgboost"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("forecast-fallback-model");
+    }
+
+    private PriceSeries learThenLstm(List<PredictedPrice> lear, List<PredictedPrice> lstm) {
+        when(predictions.findLatestForecastForModel(LOCATION, "lear", START, START.plusHours(HOURS))).thenReturn(lear);
+        when(predictions.findLatestForecastForModel(LOCATION, "lstm", START, START.plusHours(HOURS))).thenReturn(lstm);
+        return new PriceSeriesProvider(predictions, history, 0.5, "lear", "lstm").load(LOCATION, START, HOURS);
+    }
+
+    private static List<PredictedPrice> hours(int count, double price) {
+        List<PredictedPrice> rows = new ArrayList<>();
+        for (int h = 0; h < count; h++) rows.add(row(START.plusHours(h), price));
+        return rows;
+    }
+
+    @Test
+    @DisplayName("LEAR covering the whole window is used and LSTM is never read")
+    void fullLearCoverageSkipsTheFallback() {
+        when(predictions.findLatestForecastForModel(LOCATION, "lear", START, START.plusHours(HOURS)))
+            .thenReturn(hours(HOURS, 61.0));
+
+        PriceSeries series = new PriceSeriesProvider(predictions, history, 0.5, "lear", "lstm").load(LOCATION, START, HOURS);
+
+        assertThat(series.asMap().values()).containsOnly(61.0);
+        assertThat(series.usedEstimatedPrices()).isFalse();
+        verify(predictions, never()).findLatestForecastForModel(eq(LOCATION), eq("lstm"), any(), any());
+    }
+
+    @Test
+    @DisplayName("no LEAR rows: the whole run is priced from LSTM")
+    void missingLearFallsBackToLstm() {
+        PriceSeries series = learThenLstm(List.of(), hours(HOURS, 42.0));
+
+        assertThat(series.asMap().values()).containsOnly(42.0);
+        assertThat(series.isSeeded()).isFalse();
+        assertThat(series.usedEstimatedPrices()).isFalse();
+    }
+
+    @Test
+    @DisplayName("LSTM covering more hours replaces LEAR entirely; the two are never mixed")
+    void lstmWithMoreCoverageReplacesLearWithoutMixing() {
+        PriceSeries series = learThenLstm(hours(1, 61.0), hours(HOURS, 42.0));
+
+        assertThat(series.asMap().values()).containsOnly(42.0);
+        assertThat(series.usedEstimatedPrices()).isFalse();
+    }
+
+    @Test
+    @DisplayName("LEAR is kept when LSTM does not cover more hours")
+    void learKeptWhenLstmIsNoBetter() {
+        PriceSeries series = learThenLstm(hours(2, 61.0), hours(2, 42.0));
+
+        assertThat(series.priceAt(START)).contains(61.0);
+        assertThat(series.priceAt(START.plusHours(1))).contains(61.0);
+        assertThat(series.asMap().values()).doesNotContain(42.0);
+        assertThat(series.isEstimatedAt(START.plusHours(2))).isTrue();
     }
 
     @Test

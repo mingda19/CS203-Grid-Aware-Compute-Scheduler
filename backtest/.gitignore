@@ -1,0 +1,3 @@
+# Backtest inputs and outputs are rebuilt by scripts, never committed (same rule as model/ and data/).
+data/
+output/

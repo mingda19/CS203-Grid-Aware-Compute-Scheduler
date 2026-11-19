@@ -40,6 +40,17 @@ public interface PredictedPriceRepository extends JpaRepository<PredictedPrice, 
         @Param("modelKind") String modelKind,
         @Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
 
+    // Forecasts of one model kind that were made before the hour they predict and have a price, for
+    // scoring past forecasts. Filtered here so the other model's rows are never loaded.
+    @Query("select p from PredictedPrice p where p.location = :location " +
+        "and p.modelVersion like concat(:modelKind, '!_%') escape '!' " +
+        "and p.intervalStartUtc between :start and :end " +
+        "and p.generatedAt < p.intervalStartUtc and p.predictedPrice is not null " +
+        "order by p.intervalStartUtc asc")
+    List<PredictedPrice> findPastForecastsForModel(@Param("location") String location,
+        @Param("modelKind") String modelKind,
+        @Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
+
     List<PredictedPrice> findByLocationOrderByIntervalStartUtcAsc(String location);
 
     List<PredictedPrice> findByLocationAndIntervalStartUtcBetweenOrderByIntervalStartUtcAsc(

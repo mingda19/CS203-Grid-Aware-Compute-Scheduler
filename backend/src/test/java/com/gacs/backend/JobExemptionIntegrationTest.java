@@ -224,7 +224,7 @@ class JobExemptionIntegrationTest {
                 .andExpect(jsonPath("$.data.id").value(jobId))
                 .andExpect(jsonPath("$.data.name").value("Workload Promoted to Exempt"))
                 .andExpect(jsonPath("$.data.isExempt").value(true))
-                .andExpect(jsonPath("$.data.status").value("SCHEDULED"));
+                .andExpect(jsonPath("$.data.status").value("SCHEDULING"));
 
         // Verify stored in database
         Job updated = jobRepository.findById(jobId).orElseThrow();

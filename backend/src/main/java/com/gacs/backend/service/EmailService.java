@@ -1,13 +1,11 @@
 package com.gacs.backend.service;
 
-import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
 import java.time.LocalDateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 
@@ -16,14 +14,13 @@ public class EmailService {
 
     private static final Logger logger = LoggerFactory.getLogger(EmailService.class);
 
-    @Autowired(required = false)
-    private JavaMailSender mailSender;
+    @Autowired
+    private GmailApiMailSender mailSender;
 
-    @Value("${spring.mail.username:noreply@gacs-platform.io}")
+    @Value("${gacs.gmail.sender:}")
     private String fromEmail;
 
     public void sendPasswordResetEmail(String toEmail, String token) {
-        if (mailSender == null) throw new IllegalStateException("SMTP is not configured");
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
@@ -63,37 +60,17 @@ public class EmailService {
             helper.setText(plainText, html);
             mailSender.send(message);
         } catch (Exception ex) {
-            throw new IllegalStateException(passwordRecoveryFailureReason(ex), ex);
+            throw deliveryFailure(ex);
         }
     }
 
-    // Log categories, never provider messages that might contain recipient or message data.
-    private String passwordRecoveryFailureReason(Exception failure) {
-        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
-            if (cause instanceof org.springframework.mail.MailAuthenticationException ||
-                    cause instanceof jakarta.mail.AuthenticationFailedException)
-                return "SMTP authentication rejected; check MAIL_USERNAME and MAIL_PASSWORD";
-            if (cause instanceof java.net.UnknownHostException)
-                return "SMTP hostname could not be resolved; check DNS/network access";
-            if (cause instanceof java.net.SocketTimeoutException)
-                return "SMTP connection timed out; check outbound access to port 587";
-            if (cause instanceof javax.net.ssl.SSLException)
-                return "SMTP TLS negotiation failed; check certificates/network interception";
-            if (cause instanceof java.net.ConnectException)
-                return "SMTP connection refused; check host, port, and firewall";
-        }
-        return "SMTP delivery failed (" + failure.getClass().getSimpleName()
-                + "); check SMTP connectivity and sender configuration";
+    // Never include provider response bodies or verification codes in errors/logs.
+    private IllegalStateException deliveryFailure(Exception failure) {
+        if (failure instanceof IllegalStateException state) return state;
+        return new IllegalStateException("Gmail API message preparation failed; check sender and recipient configuration");
     }
 
     public void sendOtpEmail(String toEmail, String otpCode) {
-        logger.info("Preparing OTP verification email for {}", toEmail);
-
-        if (mailSender == null) {
-            logger.warn("JavaMailSender is not initialized. OTP code for {} is: {}", toEmail, otpCode);
-            return;
-        }
-
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
@@ -133,26 +110,14 @@ public class EmailService {
             mailSender.send(message);
             logger.info("Successfully sent OTP email to {}", toEmail);
 
-        } catch (MessagingException e) {
-            logger.error("Failed to send OTP email to {}. Error: {}", toEmail, e.getMessage());
-            // Fallback log for development/testing when SMTP credentials are being configured
-            logger.warn("FALLBACK OTP for {}: {}", toEmail, otpCode);
-            throw new RuntimeException("Failed to send OTP verification email. Please verify SMTP credentials or check server logs.");
-        } catch (Exception e) {
-            logger.error("Unexpected error sending email: {}", e.getMessage());
-            logger.warn("FALLBACK OTP for {}: {}", toEmail, otpCode);
-            throw new RuntimeException("Failed to send email: " + e.getMessage());
+        } catch (Exception failure) {
+            throw deliveryFailure(failure);
         }
     }
 
     public void sendLowConfidenceForecastEmail(
             String toEmail, String location, LocalDateTime intervalStartUtc,
             double confidenceScore, double threshold) {
-        if (mailSender == null) {
-            logger.warn("Cannot send low-confidence forecast alert to {} because SMTP is not configured", toEmail);
-            return;
-        }
-
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
@@ -181,7 +146,7 @@ public class EmailService {
             logger.info("Sent low-confidence forecast alert to {} for {} at {}", toEmail, location, intervalStartUtc);
         } catch (Exception exception) {
             // A mail outage must not make forecast retrieval fail.
-            logger.error("Failed to send low-confidence forecast alert to {}: {}", toEmail, exception.getMessage());
+            logger.error("Failed to send low-confidence forecast alert: {}", deliveryFailure(exception).getMessage());
         }
     }
 

@@ -38,7 +38,7 @@ export function ExplanationSummary({
         </ul>
       )}
       {notes.map((note, i) => (
-        <p key={i} className="text-[11px] italic leading-relaxed text-muted-foreground">{note}</p>
+        <p key={i} className="text-xs italic leading-relaxed text-muted-foreground">{note}</p>
       ))}
     </div>
   )

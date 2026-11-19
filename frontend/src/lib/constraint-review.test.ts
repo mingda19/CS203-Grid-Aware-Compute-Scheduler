@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { constraintReviewBlocker } from "./constraint-review"
+import { constraintReviewBlocker, confirmedPairConstraints } from "./constraint-review"
 import { toApiUtcDate, toInputDate } from "./job-form-utils"
 import type { ConstraintDraft, ConstraintParseResponse } from "./api"
 
@@ -12,6 +12,17 @@ const result: ConstraintParseResponse = {
 }
 
 describe("parse review confirmation", () => {
+  it("allows precedence-only text and keeps the referenced job id for saving", () => {
+    const suggestions = [{ type: "PRECEDENCE" as const, probability: .94, phrase: "finish before the batch starts", referencedJobId: 9, needsConfirmation: false }]
+    expect(constraintReviewBlocker({ ...result, evidence: [], suggestions }, draft, draft)).toBeNull()
+    expect(confirmedPairConstraints(suggestions)).toEqual([{ type: "PRECEDENCE", referencedJobId: 9 }])
+  })
+  it("requires a decision on an uncertain relationship and preserves unsupported text", () => {
+    const response = { ...result, evidence: [], suggestions: [{ type: "DEPENDENCY" as const, probability: .5, phrase: "after the batch", referencedJobId: 9, needsConfirmation: true }] }
+    expect(constraintReviewBlocker(response, draft, draft)).toContain("uncertain")
+    expect(constraintReviewBlocker(response, draft, draft, {}, { 0: "KEEP" })).toBeNull()
+    expect(constraintReviewBlocker({ ...response, unsupported: [{ phrase: "16 GPUs", start: 0, end: 7 }] }, draft, draft, {}, { 0: "KEEP" })).toContain("unsupported")
+  })
   it("allows a clear result and explicit acceptance of a difference from the form", () => {
     expect(constraintReviewBlocker(result, draft, draft)).toBeNull()
     expect(constraintReviewBlocker({ ...result, status: "NEEDS_CLARIFICATION", conflicts: [{ field: "flexibilityWindowHours", phrases: ["can wait 4 hours", "form: 0"], message: "Text replaces form" }] }, draft, draft)).toBeNull()

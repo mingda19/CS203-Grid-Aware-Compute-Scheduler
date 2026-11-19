@@ -13,3 +13,8 @@ it("redirects protected pages to sign-in when there is no session cookie", () =>
   expect(response.status).toBe(307)
   expect(response.headers.get("location")).toBe("http://localhost:3000/login")
 })
+
+it("serves the login intro video without a session", () => {
+  const response = proxy(new NextRequest("http://localhost:3000/intro/gacs_intro_green.mp4"))
+  expect(response.headers.get("location")).toBeNull()
+})

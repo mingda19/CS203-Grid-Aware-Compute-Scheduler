@@ -24,7 +24,7 @@ class ConstraintParseServiceTest {
 
     private final JobRepository repository = mock(JobRepository.class);
     private final ConstraintParseService service = new ConstraintParseService(new RuleBasedConstraintParser(),
-            new JobService(repository, org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class), Clock.fixed(NOW, ZoneOffset.UTC)), Clock.fixed(NOW, ZoneOffset.UTC), "America/Chicago");
+            new JobService(repository, org.mockito.Mockito.mock(com.gacs.backend.service.ScheduleInputs.class), Clock.fixed(NOW, ZoneOffset.UTC), null, null, null, null, null), Clock.fixed(NOW, ZoneOffset.UTC), "America/Chicago");
 
     @Test
     @DisplayName("Times are read in ERCOT market time by default and returned in UTC")

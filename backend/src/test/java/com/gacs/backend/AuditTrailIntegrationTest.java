@@ -50,6 +50,7 @@ class AuditTrailIntegrationTest {
     private static final DateTimeFormatter UTC = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
 
     @Autowired MockMvc mvc;
+    @Autowired com.gacs.backend.service.AppSettingsService appSettings;
     @Autowired UserRepository users;
     @Autowired JobRepository jobs;
     @Autowired OptimizationPlanRepository plans;
@@ -66,6 +67,7 @@ class AuditTrailIntegrationTest {
 
     @BeforeEach
     void setup() {
+        appSettings.update(true);
         owner = newUser();
     }
 
@@ -95,6 +97,11 @@ class AuditTrailIntegrationTest {
 
     /** Optimises the jobs, approves the run, and returns {runId, approval audit event ID}. */
     private String[] optimizeAndApprove(Job... jobList) throws Exception {
+        return optimizeAndDecide("approve", jobList);
+    }
+
+    /** As above with any decision. A job in an approved plan cannot be planned again, so a test that needs two runs rejects the first. */
+    private String[] optimizeAndDecide(String action, Job... jobList) throws Exception {
         List<Map<String, Object>> jobsJson = new ArrayList<>();
         for (Job j : jobList) {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -118,8 +125,8 @@ class AuditTrailIntegrationTest {
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         String runId = json.readTree(optimized).path("data").path("runId").asText();
         createdRuns.add(runId);
-        String decided = mvc.perform(post("/api/schedules/" + runId + "/approve").with(user(owner.getEmail()))
-                        .contentType(APPLICATION_JSON).content("{\"comment\":\"approved for audit test\"}"))
+        String decided = mvc.perform(post("/api/schedules/" + runId + "/" + action).with(user(owner.getEmail()))
+                        .contentType(APPLICATION_JSON).content("{\"comment\":\"decided for audit test\"}"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         return new String[] {runId, json.readTree(decided).path("data").path("decisionId").asText()};
     }
@@ -139,11 +146,12 @@ class AuditTrailIntegrationTest {
     void jobFilter_FindsDecisionsOnRunsWithTheJob() throws Exception {
         Job shared = job("Shared");
         Job solo = job("Solo");
-        String runWithBoth = optimizeAndApprove(shared, solo)[0];
+        String runWithBoth = optimizeAndDecide("reject", shared, solo)[0];
         String runWithShared = optimizeAndApprove(shared)[0];
 
-        assertThat(runIdsForJob(solo.getId())).containsExactly(runWithBoth);
-        assertThat(runIdsForJob(shared.getId())).containsExactlyInAnyOrder(runWithBoth, runWithShared);
+        // Approving also applies the plan, so an approved run has a second event: the dispatch.
+        assertThat(runIdsForJob(solo.getId())).containsOnly(runWithBoth);
+        assertThat(runIdsForJob(shared.getId())).containsOnly(runWithBoth, runWithShared);
         assertThat(jdbc.queryForList("select job_id from optimization_plan_jobs where run_id = ?", Long.class, runWithBoth))
                 .containsExactlyInAnyOrder(shared.getId(), solo.getId());
     }
@@ -215,7 +223,7 @@ class AuditTrailIntegrationTest {
 
         assertThat(backfill.backfill()).isGreaterThanOrEqualTo(1);
 
-        assertThat(runIdsForJob(train.getId())).containsExactly(runId);
+        assertThat(runIdsForJob(train.getId())).containsOnly(runId);
         assertThat(backfill.backfill()).isZero();
     }
 }

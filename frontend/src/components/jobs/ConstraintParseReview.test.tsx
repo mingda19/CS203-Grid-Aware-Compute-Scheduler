@@ -1,7 +1,7 @@
 import * as React from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it, vi } from "vitest"
-import { ConstraintComparison, ConstraintParseReview } from "./ConstraintParseReview"
+import { ConstraintComparison, ConstraintParseReview, Suggestions } from "./ConstraintParseReview"
 import type { ConstraintParseResponse } from "../../lib/api"
 
 const result: ConstraintParseResponse = {
@@ -11,6 +11,14 @@ const result: ConstraintParseResponse = {
 }
 
 describe("constraint review UI", () => {
+  it("shows a choice for job relationships and explains they will be saved", () => {
+    const html = renderToStaticMarkup(<Suggestions suggestions={[{ type: "PRECEDENCE", probability: .5,
+      phrase: "finish before the batch", referencedJobId: 9, needsConfirmation: true }]} />)
+    expect(html).toContain("Keep relationship")
+    expect(html).toContain("Ignore relationship")
+    expect(html).toContain("saved with the job")
+    expect(html).not.toContain("checked=")
+  })
   it("shows raw text and proposed fields together with source phrases and market times", () => {
     const html = renderToStaticMarkup(<ConstraintComparison raw="can wait 4 hours <script>bad()</script>" result={result} />)
     expect(html).toContain("md:grid-cols-2")

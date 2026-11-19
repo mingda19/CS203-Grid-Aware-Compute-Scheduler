@@ -19,7 +19,7 @@ import java.util.Optional;
  * {@link PlacementConstraint} and every {@link SynchronizedFinishConstraint} group (section 2)
  * against the result.
  */
-final class ContractRules {
+public final class ContractRules {
 
     /** Relative slack for capacity checks: solver results carry floating-point dust. */
     private static final double TOLERANCE = 1e-7;
@@ -28,7 +28,7 @@ final class ContractRules {
     }
 
     /** {@code plans} maps each scheduled job to its plan; a job missing from it is not scheduled. */
-    static List<String> violations(List<OptimizerJob> jobs, Map<OptimizerJob, JobPlan> plans, PriceSeries prices,
+    public static List<String> violations(List<OptimizerJob> jobs, Map<OptimizerJob, JobPlan> plans, PriceSeries prices,
                                    LocalDateTime earliestStart, SlotCapacity capacity) {
         List<String> problems = new ArrayList<>();
         BaselineCalculator baselines = new BaselineCalculator(capacity);
@@ -67,7 +67,7 @@ final class ContractRules {
         return problems;
     }
 
-    static List<String> violations(OptimizationProblem problem, AllocationResult result) {
+    public static List<String> violations(OptimizationProblem problem, AllocationResult result) {
         List<String> problems = new ArrayList<>(violations(problem.jobs(), result.plans(), problem.prices(),
                 problem.earliestStart(), problem.capacity()));
         Map<Long, JobPlan> plansById = new HashMap<>();

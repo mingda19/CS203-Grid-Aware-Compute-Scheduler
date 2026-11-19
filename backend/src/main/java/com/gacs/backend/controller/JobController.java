@@ -14,6 +14,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.security.Principal;
@@ -161,7 +162,7 @@ public class JobController {
      */
     @Operation(
             summary = "Delete compute job",
-            description = "Deletes a compute workload owned by the authenticated operator."
+            description = "Deletes a compute workload. Its owner or an admin can delete it. In an approved plan the job leaves the plan and the calendar, and the other jobs stay approved."
     )
     @ApiResponses(value = {
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
@@ -182,9 +183,11 @@ public class JobController {
     public ResponseEntity<ApiResponse<Void>> deleteJob(
             @Parameter(description = "Numeric identifier of the compute job to delete", required = true, example = "101")
             @PathVariable Long id,
-            Principal principal
+            Authentication authentication
     ) {
-        jobService.deleteJob(id, principal.getName());
+        boolean admin = authentication.getAuthorities().stream()
+                .anyMatch(authority -> "ROLE_ADMIN".equals(authority.getAuthority()));
+        jobService.deleteJob(id, authentication.getName(), admin);
         return ResponseEntity.ok(ApiResponse.ok("Job deleted successfully"));
     }
 }

@@ -5,7 +5,7 @@ import jakarta.mail.Message;
 import jakarta.mail.Session;
 import jakarta.mail.internet.MimeMessage;
 import org.junit.jupiter.api.Test;
-import org.springframework.mail.javamail.JavaMailSender;
+import com.gacs.backend.service.GmailApiMailSender;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
@@ -20,24 +20,24 @@ class EmailServiceTest {
 
     @Test
     void recoveryReportsAuthenticationFailureWithoutLeakingProviderMessage() {
-        JavaMailSender sender = mock(JavaMailSender.class);
+        GmailApiMailSender sender = mock(GmailApiMailSender.class);
         MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));
         when(sender.createMimeMessage()).thenReturn(message);
-        org.mockito.Mockito.doThrow(new org.springframework.mail.MailAuthenticationException("sensitive provider details"))
+        org.mockito.Mockito.doThrow(new IllegalStateException("Gmail API authentication rejected"))
                 .when(sender).send(message);
         EmailService service = new EmailService();
         ReflectionTestUtils.setField(service, "mailSender", sender);
         ReflectionTestUtils.setField(service, "fromEmail", "sender@example.com");
         var error = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
                 () -> service.sendPasswordResetEmail("recipient@example.com", "secret-code"));
-        org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("SMTP authentication rejected"));
+        org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("Gmail API authentication rejected"));
         org.junit.jupiter.api.Assertions.assertFalse(error.getMessage().contains("sensitive"));
         org.junit.jupiter.api.Assertions.assertFalse(error.getMessage().contains("secret-code"));
     }
 
     @Test
     void sendsLowConfidenceAlertToRecipientWithForecastDetails() throws Exception {
-        JavaMailSender mailSender = mock(JavaMailSender.class);
+        GmailApiMailSender mailSender = mock(GmailApiMailSender.class);
         MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));
         when(mailSender.createMimeMessage()).thenReturn(message);
 

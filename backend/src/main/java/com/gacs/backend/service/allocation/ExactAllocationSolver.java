@@ -84,6 +84,16 @@ public final class ExactAllocationSolver {
      * optimal given the group's placement, not jointly optimal across it and the rest of the run.
      */
     public Optional<AllocationResult> solve(OptimizationProblem problem, Duration budget) {
+        return solve(problem, budget, Integer.MAX_VALUE);
+    }
+
+    /**
+     * As {@link #solve(OptimizationProblem, Duration)}, but each pass also stops after {@code iterationLimit}
+     * solver iterations (branch-and-bound nodes). Unlike the time budget, this stops at the same point on
+     * every machine, so callers that need repeatable results (the backtest) rely on it and keep the budget
+     * out of reach.
+     */
+    public Optional<AllocationResult> solve(OptimizationProblem problem, Duration budget, int iterationLimit) {
         SynchronizedGroupPlacer.Placement groups = SynchronizedGroupPlacer.place(problem, costs);
         List<OptimizerJob> flexible = problem.flexibleJobsInTieBreakOrder().stream()
                 .filter(job -> !groups.groupedJobIds().contains(job.id()))
@@ -94,7 +104,7 @@ public final class ExactAllocationSolver {
         long deadline = System.nanoTime() + budget.toNanos();
 
         Model countPass = new Model(problem, flexible, OptionalLong.empty(), groups.plans());
-        Optimisation.Result counted = countPass.minimise(remainingMillis(deadline));
+        Optimisation.Result counted = countPass.minimise(remainingMillis(deadline), iterationLimit);
         if (!counted.getState().isFeasible()) {
             return Optional.empty();
         }
@@ -106,7 +116,7 @@ public final class ExactAllocationSolver {
             return Optional.of(countPass.extract(counted, false));
         }
         Model costPass = new Model(problem, flexible, OptionalLong.of(scheduled), groups.plans());
-        Optimisation.Result costed = costPass.minimise(left);
+        Optimisation.Result costed = costPass.minimise(left, iterationLimit);
         if (!costed.getState().isFeasible()) {
             return Optional.of(countPass.extract(counted, false));
         }
@@ -275,8 +285,9 @@ public final class ExactAllocationSolver {
             return model.newExpression("c" + expressions++);
         }
 
-        Optimisation.Result minimise(long timeLimitMillis) {
+        Optimisation.Result minimise(long timeLimitMillis, int iterationLimit) {
             model.options.time_abort = Math.max(1, timeLimitMillis);
+            model.options.iterations_abort = Math.max(1, iterationLimit);
             return model.minimise();
         }
 

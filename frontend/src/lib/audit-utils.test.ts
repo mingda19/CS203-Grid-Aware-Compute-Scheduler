@@ -15,8 +15,8 @@ import {
   parseSolverConfig,
   scheduleSnapshot,
   storedScheduleNote,
-  utcDayEndExclusive,
-  utcDayStart,
+  marketDayEndExclusive,
+  marketDayStart,
 } from "./audit-utils"
 
 const event: AuditEvent = {
@@ -30,19 +30,21 @@ const event: AuditEvent = {
 }
 
 describe("utc day bounds", () => {
-  it("maps a date input to the start of that UTC day", () => {
-    expect(utcDayStart("2026-10-28")).toBe("2026-10-28T00:00:00.000Z")
+  it("maps a date input to the start of that CT day", () => {
+    expect(marketDayStart("2026-10-28")).toBe("2026-10-28T05:00:00.000Z")
+    expect(marketDayStart("2026-11-04")).toBe("2026-11-04T06:00:00.000Z")
   })
 
-  it("maps an inclusive end day to the start of the next UTC day", () => {
-    expect(utcDayEndExclusive("2026-10-31")).toBe("2026-11-01T00:00:00.000Z")
-    expect(utcDayEndExclusive("2026-12-31")).toBe("2027-01-01T00:00:00.000Z")
+  it("maps an inclusive end day to the start of the next CT day", () => {
+    expect(marketDayEndExclusive("2026-10-31")).toBe("2026-11-01T05:00:00.000Z")
+    expect(marketDayEndExclusive("2026-11-01")).toBe("2026-11-02T06:00:00.000Z")
+    expect(marketDayEndExclusive("2026-12-31")).toBe("2027-01-01T06:00:00.000Z")
   })
 
   it("ignores empty or malformed dates", () => {
-    expect(utcDayStart("")).toBeUndefined()
-    expect(utcDayStart("28/10/2026")).toBeUndefined()
-    expect(utcDayEndExclusive("2026-13-45")).toBeUndefined()
+    expect(marketDayStart("")).toBeUndefined()
+    expect(marketDayStart("28/10/2026")).toBeUndefined()
+    expect(marketDayEndExclusive("2026-13-45")).toBeUndefined()
   })
 
   it("detects an end day before the start day", () => {
@@ -81,8 +83,8 @@ describe("buildAuditQuery", () => {
         50,
       ),
     ).toEqual({
-      from: "2026-10-28T00:00:00.000Z",
-      to: "2026-10-29T00:00:00.000Z",
+      from: "2026-10-28T05:00:00.000Z",
+      to: "2026-10-29T05:00:00.000Z",
       actor: "alice@",
       actionType: "APPROVE",
       runId: "7f3c",
@@ -107,10 +109,10 @@ describe("hasActiveFilters", () => {
 })
 
 describe("formatting", () => {
-  it("formats timestamps as UTC", () => {
-    expect(formatAuditTimestamp("2026-10-28T09:30:00Z")).toBe("2026-10-28 09:30:00 UTC")
-    expect(formatAuditTimestamp("2026-10-28T09:30:00.123456Z")).toBe("2026-10-28 09:30:00 UTC")
-    expect(formatAuditTimestamp("garbage")).toBe("garbage")
+  it("formats timestamps in CT", () => {
+    expect(formatAuditTimestamp("2026-10-28T09:30:00Z")).toBe("28 Oct 2026, 04:30 CDT")
+    expect(formatAuditTimestamp("2026-11-04T15:30:00.123456Z")).toBe("04 Nov 2026, 09:30 CST")
+    expect(formatAuditTimestamp("garbage")).toBe("—")
   })
 
   it("assigns a tone per decision", () => {
@@ -183,9 +185,9 @@ describe("detail view JSON", () => {
 describe("auditEventsToCsv", () => {
   it("quotes every cell and escapes embedded quotes", () => {
     const [header, row] = auditEventsToCsv([event]).split("\n")
-    expect(header).toBe('"ID","Timestamp (UTC)","Operator","Decision","Target Run ID","Schedule Hash","Rationale"')
+    expect(header).toBe('"ID","Timestamp (CT)","Operator","Decision","Target Run ID","Schedule Hash","Rationale"')
     expect(row).toContain('"Price spike, ""too risky"""')
-    expect(row.startsWith('"12","2026-10-28 09:30:00 UTC","operator@gacs.internal","REJECT"')).toBe(true)
+    expect(row.startsWith('"12","28 Oct 2026, 04:30 CDT","operator@gacs.internal","REJECT"')).toBe(true)
   })
 })
 

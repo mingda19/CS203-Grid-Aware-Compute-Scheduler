@@ -1,0 +1,97 @@
+{
+  "name": "tight",
+  "description": "Same jobs as 'mixed' but only 0-2 hours of flexibility: a lower bound on savings.",
+  "version": 1,
+  "seed": 4404,
+  "jobsPerDay": {
+    "min": 5,
+    "max": 10
+  },
+  "classes": [
+    {
+      "name": "training",
+      "weight": 0.5,
+      "cpuHours": {
+        "min": 16,
+        "max": 64
+      },
+      "gpuHours": {
+        "min": 8,
+        "max": 48
+      },
+      "startHours": [
+        13,
+        14,
+        15,
+        16,
+        17
+      ],
+      "flexibilityHours": {
+        "min": 0,
+        "max": 2
+      },
+      "deadlineSlackHours": {
+        "min": 0,
+        "max": 3
+      },
+      "exemptShare": 0.1
+    },
+    {
+      "name": "batch",
+      "weight": 0.3,
+      "cpuHours": {
+        "min": 64,
+        "max": 240
+      },
+      "gpuHours": {
+        "min": 0,
+        "max": 0
+      },
+      "startHours": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "flexibilityHours": {
+        "min": 0,
+        "max": 2
+      },
+      "deadlineSlackHours": {
+        "min": 0,
+        "max": 2
+      },
+      "exemptShare": 0.1
+    },
+    {
+      "name": "analytics",
+      "weight": 0.2,
+      "cpuHours": {
+        "min": 8,
+        "max": 48
+      },
+      "gpuHours": {
+        "min": 0,
+        "max": 8
+      },
+      "startHours": [
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "flexibilityHours": {
+        "min": 0,
+        "max": 2
+      },
+      "deadlineSlackHours": {
+        "min": 0,
+        "max": 2
+      },
+      "exemptShare": 0.1
+    }
+  ]
+}

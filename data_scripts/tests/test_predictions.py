@@ -17,7 +17,7 @@ Run from the data_scripts/ folder:
 """
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -199,7 +199,9 @@ class LoadExogenousTests(unittest.TestCase):
         self.assertEqual(by_day.tolist(), [3.0, 3.5, 3.5, 3.5])
 
     def test_stale_gas_is_not_carried_forever(self):
-        out = pred.load_exogenous(self.engine, datetime(2026, 3, 4), datetime(2026, 3, 9, 23))
+        # End one day past what the limit covers: the last price (Feb 27) shifted by lag2d.
+        end = datetime(2026, 2, 27, 23) + timedelta(days=pred.GAS_MAX_STALE_DAYS + 3)
+        out = pred.load_exogenous(self.engine, datetime(2026, 3, 4), end)
         by_day = out.groupby(out["time"].dt.date)["henry_hub_price_usd_mmbtu_lag2d"].first()
         self.assertEqual(by_day.iloc[0], 3.5)
         self.assertTrue(np.isnan(by_day.iloc[-1]))

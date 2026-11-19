@@ -2,16 +2,17 @@
 
 import * as React from "react"
 import { jobsApi, type ConstraintDisagreement, type ConstraintDraft, type ConstraintParseResponse, type ConstraintSuggestion } from "@/lib/api"
-import { applyDisagreementAnswers, constraintReviewBlocker, type DisagreementAnswers } from "@/lib/constraint-review"
+import { applyDisagreementAnswers, constraintReviewBlocker, isPairSuggestion, type DisagreementAnswers, type SuggestionAnswers } from "@/lib/constraint-review"
 import { CONSTRAINT_LABELS } from "@/lib/constraint-confirmation"
 import { formatMarketDateTime, MARKET_TIMEZONE, MARKET_ZONE_LABEL } from "@/lib/date-utils"
 import { Button } from "@/components/ui/button"
 
 type Review = { result: ConstraintParseResponse; draft: ConstraintDraft; raw: string }
 
-export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPendingChange }: {
+export function ConstraintParseReview({ draft, confirmedSource, editingJobId, onConfirm, onPendingChange }: {
   draft: ConstraintDraft
   confirmedSource: string
+  editingJobId?: number
   onConfirm: (result: ConstraintParseResponse, raw: string) => void
   onPendingChange: (pending: boolean) => void
 }) {
@@ -21,6 +22,7 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
   const [error, setError] = React.useState("")
   const [confirmed, setConfirmed] = React.useState(false)
   const [answers, setAnswers] = React.useState<DisagreementAnswers>({})
+  const [suggestionAnswers, setSuggestionAnswers] = React.useState<SuggestionAnswers>({})
   const requestId = React.useRef(0)
   React.useEffect(() => () => { requestId.current++ }, [])
 
@@ -33,6 +35,7 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
     // An answer belongs to the question it was given for. Keeping it across a re-parse would let a
     // stale choice satisfy the blocker for a question the operator has not seen.
     setAnswers({})
+    setSuggestionAnswers({})
   }
 
   const parse = async () => {
@@ -42,9 +45,10 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
     setError("")
     setConfirmed(false)
     setAnswers({})
+    setSuggestionAnswers({})
     onPendingChange(true)
     try {
-      const response = await jobsApi.parseConstraints({ rawConstraints: raw, draft, timeZone: MARKET_TIMEZONE })
+      const response = await jobsApi.parseConstraints({ rawConstraints: raw, draft, timeZone: MARKET_TIMEZONE, editingJobId })
       if (id !== requestId.current) return
       if (!response.success || !response.data) throw new Error(response.message || "Could not parse constraints")
       setReview({ result: response.data, draft, raw })
@@ -55,12 +59,12 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
     }
   }
 
-  const blocker = review ? constraintReviewBlocker(review.result, review.draft, draft, answers) : null
+  const blocker = review ? constraintReviewBlocker(review.result, review.draft, draft, answers, suggestionAnswers) : null
   return (
     <section aria-label="Natural-language constraints" className="mt-4 space-y-4 rounded-lg border bg-muted/20 p-4">
       <div>
         <label htmlFor="raw-job-constraints" className="text-sm font-medium">Describe scheduling constraints</label>
-        <p id="constraints-help" className="text-xs text-muted-foreground">Optional. Describe timing, flexibility, priority, or exemption. Times are interpreted in ERCOT market local time (Central). Parsing does not save or change the job.</p>
+        <p id="constraints-help" className="text-xs text-muted-foreground">Optional. Describe timing, flexibility, priority, exemption, or an ordering against another job. Times are interpreted in ERCOT market local time (Central). Parsing does not save or change the job.</p>
       </div>
       <textarea id="raw-job-constraints" aria-describedby="constraints-help" maxLength={1000} rows={3}
         className="w-full rounded-md border bg-background px-4 py-2 text-sm"
@@ -71,17 +75,21 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
         <span className="text-xs text-muted-foreground">{raw.length}/1,000 characters</span>
       </div>
       {loading && <p role="status" className="text-sm">Parsing constraints for review…</p>}
-      {error && <p role="alert" className="text-sm text-destructive">{error} Use “Parse and review” to retry.</p>}
+      {error && <p role="alert" className="text-sm text-destructive-foreground">{error} Use “Parse and review” to retry.</p>}
       {review && <>
+        {(review.result.warnings ?? []).map((warning, i) => <p key={i} role="status" className="text-sm text-warning-foreground">{warning}</p>)}
         <ConstraintComparison raw={review.raw} result={review.result} />
         <DisagreementChoices disagreements={review.result.disagreements ?? []} answers={answers}
           onAnswer={(field, option) => setAnswers(prev => ({ ...prev, [field]: option }))} />
-        <Suggestions suggestions={review.result.suggestions ?? []} />
-        {blocker && <p role="alert" className="text-sm text-destructive">{blocker}</p>}
+        <Suggestions suggestions={review.result.suggestions ?? []} answers={suggestionAnswers}
+          onAnswer={(index, answer) => setSuggestionAnswers(prev => ({ ...prev, [index]: answer }))} />
+        {blocker && <p role="alert" className="text-sm text-destructive-foreground">{blocker}</p>}
         <Button type="button" disabled={!!blocker} onClick={() => {
-          if (constraintReviewBlocker(review.result, review.draft, draft, answers)) return
+          if (constraintReviewBlocker(review.result, review.draft, draft, answers, suggestionAnswers)) return
           const disagreements = review.result.disagreements ?? []
-          onConfirm({ ...review.result, fields: applyDisagreementAnswers(review.result.fields, disagreements, answers, review.draft) },
+          onConfirm({ ...review.result,
+            suggestions: (review.result.suggestions ?? []).filter((_, index) => suggestionAnswers[index] !== "DROP"),
+            fields: applyDisagreementAnswers(review.result.fields, disagreements, answers, review.draft) },
             review.raw)
           onPendingChange(false)
           setReview(null)
@@ -89,7 +97,7 @@ export function ConstraintParseReview({ draft, confirmedSource, onConfirm, onPen
         }}>Confirm and apply proposed values</Button>
         <p className="text-xs text-muted-foreground">Confirm applies these values to the form. Use “Create job” or “Save changes” below to save the job.</p>
       </>}
-      {confirmed && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-400">Constraints confirmed and applied. Review the form below, then save the job.</p>}
+      {confirmed && <p role="status" className="text-sm text-success-foreground">Constraints confirmed and applied. Review the form below, then save the job.</p>}
     </section>
   )
 }
@@ -139,7 +147,7 @@ export function DisagreementChoices({ disagreements, answers, onAnswer }: {
 }) {
   if (!disagreements.length) return null
   return (
-    <div className="space-y-4 rounded-md border border-amber-300 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/30">
+    <div className="space-y-4 rounded-md border border-warning/40 bg-warning/10 p-4">
       <div>
         <p className="text-sm font-medium">What does your text mean?</p>
         <p className="text-xs text-muted-foreground">
@@ -166,25 +174,37 @@ export function DisagreementChoices({ disagreements, answers, onAnswer }: {
 /**
  * Constraints the classifier found that the form has no field for.
  *
- * Shown, not applied. These are kinds of rule the job form cannot hold yet - a recurring daily
- * window, an ordering against another job - so telling the operator they were recognised is honest,
- * while implying they will be enforced would not be.
+ * Pair relationships can be saved. Other recognised kinds remain informational.
  */
-export function Suggestions({ suggestions }: { suggestions: ConstraintSuggestion[] }) {
+export function Suggestions({ suggestions, answers = {}, onAnswer }: {
+  suggestions: ConstraintSuggestion[]
+  answers?: SuggestionAnswers
+  onAnswer?: (index: number, answer: "KEEP" | "DROP") => void
+}) {
   if (!suggestions.length) return null
   return (
     <div className="text-sm">
-      <p className="font-medium">Also recognised, but not applied to this form</p>
+      <p className="font-medium">Recognised constraints</p>
       <ul className="list-disc space-y-1 pl-4">
         {suggestions.map((suggestion, index) => (
           <li key={index}>
             {CONSTRAINT_LABELS[suggestion.type] ?? suggestion.type}
+            {isPairSuggestion(suggestion) && <span> (job #{suggestion.referencedJobId})</span>}
             <span className="text-muted-foreground"> — from “{suggestion.phrase}”</span>
+            {isPairSuggestion(suggestion) ? <fieldset className="mt-1 flex gap-3">
+              <legend className="sr-only">Keep this job relationship?</legend>
+              {(["KEEP", "DROP"] as const).map(answer => <label key={answer} className="flex items-center gap-1">
+                <input type="radio" name={`suggestion-${index}`} value={answer}
+                  checked={(answers[index] ?? (suggestion.needsConfirmation ? undefined : "KEEP")) === answer}
+                  onChange={() => onAnswer?.(index, answer)} />
+                {answer === "KEEP" ? "Keep relationship" : "Ignore relationship"}
+              </label>)}
+            </fieldset> : <p className="text-xs text-muted-foreground">Recognised only; this type cannot be saved yet.</p>}
           </li>
         ))}
       </ul>
       <p className="mt-1 text-xs text-muted-foreground">
-        These are not saved with the job yet. Set them when you run an optimisation.
+        Kept job relationships are applied to the form when you confirm, and saved with the job when you save it.
       </p>
     </div>
   )

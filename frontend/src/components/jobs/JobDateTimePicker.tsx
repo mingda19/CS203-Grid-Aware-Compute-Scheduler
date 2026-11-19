@@ -194,7 +194,7 @@ export function JobDateTimePicker({
               "disabled:cursor-not-allowed disabled:opacity-50",
               "[&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:w-0",
               error && "border-destructive ring-destructive",
-              open && "ring-1 ring-emerald-500 border-emerald-500"
+              open && "ring-1 ring-primary border-primary"
             )}
           />
 
@@ -216,8 +216,8 @@ export function JobDateTimePicker({
               onClick={() => setOpen(!open)}
               title="Toggle calendar dropdown"
               className={cn(
-                "p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors",
-                open && "bg-emerald-500/20"
+                "p-1.5 rounded-md text-primary hover:bg-primary/10 transition-colors",
+                open && "bg-primary/20"
               )}
             >
               <CalendarIcon className="h-4 w-4" />
@@ -276,7 +276,7 @@ export function JobDateTimePicker({
           {/* Calendar Grid */}
           <div className="grid grid-cols-7 gap-1 text-center text-xs mb-2">
             {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((day) => (
-              <span key={day} className="text-[10px] font-medium text-muted-foreground py-0.5">
+              <span key={day} className="text-xs font-medium text-muted-foreground py-0.5">
                 {day}
               </span>
             ))}
@@ -304,8 +304,8 @@ export function JobDateTimePicker({
                     "h-6 w-6 sm:h-7 sm:w-7 mx-auto flex items-center justify-center rounded text-xs transition-all",
                     disabledDay && "cursor-not-allowed opacity-25 text-muted-foreground",
                     !disabledDay && !isSelected && "hover:bg-muted hover:text-foreground",
-                    isToday && !isSelected && "border border-emerald-500/60 font-semibold text-emerald-600 dark:text-emerald-400",
-                    isSelected && "bg-primary text-primary-foreground font-bold shadow-xs"
+                    isToday && !isSelected && "border border-primary/60 font-semibold text-primary",
+                    isSelected && "bg-primary text-primary-foreground font-semibold shadow-xs"
                   )}
                 >
                   {day}
@@ -315,7 +315,7 @@ export function JobDateTimePicker({
           </div>
 
           {/* Clean Footer */}
-          <div className="mt-2 pt-2 border-t border-border flex items-center justify-between text-[11px]">
+          <div className="mt-2 pt-2 border-t border-border flex items-center justify-between text-xs">
             <button
               type="button"
               onClick={() => {
@@ -325,7 +325,7 @@ export function JobDateTimePicker({
                 onChange(notBeforeEarliest(todayStr))
                 setOpen(false)
               }}
-              className="text-emerald-600 hover:text-emerald-700 font-medium"
+              className="text-primary hover:text-primary/80 font-medium"
             >
               Today
             </button>
@@ -338,7 +338,7 @@ export function JobDateTimePicker({
                 onChange(notBeforeEarliest(`${next}T${pad2(currentHour)}:${pad2(currentMinute)}`))
                 setOpen(false)
               }}
-              className="text-emerald-600 hover:text-emerald-700 font-medium"
+              className="text-primary hover:text-primary/80 font-medium"
             >
               Tomorrow
             </button>

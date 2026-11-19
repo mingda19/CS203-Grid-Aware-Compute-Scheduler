@@ -1,19 +1,22 @@
 import type { AuditActionType, AuditEvent, AuditEventDetail, AuditEventQuery } from "./api"
+import { addMarketDays, formatMarketDateTime, marketDateToUtcIso } from "./date-utils"
 
-export const AUDIT_ACTION_TYPES: AuditActionType[] = ["APPROVE", "REJECT", "REVISE", "OVERRIDE", "DISPATCH"]
+export const AUDIT_ACTION_TYPES: AuditActionType[] = ["APPROVE", "REJECT", "REVISE", "REVOKE", "OVERRIDE", "DISPATCH", "REMOVE_JOB"]
 
 export const AUDIT_ACTION_LABELS: Record<AuditActionType, string> = {
   APPROVE: "Approved",
   REJECT: "Rejected",
   REVISE: "Revised",
+  REVOKE: "Revoked",
   OVERRIDE: "Overridden",
   DISPATCH: "Dispatched",
+  REMOVE_JOB: "Job removed",
 }
 
 export interface AuditFilters {
-  /** Inclusive UTC calendar day, `YYYY-MM-DD` as produced by `<input type="date">`. */
+  /** Inclusive Central (CT) calendar day, `YYYY-MM-DD` as produced by `<input type="date">`. */
   fromDate: string
-  /** Inclusive UTC calendar day, `YYYY-MM-DD`. */
+  /** Inclusive Central (CT) calendar day, `YYYY-MM-DD`. */
   toDate: string
   operator: string
   actionType: AuditActionType | "ALL"
@@ -33,26 +36,21 @@ export const EMPTY_AUDIT_FILTERS: AuditFilters = {
 
 const DATE_INPUT = /^\d{4}-\d{2}-\d{2}$/
 
-/** Start of the given UTC day as an ISO instant, or undefined for an empty or malformed date. */
-export function utcDayStart(date: string): string | undefined {
-  if (!DATE_INPUT.test(date)) return undefined
-  const d = new Date(`${date}T00:00:00Z`)
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString()
+/** Start of the given CT day as a UTC ISO instant, or undefined for an empty or malformed date. */
+export function marketDayStart(date: string): string | undefined {
+  if (!DATE_INPUT.test(date) || Number.isNaN(new Date(`${date}T00:00:00Z`).getTime())) return undefined
+  return marketDateToUtcIso(date)
 }
 
-/** Start of the UTC day after the given one, so an inclusive end day becomes an exclusive bound. */
-export function utcDayEndExclusive(date: string): string | undefined {
-  const start = utcDayStart(date)
-  if (!start) return undefined
-  const d = new Date(start)
-  d.setUTCDate(d.getUTCDate() + 1)
-  return d.toISOString()
+/** Start of the CT day after the given one, so an inclusive end day becomes an exclusive bound. */
+export function marketDayEndExclusive(date: string): string | undefined {
+  return marketDayStart(date) && marketDateToUtcIso(addMarketDays(date, 1))
 }
 
 /** True when both days are set and the end day is before the start day. */
 export function isInvertedRange(filters: Pick<AuditFilters, "fromDate" | "toDate">): boolean {
-  const from = utcDayStart(filters.fromDate)
-  const to = utcDayStart(filters.toDate)
+  const from = marketDayStart(filters.fromDate)
+  const to = marketDayStart(filters.toDate)
   return !!from && !!to && to < from
 }
 
@@ -69,8 +67,8 @@ export function buildAuditQuery(filters: AuditFilters, page: number, size: numbe
   const operator = filters.operator.trim()
   const runId = filters.runId.trim()
   return {
-    from: utcDayStart(filters.fromDate),
-    to: utcDayEndExclusive(filters.toDate),
+    from: marketDayStart(filters.fromDate),
+    to: marketDayEndExclusive(filters.toDate),
     actor: operator || undefined,
     actionType: filters.actionType === "ALL" ? undefined : filters.actionType,
     runId: runId || undefined,
@@ -91,18 +89,16 @@ export function hasActiveFilters(filters: AuditFilters): boolean {
   )
 }
 
-/** `2026-10-28T09:30:00Z` → `2026-10-28 09:30:00 UTC`. */
+/** `2026-10-28T09:30:00Z` → `28 Oct 2026, 04:30 CDT`, like the rest of the site. */
 export function formatAuditTimestamp(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return `${d.toISOString().slice(0, 19).replace("T", " ")} UTC`
+  return formatMarketDateTime(iso)
 }
 
 export type OutcomeTone = "positive" | "negative" | "neutral"
 
 export function outcomeTone(action: AuditActionType): OutcomeTone {
   if (action === "APPROVE" || action === "DISPATCH") return "positive"
-  if (action === "REJECT") return "negative"
+  if (action === "REJECT" || action === "REVOKE") return "negative"
   return "neutral"
 }
 
@@ -163,7 +159,7 @@ function csvCell(value: string | number): string {
 }
 
 export function auditEventsToCsv(events: AuditEvent[]): string {
-  const headers = ["ID", "Timestamp (UTC)", "Operator", "Decision", "Target Run ID", "Schedule Hash", "Rationale"]
+  const headers = ["ID", "Timestamp (CT)", "Operator", "Decision", "Target Run ID", "Schedule Hash", "Rationale"]
   const rows = events.map((e) => [
     e.id,
     formatAuditTimestamp(e.timestamp),

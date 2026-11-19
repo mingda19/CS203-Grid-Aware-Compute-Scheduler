@@ -63,6 +63,11 @@ public class Job {
     @Column(name = "raw_constraints", length = 1000)
     private String rawConstraints;
 
+    @Convert(converter = JobConstraintsConverter.class)
+    @Column(name = "pair_constraints", columnDefinition = "TEXT")
+    @Builder.Default
+    private java.util.List<JobConstraint> pairConstraints = java.util.List.of();
+
     @Column(name = "parsed_at")
     private LocalDateTime parsedAt;
 
@@ -83,6 +88,17 @@ public class Job {
     @Enumerated(EnumType.STRING)
     @Column(name = "workload_category", nullable = false, length = 20, columnDefinition = "varchar(20) default 'ML_TRAINING'")
     private WorkloadCategory workloadCategory = WorkloadCategory.ML_TRAINING;
+
+    /**
+     * Why the autorun could not plan this job at {@link #planErrorRevision}, or why the plan it got left it
+     * out. Read only while the revision matches {@link #schedulingRevision}, so any edit that changes a
+     * scheduling input clears it.
+     */
+    @Column(name = "plan_error", length = 500)
+    private String planError;
+
+    @Column(name = "plan_error_revision")
+    private Long planErrorRevision;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
@@ -118,6 +134,21 @@ public class Job {
     @PreUpdate
     protected void onUpdate() {
         this.updatedAt = LocalDateTime.now();
+    }
+
+    /** True when {@link #planError} was recorded for the job as it is now. */
+    public boolean hasCurrentPlanError() {
+        return planError != null && planErrorRevision != null && planErrorRevision == schedulingRevision;
+    }
+
+    public void recordPlanError(String message, long revision) {
+        planError = message == null ? null : message.substring(0, Math.min(500, message.length()));
+        planErrorRevision = revision;
+    }
+
+    public void clearPlanError() {
+        planError = null;
+        planErrorRevision = null;
     }
 
     /** The earliest hour this job may start at - its original start, truncated to the hour. */

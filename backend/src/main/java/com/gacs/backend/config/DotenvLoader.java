@@ -51,13 +51,6 @@ public class DotenvLoader {
                     configureJdbcFromDatabaseUrl(value);
                 }
 
-                // Also map mail properties if found in .env
-                if ("MAIL_USERNAME".equalsIgnoreCase(key)) {
-                    System.setProperty("spring.mail.username", value);
-                }
-                if ("MAIL_PASSWORD".equalsIgnoreCase(key)) {
-                    System.setProperty("spring.mail.password", value);
-                }
                 if ("CORS_ALLOWED_ORIGINS".equalsIgnoreCase(key)) {
                     System.setProperty("cors.allowed-origins", value);
                 }

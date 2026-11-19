@@ -10,6 +10,7 @@ import com.gacs.backend.repository.JobRepository;
 import com.gacs.backend.repository.OptimizationPlanRepository;
 import com.gacs.backend.repository.OptimizerRunRepository;
 import com.gacs.backend.repository.UserRepository;
+import com.gacs.backend.service.ScheduleExpiryService;
 import com.gacs.backend.support.MutableClock;
 import com.gacs.backend.support.MutableClockConfig;
 import org.junit.jupiter.api.AfterEach;
@@ -58,17 +59,20 @@ class FacilityUtilizationIntegrationTest {
     private static final DateTimeFormatter UTC = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
 
     @Autowired MockMvc mvc;
+    @Autowired com.gacs.backend.service.AppSettingsService appSettings;
     @Autowired UserRepository users;
     @Autowired JobRepository jobs;
     @Autowired FacilityRepository facilities;
     @Autowired OptimizationPlanRepository plans;
     @Autowired OptimizerRunRepository runs;
     @Autowired MutableClock clock;
+    @Autowired ScheduleExpiryService expiry;
 
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
     private final List<String> createdRuns = new ArrayList<>();
     private final List<Long> createdJobs = new ArrayList<>();
     private User owner;
+    private User other;
 
     /** Two days ahead, on the hour, so no plan is stale by time before the clock moves. */
     private final LocalDateTime start = LocalDateTime.now(ZoneOffset.UTC).truncatedTo(ChronoUnit.HOURS).plusDays(2);
@@ -77,6 +81,7 @@ class FacilityUtilizationIntegrationTest {
 
     @BeforeEach
     void setup() {
+        appSettings.update(true);
         owner = users.save(new User(UUID.randomUUID() + "@test.io", "test-password", "Operator", "ROLE_USER"));
         saveFacility(256.0, 64.0);
     }
@@ -89,12 +94,13 @@ class FacilityUtilizationIntegrationTest {
             runs.deleteById(runId);
         }
         jobs.deleteAllById(createdJobs);
-        facilities.deleteAll(facilities.findAllByOwnerEmail(owner.getEmail()));
+        facilities.deleteAll(); // one shared facility: reset it for the next test class
+        if (other != null) users.deleteById(other.getId());
         users.deleteById(owner.getId());
     }
 
     private void saveFacility(double cpu, double gpu) {
-        facilities.deleteAll(facilities.findAllByOwnerEmail(owner.getEmail()));
+        facilities.deleteAll(); // one shared facility: reset it for the next test class
         facilities.save(Facility.builder().ownerEmail(owner.getEmail()).maxCpuHours(cpu).maxGpuHours(gpu).build());
     }
 
@@ -116,7 +122,7 @@ class FacilityUtilizationIntegrationTest {
 
     /** Optimises against prices that make {@link #usedHour} the cheapest, under the facility's own limits. */
     private String optimize(Job... jobList) throws Exception {
-        Facility facility = facilities.findAllByOwnerEmail(owner.getEmail()).get(0);
+        Facility facility = facilities.findFirstByOrderByIdAsc().orElseThrow();
         List<Map<String, Object>> jobsJson = new ArrayList<>();
         for (Job j : jobList) {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -214,13 +220,14 @@ class FacilityUtilizationIntegrationTest {
     }
 
     @Test
-    @DisplayName("A plan whose job changed after approval is not counted and its state is stored as invalid")
+    @DisplayName("A plan whose job changed after approval is not counted once the expiry check has stored it as invalid")
     void changedJobPlanIsNotCountedAndIsInvalidated() throws Exception {
         Job job = flexibleJob(4.0, 0.0);
         String runId = approvedPlan(job);
         job.setCpuHours(5.0);
         jobs.save(job);
         clockAt(usedHour.plusMinutes(10));
+        expiry.expire(); // utilization reads stored states; this check is what keeps them current
 
         utilization().andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.state").value("NO_APPROVED_PLAN"))
@@ -229,11 +236,30 @@ class FacilityUtilizationIntegrationTest {
     }
 
     @Test
-    @DisplayName("A STALE plan, superseded by a later approval of the same job, is not counted")
+    @DisplayName("Approved plans of different owners are summed against the one shared facility")
+    void otherOwnersApprovedPlansAreCounted() throws Exception {
+        approvedPlan(flexibleJob(4.0, 0.0));
+        User first = owner;
+        other = users.save(new User(UUID.randomUUID() + "@test.io", "test-password", "Other", "ROLE_USER"));
+        owner = other;
+        approvedPlan(flexibleJob(6.0, 0.0));
+        owner = first;
+        clockAt(usedHour.plusMinutes(10));
+
+        utilization().andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.state").value("LIVE"))
+                .andExpect(jsonPath("$.data.runIds.length()").value(2))
+                .andExpect(jsonPath("$.data.cpu.used").value(10.0));
+    }
+
+    @Test
+    @DisplayName("A plan that has gone STALE is not counted")
     void stalePlanIsNotCounted() throws Exception {
-        Job job = flexibleJob(4.0, 0.0);
-        String older = approvedPlan(job);
-        String newer = approvedPlan(job);
+        String older = approvedPlan(flexibleJob(4.0, 0.0));
+        var plan = plans.findById(older).orElseThrow();
+        plan.invalidate(ReviewState.STALE, "Superseded by approved run x", Instant.now());
+        plans.save(plan);
+        String newer = approvedPlan(flexibleJob(4.0, 0.0));
         assertThat(stateOf(older)).isEqualTo(ReviewState.STALE);
         clockAt(usedHour.plusMinutes(10));
 
@@ -273,5 +299,21 @@ class FacilityUtilizationIntegrationTest {
                 .andExpect(jsonPath("$.data.gpu.used").value(0.0))
                 .andExpect(jsonPath("$.data.gpu.limit").value(0.0))
                 .andExpect(jsonPath("$.data.gpu.percent").value(nullValue()));
+    }
+
+    @Test
+    @DisplayName("A job deleted from an approved plan is no longer counted, the other jobs still are")
+    void aDeletedJobLeavesTheCount() throws Exception {
+        Job keep = flexibleJob(4.0, 0.0);
+        Job drop = flexibleJob(6.0, 0.0);
+        approvedPlan(keep, drop);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/jobs/" + drop.getId())
+                .with(user(owner.getEmail()))).andExpect(status().isOk());
+        createdJobs.remove(drop.getId());
+        clockAt(usedHour.plusMinutes(10));
+
+        utilization().andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.state").value("LIVE"))
+                .andExpect(jsonPath("$.data.cpu.used").value(4.0));
     }
 }

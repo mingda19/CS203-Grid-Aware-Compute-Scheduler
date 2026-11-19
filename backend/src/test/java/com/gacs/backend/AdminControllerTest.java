@@ -124,4 +124,23 @@ class AdminControllerTest {
                         .content(payload))
                 .andExpect(status().isForbidden());
     }
+
+    @Test
+    @WithMockUser(username = "admin@datacenter.io", roles = {"ADMIN"})
+    void setUserBanned_ShouldReturn200_WithBannedTrue() throws Exception {
+        User bannedUser = new User("operator@datacenter.io", "pass", "Operator", "ROLE_USER");
+        bannedUser.setId(2L);
+        bannedUser.setBanned(true);
+
+        when(adminService.setBanned(eq(2L), eq(true), eq("admin@datacenter.io")))
+                .thenReturn(new UserDto(bannedUser));
+
+        mockMvc.perform(patch("/api/admin/users/2/ban")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"banned\": true}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.message").value("User banned"))
+                .andExpect(jsonPath("$.data.banned").value(true));
+    }
 }

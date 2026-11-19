@@ -2,11 +2,13 @@
 
 import * as React from "react"
 import { MARKET_TIMEZONE, MARKET_ZONE_LABEL, marketZoneDescriptor, type MarketZoneDescriptor } from "@/lib/date-utils"
-import { Zap, House, CalendarClock, BriefcaseBusiness, TrendingDown, CheckCircle2, FileText, Bell, Menu, Sun, Moon, ShieldCheck, ChevronRight, Sparkles, LogOut, HelpCircle, Clock } from "lucide-react"
+import { Zap, House, CalendarClock, BriefcaseBusiness, TrendingDown, CheckCircle2, FileText, Bell, Menu, Sun, Moon, ShieldCheck, ChevronRight, Sparkles, LogOut, HelpCircle, Clock, Settings } from "lucide-react"
 import Link from "next/link"
+import { GacsLogo } from "@/app/login/gacs-logo"
 import { usePathname, useRouter } from "next/navigation"
 
 
+import { AssistantWidget } from "@/components/assistant/AssistantWidget"
 import { Button } from "@/components/ui/button"
 
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
@@ -14,16 +16,20 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useIsMobile } from "@/components/ui/use-mobile"
 import { type DataStatusType } from "@/components/ui/data-status-badge"
 import { DataStatusPopover } from "@/components/ui/efferd-dashboard-2-utils/data-status-popover"
+import { QuickTour, TOUR_STEPS } from "@/components/ui/efferd-dashboard-2-utils/quick-tour"
 import {
   authApi,
   freshnessApi,
   removeStoredUser,
+  signOut,
+  USER_UPDATED_EVENT,
   type DataFreshnessResponse,
   type FreshnessNotification,
   type User,
 } from "@/lib/api"
 import { freshnessSummary } from "@/lib/data-freshness"
 import { mergeFreshnessNotifications } from "@/lib/notification-utils"
+import { readTheme, resolveTheme, saveTheme, subscribeTheme } from "@/lib/theme"
 
 interface AppShellProps {
   children: React.ReactNode
@@ -39,7 +45,10 @@ export function AppShell({ children }: AppShellProps) {
   // render would differ from the server's HTML and cause a hydration mismatch.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   React.useEffect(() => { setMarketZone(marketZoneDescriptor()) }, [])
-  const [theme, setTheme] = React.useState<"light" | "dark">("dark")
+  // The server has no saved choice, so it renders dark (the default) and the client corrects it after hydration.
+  const themeChoice = React.useSyncExternalStore(subscribeTheme, readTheme, () => "dark" as const)
+  // ponytail: with "system" chosen, this icon updates on the next render, not the moment the OS theme flips.
+  const theme = resolveTheme(themeChoice)
   const [mobileOpen, setMobileOpen] = React.useState(false)
   const [currentUser, setCurrentUser] = React.useState<User | null>(null)
   const [isAuthChecking, setIsAuthChecking] = React.useState(true)
@@ -53,39 +62,6 @@ export function AppShell({ children }: AppShellProps) {
   const [freshness, setFreshness] = React.useState<DataFreshnessResponse | null>(null)
 
   const pathname = usePathname()
-
-  const tourSteps = [
-    {
-      title: "Home",
-      description: "Home shows the plans that need your approval, the price now, and the jobs that run next.",
-      target: "home-root",
-      href: "/home",
-    },
-    {
-      title: "Review suggested changes",
-      description: "Pending approvals show schedule recommendations that need your review. Read the expected impact before approving or rejecting a change.",
-      target: "approvals-root",
-      href: "/approvals",
-    },
-    {
-      title: "See your scheduled work",
-      description: "The workload scheduler lists compute jobs, their current status, and when they are planned to run. A schedule can move flexible work to a lower-cost time.",
-      target: "workloads-root",
-      href: "/workloads",
-    },
-    {
-      title: "Understand the forecast",
-      description: "Price Forecast compares recorded settlement prices with model predictions. Peaks indicate times when electricity may cost more.",
-      target: "forecasts-root",
-      href: "/forecasts",
-    },
-    {
-      title: "You’re ready to explore",
-      description: "Use the menu on the left to move between areas. You can reopen this guide anytime with the help button at the top of the page.",
-      target: null,
-      href: null,
-    },
-  ]
 
   React.useEffect(() => {
     let active = true
@@ -107,6 +83,13 @@ export function AppShell({ children }: AppShellProps) {
     })
     return () => { active = false }
   }, [router])
+
+  // The Settings page sends this after a profile save.
+  React.useEffect(() => {
+    const onUserUpdated = (event: Event) => setCurrentUser((event as CustomEvent<User>).detail)
+    window.addEventListener(USER_UPDATED_EVENT, onUserUpdated)
+    return () => window.removeEventListener(USER_UPDATED_EVENT, onUserUpdated)
+  }, [])
 
   React.useEffect(() => {
     if (!currentUser) return
@@ -148,47 +131,25 @@ export function AppShell({ children }: AppShellProps) {
     }
   }
 
-  const handleLogout = async () => {
-    try {
-      await authApi.logout()
-    } catch {
-      // Ignore network errors on logout
-    } finally {
-      removeStoredUser()
-      router.push("/login")
-    }
-  }
+  const handleLogout = () => signOut(router)
 
-  // Apply dark mode class to document element
+  // Apply the dark class. With "system", follow OS theme changes while the page is open.
   React.useEffect(() => {
-    const root = document.documentElement
-    if (theme === "dark") {
-      root.classList.add("dark")
-    } else {
-      root.classList.remove("dark")
-    }
-  }, [theme])
+    const apply = () => document.documentElement.classList.toggle("dark", resolveTheme(themeChoice) === "dark")
+    apply()
+    if (themeChoice !== "system") return
+    const media = window.matchMedia("(prefers-color-scheme: dark)")
+    media.addEventListener("change", apply)
+    return () => media.removeEventListener("change", apply)
+  }, [themeChoice])
 
-  const toggleTheme = () => {
-    setTheme((prev) => (prev === "dark" ? "light" : "dark"))
-  }
+  // Reads the live class, so a stale icon (see above) never flips the wrong way.
+  const toggleTheme = () => saveTheme(document.documentElement.classList.contains("dark") ? "light" : "dark")
 
   const closeTour = (completed: boolean) => {
     setTourOpen(false)
     if (completed && currentUser?.email) {
       window.localStorage.setItem(`gacs-onboarding-complete:${currentUser.email.toLowerCase()}`, "true")
-    }
-  }
-
-  const goToTourStep = (nextStep: number) => {
-    setTourStep(nextStep)
-    const step = tourSteps[nextStep]
-    if (step?.href && pathname !== step.href) {
-      router.push(step.href)
-    }
-    const target = step?.target
-    if (target) {
-      window.setTimeout(() => document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "center" }), 120)
     }
   }
 
@@ -204,27 +165,20 @@ export function AppShell({ children }: AppShellProps) {
   const navItems: NavItem[] = [
     // The order follows the real flow: create jobs, approve, schedule (masterplan D17).
     { label: "Home", icon: House, href: "/home", active: pathname === "/home" || pathname === "/" },
-    { label: "Compute Jobs", icon: BriefcaseBusiness, href: "/jobs", active: pathname?.startsWith("/jobs") },
-    { label: "Pending Approvals", icon: CheckCircle2, href: "/approvals", active: pathname?.startsWith("/approvals") },
+    { label: "Jobs", icon: BriefcaseBusiness, href: "/jobs", active: pathname?.startsWith("/jobs") },
+    { label: "Approvals", icon: CheckCircle2, href: "/approvals", active: pathname?.startsWith("/approvals") },
     { label: "Schedule", icon: CalendarClock, href: "/workloads", active: pathname?.startsWith("/workloads") },
     { label: "Price Forecast", icon: TrendingDown, href: "/forecasts", active: pathname?.startsWith("/forecasts") },
-    { label: "Historical Audit Logs", icon: FileText, href: "/audit", active: pathname?.startsWith("/audit") },
+    { label: "Audit", icon: FileText, href: "/audit", active: pathname?.startsWith("/audit") },
   ]
 
   const sidebarContent = (
     <div className="flex h-full flex-col bg-card border-r border-border text-card-foreground">
       {/* Brand Header */}
       <div className="flex items-center gap-3 px-5 py-5 border-b border-border">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-          <Zap className="h-6 w-6 fill-current" />
-        </div>
+        <GacsLogo className="h-10 w-10 shrink-0" />
         <div className="flex flex-col">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold tracking-tight text-lg leading-none">GACS</span>
-            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary border border-primary/30">
-              v1.0
-            </span>
-          </div>
+          <span className="font-semibold tracking-tight text-lg leading-none">GACS</span>
           <span className="text-xs text-muted-foreground mt-0.5">Grid-Aware Compute</span>
         </div>
       </div>
@@ -246,9 +200,6 @@ export function AppShell({ children }: AppShellProps) {
 
       {/* Navigation Links */}
       <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
-        <div className="px-2 pb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Operations
-        </div>
         {navItems.map((item) => {
           const Icon = item.icon
           return (
@@ -291,11 +242,13 @@ export function AppShell({ children }: AppShellProps) {
             <Link
               href="/admin"
               onClick={() => isMobile && setMobileOpen(false)}
-              className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all group border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20"
+              className={`flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all group border border-primary/30 ${
+                pathname?.startsWith("/admin") ? "bg-primary text-primary-foreground" : "bg-primary/10 text-primary hover:bg-primary/20"
+              }`}
             >
               <div className="flex items-center gap-3">
-                <ShieldCheck className="h-4 w-4 text-primary" />
-                <span>Admin Console</span>
+                <ShieldCheck className="h-4 w-4" />
+                <span>Admin</span>
               </div>
               <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/30">
                 RBAC
@@ -322,6 +275,22 @@ export function AppShell({ children }: AppShellProps) {
             </p>
           </div>
           <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  asChild
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                >
+                  <Link href="/settings" onClick={() => setMobileOpen(false)}>
+                    <Settings className="h-4 w-4" />
+                    <span className="sr-only">Settings</span>
+                  </Link>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">Settings</TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -410,7 +379,11 @@ export function AppShell({ children }: AppShellProps) {
             </TooltipProvider>
 
             {/* System data status: a badge that opens the list of all datasets */}
-            <DataStatusPopover status={systemDataStatus} response={freshness} />
+            <DataStatusPopover
+              status={systemDataStatus}
+              response={freshness}
+              open={tourOpen && TOUR_STEPS[tourStep]?.target === "data-status"}
+            />
 
             {/* Quick Theme Switcher */}
             <Button
@@ -432,6 +405,7 @@ export function AppShell({ children }: AppShellProps) {
                     size="icon"
                     className="h-9 w-9 text-muted-foreground hover:text-foreground"
                     aria-label="Show dashboard guide"
+                    data-tour="help"
                     onClick={() => { setTourStep(-1); setTourOpen(true) }}
                   >
                     <HelpCircle className="h-4 w-4" />
@@ -487,51 +461,7 @@ export function AppShell({ children }: AppShellProps) {
         </header>
 
         {tourOpen && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" role="presentation">
-            <section
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="onboarding-title"
-              aria-describedby="onboarding-description"
-              className="w-full max-w-lg rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl sm:p-8"
-            >
-              <div className="mb-5 flex items-center gap-2 text-sm font-semibold text-primary">
-                <Sparkles className="h-4 w-4" />
-                {tourStep < 0 ? "A quick tour" : `Step ${tourStep + 1} of ${tourSteps.length}`}
-              </div>
-              <h2 id="onboarding-title" className="text-xl font-semibold tracking-tight">
-                {tourStep < 0 ? `Welcome${currentUser?.fullName ? `, ${currentUser.fullName.split(" ")[0]}` : ""}!` : tourSteps[tourStep].title}
-              </h2>
-              <p id="onboarding-description" className="mt-3 text-sm leading-6 text-muted-foreground">
-                {tourStep < 0
-                  ? "GACS helps you understand energy conditions and plan compute schedules. This short guide shows you where to find the key information."
-                  : tourSteps[tourStep].description}
-              </p>
-              <div className="mt-7 flex items-center justify-between gap-3">
-                <Button variant="ghost" onClick={() => closeTour(true)}>
-                  {tourStep < 0 ? "Explore on my own" : "Skip tour"}
-                </Button>
-                <div className="flex items-center gap-2">
-                  {tourStep >= 0 && tourStep > 0 && (
-                    <Button variant="outline" onClick={() => goToTourStep(tourStep - 1)}>Back</Button>
-                  )}
-                  <Button
-                    onClick={() => tourStep < 0 ? goToTourStep(0) : tourStep < tourSteps.length - 1 ? goToTourStep(tourStep + 1) : closeTour(true)}
-                  >
-                    {tourStep < 0 ? "Take the tour" : tourStep === tourSteps.length - 1 ? "Finish" : "Next"}
-                    <ChevronRight className="ml-1 h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-              {tourStep >= 0 && (
-                <div className="mt-5 flex justify-center gap-1.5" aria-label={`Step ${tourStep + 1} of ${tourSteps.length}`}>
-                  {tourSteps.map((step, index) => (
-                    <span key={step.title} className={`h-1.5 w-6 rounded-full ${index === tourStep ? "bg-primary" : "bg-muted"}`} />
-                  ))}
-                </div>
-              )}
-            </section>
-          </div>
+          <QuickTour step={tourStep} onStep={setTourStep} onClose={closeTour} firstName={currentUser?.fullName?.split(" ")[0]} />
         )}
 
         {/* Page Body */}
@@ -539,6 +469,9 @@ export function AppShell({ children }: AppShellProps) {
           {children}
         </main>
       </div>
+
+      {/* Help assistant, signed-in pages only */}
+      <AssistantWidget />
     </div>
   )
 }
