@@ -1,4 +1,3 @@
-# CS203 Grid-Aware Compute Scheduler (GACS)
 # Grid-Aware Compute Scheduler (GACS)
 
 GACS moves flexible compute workloads, such as AI training and batch jobs, to the hours when
