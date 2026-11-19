@@ -11,7 +11,7 @@ every plan comes with a plain-English explanation of why each job moved.
 1. **Ingest:** a daily pipeline pulls ERCOT LZ_NORTH prices (GridStatus), ERCOT load and fuel
    data (EIA), and weather (Open-Meteo) into Postgres.
 2. **Forecast:** a LEAR model (a per-hour LASSO ensemble) predicts the next day's 24 hourly prices.
-   An LSTM is also served, and XGBoost and naive forecasts are kept as baselines. Forecasts are
+   An LSTM is also served, and naive forecasts are kept as baselines. Forecasts are
    checked against a reference RMSE, and the dashboard warns when confidence or data freshness drops.
 3. **Optimize:** operators register facilities and jobs (CPU/GPU hours, deadline, flexibility
    window, priority, precedence). They can also type constraints in plain English, which a
@@ -39,7 +39,7 @@ every job finished by its deadline. Savings are seasonal: 32% in winter, 2% in s
 |---|---|
 | Backend | Spring Boot (Java 25), Spring Security with JWT and refresh tokens, email OTP, PostgreSQL |
 | Frontend | Next.js, TypeScript, Vitest |
-| Forecasting | Python: LEAR, PyTorch LSTM, XGBoost |
+| Forecasting | Python: LEAR, PyTorch LSTM |
 | Ops | GitHub Actions (CI, CD, daily pipeline, weekly retuning), Render |
 
 ## Repository layout
